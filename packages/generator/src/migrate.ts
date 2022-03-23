@@ -46,7 +46,7 @@ function writeMigrations(): void {
   const b = new FileBuilder();
   buildMigrationUp(b);
   // writeFileSync(resolve(__dirname, '../../server/src/migrations/init.ts'), b.toString(), 'utf8');
-  writeFileSync(resolve(__dirname, '../../server/src/migrations/v8.ts'), builder.toString(), 'utf8');
+  writeFileSync(resolve(__dirname, '../../server/src/migrations/v10.ts'), builder.toString(), 'utf8');
 }
 
 function buildMigrationUp(b: FileBuilder): void {
@@ -62,10 +62,6 @@ function buildMigrationUp(b: FileBuilder): void {
 
   for (const [resourceType, typeSchema] of Object.entries(structureDefinitions.types)) {
     buildCreateTables(b, resourceType, typeSchema);
-
-    if (resourceType === 'UserConfiguration') {
-      buildCreateTables(builder, resourceType, typeSchema);
-    }
   }
 
   buildAddressTable(b);
@@ -151,6 +147,14 @@ function buildSearchColumns(resourceType: string): string[] {
     const columnName = details.columnName;
     const newColumnType = getColumnType(details);
     result.push(`"${columnName}" ${newColumnType}`);
+
+    const oldDetails = getSearchParameterDetails(structureDefinitions, resourceType, searchParam, true);
+    const oldColumnType = getColumnType(oldDetails);
+    if (newColumnType !== oldColumnType) {
+      builder.append(
+        `await client.query('ALTER TABLE "${resourceType}" ALTER COLUMN "${columnName}" TYPE ${newColumnType}');`
+      );
+    }
   }
   return result;
 }

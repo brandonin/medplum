@@ -17,6 +17,7 @@ function setup(child: React.ReactNode): void {
 describe('SearchFilterValueInput', () => {
   beforeAll(async () => {
     await medplum.requestSchema('Encounter');
+    await medplum.requestSchema('Observation');
     await medplum.requestSchema('Patient');
     schema = medplum.getSchema();
   });
