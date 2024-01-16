@@ -1,7 +1,8 @@
 import { readJson } from '@medplum/definitions';
 import { Bundle } from '@medplum/fhirtypes';
-import { indexStructureDefinitionBundle } from '../types';
+import { indexStructureDefinitionBundle } from '../typeschema/types';
 import { evalFhirPath } from './parse';
+import { LOINC, SNOMED, UCUM } from '../constants';
 
 const observation = {
   resourceType: 'Observation',
@@ -25,17 +26,17 @@ const observation = {
   code: {
     coding: [
       {
-        system: 'http://loinc.org',
+        system: LOINC,
         code: '29463-7',
         display: 'Body Weight',
       },
       {
-        system: 'http://loinc.org',
+        system: LOINC,
         code: '3141-9',
         display: 'Body weight Measured',
       },
       {
-        system: 'http://snomed.info/sct',
+        system: SNOMED,
         code: '27113001',
         display: 'Body weight',
       },
@@ -56,7 +57,7 @@ const observation = {
   valueQuantity: {
     value: 185,
     unit: 'lbs',
-    system: 'http://unitsofmeasure.org',
+    system: UCUM,
     code: '[lb_av]',
   },
 };
@@ -289,7 +290,7 @@ const questionnaire = {
                           display: 'Angina Pectoris',
                         },
                         {
-                          system: 'http://snomed.info/sct',
+                          system: SNOMED,
                           code: '194828000',
                           display: 'Angina (disorder)',
                         },
@@ -302,7 +303,7 @@ const questionnaire = {
                       linkId: '1.1.1.1.2',
                       code: [
                         {
-                          system: 'http://snomed.info/sct',
+                          system: SNOMED,
                           code: '22298006',
                           display: 'Myocardial infarction (disorder)',
                         },
@@ -403,7 +404,7 @@ const valueset = {
   compose: {
     include: [
       {
-        system: 'http://loinc.org',
+        system: LOINC,
         filter: [
           {
             property: 'parent',
@@ -433,7 +434,7 @@ const valueset = {
     ],
     contains: [
       {
-        system: 'http://loinc.org',
+        system: LOINC,
         version: '2.50',
         code: '14647-2',
         display: 'Cholesterol [Moles/volume] in Serum or Plasma',
@@ -443,19 +444,19 @@ const valueset = {
         display: 'Cholesterol codes',
         contains: [
           {
-            system: 'http://loinc.org',
+            system: LOINC,
             version: '2.50',
             code: '2093-3',
             display: 'Cholesterol [Mass/volume] in Serum or Plasma',
           },
           {
-            system: 'http://loinc.org',
+            system: LOINC,
             version: '2.50',
             code: '48620-9',
             display: 'Cholesterol [Mass/volume] in Serum or Plasma ultracentrifugate',
           },
           {
-            system: 'http://loinc.org',
+            system: LOINC,
             version: '2.50',
             code: '9342-7',
             display: 'Cholesterol [Percentile]',
@@ -467,25 +468,25 @@ const valueset = {
         display: 'Cholesterol Ratios',
         contains: [
           {
-            system: 'http://loinc.org',
+            system: LOINC,
             version: '2.50',
             code: '2096-6',
             display: 'Cholesterol/Triglyceride [Mass Ratio] in Serum or Plasma',
           },
           {
-            system: 'http://loinc.org',
+            system: LOINC,
             version: '2.50',
             code: '35200-5',
             display: 'Cholesterol/Triglyceride [Mass Ratio] in Serum or Plasma',
           },
           {
-            system: 'http://loinc.org',
+            system: LOINC,
             version: '2.50',
             code: '48089-7',
             display: 'Cholesterol/Apolipoprotein B [Molar ratio] in Serum or Plasma',
           },
           {
-            system: 'http://loinc.org',
+            system: LOINC,
             version: '2.50',
             code: '55838-7',
             display: 'Cholesterol/Phospholipid [Molar ratio] in Serum or Plasma',
@@ -3000,7 +3001,7 @@ describe('FHIRPath Test Suite', () => {
     });
 
     test('testBooleanLogicOr7', () => {
-      expect(evalFhirPath('({} or true) = true', patient)).toEqual([true]);
+      expect(evalFhirPath('({} or true)', patient)).toEqual([true]);
     });
 
     test('testBooleanLogicOr8', () => {
@@ -3022,18 +3023,7 @@ describe('FHIRPath Test Suite', () => {
     });
 
     test('testBooleanLogicXOr3', () => {
-      // The official test expects this to be true.
-      // However, according to the spec, I believe this should be false.
-      //
-      // The spec says:
-      //   "Returns true if exactly one of the operands evaluates to true,
-      //    false if either both operands evaluate to true or both operands evaluate to false,
-      //    and the empty collection ({ }) otherwise:"
-      //
-      // I believe the first condition holds:  exactly one of the operands evaluates to true.
-      // Therefore, it should return true.
-      // Which should not satisfy .empty().
-      expect(evalFhirPath('(true xor {}).empty()', patient)).toEqual([false]);
+      expect(evalFhirPath('(true xor {}).empty()', patient)).toEqual([true]);
     });
 
     test('testBooleanLogicXOr4', () => {
@@ -3049,18 +3039,7 @@ describe('FHIRPath Test Suite', () => {
     });
 
     test('testBooleanLogicXOr7', () => {
-      // The official test expects this to be true.
-      // However, according to the spec, I believe this should be false.
-      //
-      // The spec says:
-      //   "Returns true if exactly one of the operands evaluates to true,
-      //    false if either both operands evaluate to true or both operands evaluate to false,
-      //    and the empty collection ({ }) otherwise:"
-      //
-      // I believe the first condition holds:  exactly one of the operands evaluates to true.
-      // Therefore, it should return true.
-      // Which should not satisfy .empty().
-      expect(evalFhirPath('({} xor true).empty()', patient)).toEqual([false]);
+      expect(evalFhirPath('({} xor true).empty()', patient)).toEqual([true]);
     });
 
     test('testBooleanLogicXOr8', () => {
@@ -3072,7 +3051,7 @@ describe('FHIRPath Test Suite', () => {
     });
   });
 
-  describe.skip('testBooleanImplies', () => {
+  describe('testBooleanImplies', () => {
     test('testBooleanImplies1', () => {
       expect(evalFhirPath('(true implies true) = true', patient)).toEqual([true]);
     });

@@ -5,7 +5,7 @@ import { asyncWrap } from '../../async';
 import { getClient } from '../../database';
 import { sendOutcome } from '../outcomes';
 import { systemRepo } from '../repo';
-import { Condition, Conjunction, Disjunction, Expression, Operator, SelectQuery } from '../sql';
+import { Condition, Conjunction, Disjunction, Expression, SelectQuery } from '../sql';
 
 // Implements FHIR "Value Set Expansion"
 // https://www.hl7.org/fhir/operation-valueset-expand.html
@@ -71,24 +71,16 @@ export const expandOperator = asyncWrap(async (req: Request, res: Response) => {
     .offset(offset)
     .limit(count);
 
-  if (filter) {
-    query.where(
-      'display_tsv',
-      Operator.TSVECTOR_MATCH,
-      filter
-        .replace(/[^\p{Letter}\p{Number}]/gu, ' ')
-        .trim()
-        .split(/\s+/)
-        .map((token) => token + ':*')
-        .join(' & ')
-    );
+  const filterQuery = filterToTsvectorQuery(filter);
+  if (filterQuery) {
+    query.where('display', 'TSVECTOR_ENGLISH', filterQuery);
   }
 
   const rows = await query.execute(client);
   const elements = rows.map((row) => ({
     system: row.system,
     code: row.code,
-    display: row.display,
+    display: row.display ?? undefined, // if display is NULL, we want to filter it out before sending this to the client
   }));
 
   res.status(200).json({
@@ -101,13 +93,27 @@ export const expandOperator = asyncWrap(async (req: Request, res: Response) => {
   } as ValueSet);
 });
 
-async function getValueSetByUrl(url: string): Promise<ValueSet | undefined> {
-  const result = await systemRepo.search<ValueSet>({
+function filterToTsvectorQuery(filter: string | undefined): string | undefined {
+  if (!filter) {
+    return undefined;
+  }
+
+  const noPunctuation = filter.replace(/[^\p{Letter}\p{Number}]/gu, ' ').trim();
+  if (!noPunctuation) {
+    return undefined;
+  }
+
+  return noPunctuation
+    .split(/\s+/)
+    .map((token) => token + ':*')
+    .join(' & ');
+}
+
+function getValueSetByUrl(url: string): Promise<ValueSet | undefined> {
+  return systemRepo.searchOne<ValueSet>({
     resourceType: 'ValueSet',
-    count: 1,
     filters: [{ code: 'url', operator: SearchOperator.EQUALS, value: url }],
   });
-  return result.entry?.[0]?.resource;
 }
 
 function buildValueSetSystems(valueSet: ValueSet): Expression[] {
@@ -125,12 +131,12 @@ function processInclude(systemExpressions: Expression[], include: ValueSetCompos
     return;
   }
 
-  const systemExpression = new Condition('system', Operator.EQUALS, include.system as string);
+  const systemExpression = new Condition('system', '=', include.system as string);
 
   if (include.concept) {
     const codeExpressions: Expression[] = [];
     for (const concept of include.concept) {
-      codeExpressions.push(new Condition('code', Operator.EQUALS, concept.code as string));
+      codeExpressions.push(new Condition('code', '=', concept.code as string));
     }
     systemExpressions.push(new Conjunction([systemExpression, new Disjunction(codeExpressions)]));
   } else {

@@ -1,12 +1,15 @@
 import { Table } from '@mantine/core';
 import { capitalize, formatRange } from '@medplum/core';
 import { ObservationDefinition, ObservationDefinitionQualifiedInterval } from '@medplum/fhirtypes';
-import { CodeableConceptDisplay, RangeDisplay, useMedplum } from '@medplum/react';
-import React, { Fragment } from 'react';
+import { CodeableConceptDisplay, Loading, RangeDisplay, useSearchResources } from '@medplum/react';
+import { Fragment } from 'react';
 
 export function AssaysPage(): JSX.Element {
-  const medplum = useMedplum();
-  const assays = medplum.searchResources('ObservationDefinition', '_count=100').read();
+  const [assays] = useSearchResources('ObservationDefinition', '_count=100');
+
+  if (!assays) {
+    return <Loading />;
+  }
 
   return (
     <Table withBorder withColumnBorders>
@@ -56,7 +59,7 @@ function IntervalsDisplay(props: IntervalsDisplayProps): JSX.Element | null {
 
   const genders = getUnique(ranges.map((r) => r.gender));
   if (genders.length > 1) {
-    genders.sort();
+    genders.sort((a, b) => a.localeCompare(b));
     return (
       <>
         {genders.map((gender) => (
@@ -73,7 +76,7 @@ function IntervalsDisplay(props: IntervalsDisplayProps): JSX.Element | null {
 
   const ages = getUnique(ranges.map((r) => r.age && formatRange(r.age)));
   if (ages.length > 1) {
-    ages.sort();
+    ages.sort((a, b) => a.localeCompare(b));
     return (
       <>
         {ages.map((age) => (
@@ -90,8 +93,8 @@ function IntervalsDisplay(props: IntervalsDisplayProps): JSX.Element | null {
 
   return (
     <>
-      {ranges.map((range: ObservationDefinitionQualifiedInterval, index: number) => (
-        <table key={`range-${index}`}>
+      {ranges.map((range: ObservationDefinitionQualifiedInterval) => (
+        <table key={`range-${range.condition}`}>
           <tbody>
             <tr>
               <td>{range.condition}</td>

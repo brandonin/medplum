@@ -1,4 +1,5 @@
 import { AuditEvent } from '@medplum/fhirtypes';
+import { Writable } from 'node:stream';
 import { MedplumServerConfig, getConfig } from './config';
 import { CloudWatchLogger } from './util/cloudwatch';
 
@@ -9,43 +10,126 @@ import { CloudWatchLogger } from './util/cloudwatch';
  * and that logging to console.log was actually perfectly adequate.
  */
 
+/**
+ * Logging level, with greater values representing more detailed logs emitted.
+ *
+ * The zero value means no server logs will be emitted.
+ */
 export enum LogLevel {
   NONE = 0,
-  ERROR = 1,
-  WARN = 2,
-  INFO = 3,
-  DEBUG = 4,
+  ERROR,
+  WARN,
+  INFO,
+  DEBUG,
 }
 
-export const logger = {
+function levelString(level: LogLevel): string {
+  switch (level) {
+    case LogLevel.ERROR:
+      return 'ERROR';
+    case LogLevel.WARN:
+      return 'WARN';
+    case LogLevel.INFO:
+      return 'INFO';
+    case LogLevel.DEBUG:
+      return 'DEBUG';
+    default:
+      return '';
+  }
+}
+
+export class Logger {
+  private out: Writable;
+  private maxLevel: LogLevel;
+  private metadata?: Record<string, any>;
+
+  constructor(stream: Writable, metadata?: Record<string, any>, maxLevel?: LogLevel) {
+    this.out = stream;
+    this.maxLevel = maxLevel ?? (process.env.NODE_ENV === 'test' ? LogLevel.ERROR : LogLevel.INFO);
+    this.metadata = metadata;
+  }
+
+  error(msg: string, data?: Record<string, any>): void {
+    this.log(LogLevel.ERROR, msg, data);
+  }
+
+  warn(msg: string, data?: Record<string, any>): void {
+    this.log(LogLevel.WARN, msg, data);
+  }
+
+  info(msg: string, data?: Record<string, any>): void {
+    this.log(LogLevel.INFO, msg, data);
+  }
+
+  debug(msg: string, data?: Record<string, any>): void {
+    this.log(LogLevel.DEBUG, msg, data);
+  }
+
+  log(level: LogLevel, msg: string, data?: Record<string, any>): void {
+    if (level > this.maxLevel) {
+      return;
+    }
+    if (data instanceof Error) {
+      data = {
+        error: data.toString(),
+        stack: data.stack?.split('\n'),
+      };
+    }
+    this.out.write(
+      JSON.stringify({
+        level: levelString(level),
+        timestamp: new Date().toISOString(),
+        msg,
+        ...data,
+        ...this.metadata,
+      }) + '\n',
+      'utf8'
+    );
+  }
+}
+
+export const globalLogger = {
   level: process.env.NODE_ENV === 'test' ? LogLevel.ERROR : LogLevel.INFO,
 
-  error(...args: any[]): void {
-    if (logger.level >= LogLevel.ERROR) {
-      logger.log('ERROR', ...args);
+  error(msg: string, data?: Record<string, any>): void {
+    if (globalLogger.level >= LogLevel.ERROR) {
+      globalLogger.log('ERROR', msg, data);
     }
   },
 
-  warn(...args: any[]): void {
-    if (logger.level >= LogLevel.WARN) {
-      logger.log('WARN', ...args);
+  warn(msg: string, data?: Record<string, any>): void {
+    if (globalLogger.level >= LogLevel.WARN) {
+      globalLogger.log('WARN', msg, data);
     }
   },
 
-  info(...args: any[]): void {
-    if (logger.level >= LogLevel.INFO) {
-      logger.log('INFO', ...args);
+  info(msg: string, data?: Record<string, any>): void {
+    if (globalLogger.level >= LogLevel.INFO) {
+      globalLogger.log('INFO', msg, data);
     }
   },
 
-  debug(...args: any[]): void {
-    if (logger.level >= LogLevel.DEBUG) {
-      logger.log('DEBUG', ...args);
+  debug(msg: string, data?: Record<string, any>): void {
+    if (globalLogger.level >= LogLevel.DEBUG) {
+      globalLogger.log('DEBUG', msg, data);
     }
   },
 
-  log(level: string, ...args: any[]): void {
-    console.log(level, new Date().toISOString(), ...args);
+  log(level: string, msg: string, data?: Record<string, any>): void {
+    if (data instanceof Error) {
+      data = {
+        error: data.toString(),
+        stack: data.stack?.split('\n'),
+      };
+    }
+    console.log(
+      JSON.stringify({
+        level,
+        timestamp: new Date().toISOString(),
+        msg,
+        ...data,
+      })
+    );
   },
 
   logAuditEvent(auditEvent: AuditEvent): void {
@@ -71,4 +155,13 @@ function getCloudWatchLogger(config: MedplumServerConfig): CloudWatchLogger {
     );
   }
   return cloudWatchLogger;
+}
+
+export function parseLogLevel(level: string): LogLevel {
+  const value = LogLevel[level.toUpperCase() as keyof typeof LogLevel];
+  if (value === undefined) {
+    throw new Error(`Invalid log level: ${level}`);
+  }
+
+  return value;
 }

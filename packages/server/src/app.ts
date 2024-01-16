@@ -1,41 +1,50 @@
-import { badRequest } from '@medplum/core';
+import { badRequest, ContentType } from '@medplum/core';
 import { OperationOutcome } from '@medplum/fhirtypes';
 import compression from 'compression';
 import cors from 'cors';
 import { Express, json, NextFunction, Request, Response, Router, text, urlencoded } from 'express';
-import { adminRouter } from './admin';
+import { rmSync } from 'fs';
+import http from 'http';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { adminRouter } from './admin/routes';
 import { asyncWrap } from './async';
-import { authRouter } from './auth';
+import { authRouter } from './auth/routes';
 import { getConfig, MedplumServerConfig } from './config';
+import { attachRequestContext, AuthenticatedRequestContext, getRequestContext, requestContextStore } from './context';
 import { corsOptions } from './cors';
 import { closeDatabase, initDatabase } from './database';
-import { dicomRouter } from './dicom';
+import { dicomRouter } from './dicom/routes';
 import { emailRouter } from './email/routes';
 import { binaryRouter } from './fhir/binary';
 import { sendOutcome } from './fhir/outcomes';
 import { fhirRouter } from './fhir/routes';
 import { initBinaryStorage } from './fhir/storage';
-import { getStructureDefinitions } from './fhir/structure';
+import { loadStructureDefinitions } from './fhir/structure';
+import { fhircastSTU2Router, fhircastSTU3Router } from './fhircast/routes';
 import { healthcheckHandler } from './healthcheck';
+import { cleanupHeartbeat, initHeartbeat } from './heartbeat';
 import { hl7BodyParser } from './hl7/parser';
-import { logger } from './logger';
+import { globalLogger } from './logger';
 import { initKeys } from './oauth/keys';
-import { authenticateToken } from './oauth/middleware';
 import { oauthRouter } from './oauth/routes';
 import { openApiHandler } from './openapi';
 import { closeRateLimiter } from './ratelimit';
 import { closeRedis, initRedis } from './redis';
-import { scimRouter } from './scim';
+import { scimRouter } from './scim/routes';
 import { seedDatabase } from './seed';
 import { storageRouter } from './storage';
+import { closeWebSockets, initWebSockets } from './websockets';
 import { wellKnownRouter } from './wellknown';
 import { closeWorkers, initWorkers } from './workers';
 
+let server: http.Server | undefined = undefined;
+
 /**
  * Sets standard headers for all requests.
- * @param _req The request.
- * @param res The response.
- * @param next The next handler.
+ * @param _req - The request.
+ * @param res - The response.
+ * @param next - The next handler.
  */
 function standardHeaders(_req: Request, res: Response, next: NextFunction): void {
   // Disables all caching
@@ -56,6 +65,12 @@ function standardHeaders(_req: Request, res: Response, next: NextFunction): void
     "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none';"
   );
 
+  // Disable browser features
+  res.set(
+    'Permission-Policy',
+    'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), interest-cohort=()'
+  );
+
   // Never send the Referer header
   res.set('Referrer-Policy', 'no-referrer');
 
@@ -73,10 +88,10 @@ function standardHeaders(_req: Request, res: Response, next: NextFunction): void
 /**
  * Global error handler.
  * See: https://expressjs.com/en/guide/error-handling.html
- * @param err Unhandled error.
- * @param req The request.
- * @param res The response.
- * @param next The next handler.
+ * @param err - Unhandled error.
+ * @param req - The request.
+ * @param res - The response.
+ * @param next - The next handler.
  */
 function errorHandler(err: any, req: Request, res: Response, next: NextFunction): void {
   if (res.headersSent) {
@@ -102,12 +117,18 @@ function errorHandler(err: any, req: Request, res: Response, next: NextFunction)
     sendOutcome(res, badRequest('File too large'));
     return;
   }
-  logger.error('Unhandled error', err);
+  try {
+    getRequestContext().logger.error('Unhandled error', err);
+  } catch {
+    globalLogger.error('Unhandled error', err);
+  }
   res.status(500).json({ msg: 'Internal Server Error' });
 }
 
-export async function initApp(app: Express, config: MedplumServerConfig): Promise<Express> {
+export async function initApp(app: Express, config: MedplumServerConfig): Promise<http.Server> {
   await initAppServices(config);
+  server = http.createServer(app);
+  initWebSockets(server);
 
   app.set('etag', false);
   app.set('trust proxy', true);
@@ -115,7 +136,8 @@ export async function initApp(app: Express, config: MedplumServerConfig): Promis
   app.use(standardHeaders);
   app.use(cors(corsOptions));
   app.use(compression());
-  app.use('/fhir/R4/Binary', [authenticateToken], binaryRouter);
+  app.use(attachRequestContext);
+  app.use('/fhir/R4/Binary', binaryRouter);
   app.use(
     urlencoded({
       extended: false,
@@ -123,24 +145,28 @@ export async function initApp(app: Express, config: MedplumServerConfig): Promis
   );
   app.use(
     text({
-      type: ['text/plain', 'x-application/hl7-v2+er7'],
+      type: [ContentType.TEXT, ContentType.HL7_V2],
     })
   );
   app.use(
     json({
-      type: ['application/json', 'application/fhir+json', 'application/json-patch+json'],
+      type: [ContentType.JSON, ContentType.FHIR_JSON, ContentType.JSON_PATCH],
       limit: config.maxJsonSize,
     })
   );
   app.use(
     hl7BodyParser({
-      type: ['x-application/hl7-v2+er7'],
+      type: [ContentType.HL7_V2],
     })
   );
 
+  if (config.logRequests) {
+    app.use(loggingMiddleware);
+  }
+
   const apiRouter = Router();
   apiRouter.get('/', (_req, res) => res.sendStatus(200));
-  apiRouter.get('/robots.txt', (_req, res) => res.type('text/plain').send('User-agent: *\nDisallow: /'));
+  apiRouter.get('/robots.txt', (_req, res) => res.type(ContentType.TEXT).send('User-agent: *\nDisallow: /'));
   apiRouter.get('/healthcheck', asyncWrap(healthcheckHandler));
   apiRouter.get('/openapi.json', openApiHandler);
   apiRouter.use('/.well-known/', wellKnownRouter);
@@ -149,6 +175,8 @@ export async function initApp(app: Express, config: MedplumServerConfig): Promis
   apiRouter.use('/dicom/PS3/', dicomRouter);
   apiRouter.use('/email/v1/', emailRouter);
   apiRouter.use('/fhir/R4/', fhirRouter);
+  apiRouter.use('/fhircast/STU2/', fhircastSTU2Router);
+  apiRouter.use('/fhircast/STU3/', fhircastSTU3Router);
   apiRouter.use('/oauth2/', oauthRouter);
   apiRouter.use('/scim/v2/', scimRouter);
   apiRouter.use('/storage/', storageRouter);
@@ -156,22 +184,65 @@ export async function initApp(app: Express, config: MedplumServerConfig): Promis
   app.use('/api/', apiRouter);
   app.use('/', apiRouter);
   app.use(errorHandler);
-  return app;
+  return server;
 }
 
-export async function initAppServices(config: MedplumServerConfig): Promise<void> {
-  getStructureDefinitions();
-  initRedis(config.redis);
-  await initDatabase(config.database);
-  await seedDatabase();
-  await initKeys(config);
-  initBinaryStorage(config.binaryStorage);
-  initWorkers(config.redis);
+export function initAppServices(config: MedplumServerConfig): Promise<void> {
+  return requestContextStore.run(AuthenticatedRequestContext.system(), async () => {
+    loadStructureDefinitions();
+    initRedis(config.redis);
+    await initDatabase(config.database);
+    await seedDatabase();
+    await initKeys(config);
+    initBinaryStorage(config.binaryStorage);
+    initWorkers(config);
+    initHeartbeat();
+  });
 }
 
 export async function shutdownApp(): Promise<void> {
   await closeWorkers();
   await closeDatabase();
+  cleanupHeartbeat();
+  await closeWebSockets();
   closeRedis();
   closeRateLimiter();
+
+  if (server) {
+    server.close();
+    server = undefined;
+  }
+
+  // If binary storage is a temporary directory, delete it
+  const binaryStorage = getConfig().binaryStorage;
+  if (binaryStorage?.startsWith('file:' + join(tmpdir(), 'medplum-temp-storage'))) {
+    rmSync(binaryStorage.replace('file:', ''), { recursive: true, force: true });
+  }
 }
+
+const loggingMiddleware = (req: Request, res: Response, next: NextFunction): void => {
+  const ctx = getRequestContext();
+  const start = new Date();
+
+  res.on('finish', () => {
+    const duration = new Date().getTime() - start.getTime();
+
+    let userProfile: string | undefined;
+    if (ctx instanceof AuthenticatedRequestContext) {
+      userProfile = ctx.profile.reference;
+    }
+
+    ctx.logger.info('Request served', {
+      duration: `${duration} ms`,
+      ip: req.ip,
+      method: req.method,
+      path: req.path,
+      profile: userProfile,
+      receivedAt: start,
+      status: res.statusCode,
+      ua: req.get('User-Agent'),
+    });
+  });
+
+  next();
+};

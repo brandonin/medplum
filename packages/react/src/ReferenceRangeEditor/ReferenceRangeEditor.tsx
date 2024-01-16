@@ -2,7 +2,7 @@ import { ActionIcon, Button, createStyles, Divider, Group, NativeSelect, Stack, 
 import { formatRange, getCodeBySystem } from '@medplum/core';
 import { CodeableConcept, ObservationDefinition, ObservationDefinitionQualifiedInterval } from '@medplum/fhirtypes';
 import { IconCircleMinus, IconCirclePlus } from '@tabler/icons-react';
-import React, { useEffect, useState } from 'react';
+import { MouseEvent, useEffect, useState } from 'react';
 import { Container } from '../Container/Container';
 import { Form } from '../Form/Form';
 import { RangeInput } from '../RangeInput/RangeInput';
@@ -20,7 +20,7 @@ const useStyles = createStyles((theme) => ({
 }));
 
 // Properties of qualified intervals used for grouping
-const intervalFilters = ['gender', 'age', 'gestationalAge', 'context', 'appliesTo'] as const;
+const intervalFilters = ['gender', 'age', 'gestationalAge', 'context', 'appliesTo', 'category'] as const;
 
 export interface ReferenceRangeEditorProps {
   definition: ObservationDefinition;
@@ -28,7 +28,7 @@ export interface ReferenceRangeEditorProps {
 }
 
 // Helper type that groups of qualified intervals by equal filter criteria
-type IntervalGroup = {
+export type IntervalGroup = {
   id: string;
   filters: Record<string, any>;
   intervals: ObservationDefinitionQualifiedInterval[];
@@ -72,7 +72,7 @@ export function ReferenceRangeEditor(props: ReferenceRangeEditorProps): JSX.Elem
       <ActionIcon
         title="Add Group"
         size="sm"
-        onClick={(e: React.MouseEvent) => {
+        onClick={(e: MouseEvent) => {
           killEvent(e);
           addGroup({ id: `group-id-${groupId}`, filters: {} as IntervalGroup['filters'], intervals: [] });
           setGroupId((id) => id + 1);
@@ -112,8 +112,8 @@ export function ReferenceRangeEditor(props: ReferenceRangeEditorProps): JSX.Elem
 
   /**
    * Add/Remove/Update specific Qualified Intervals
-   * @param groupId The reference range group ID.
-   * @param changedInterval The updated reference range interval.
+   * @param groupId - The reference range group ID.
+   * @param changedInterval - The updated reference range interval.
    */
   function changeInterval(groupId: string, changedInterval: ObservationDefinitionQualifiedInterval): void {
     setIntervalGroups((groups) => {
@@ -260,7 +260,7 @@ interface ReferenceRangeGroupFiltersProps {
 
 /**
  * Render the "filters" section of the IntervalGroup.
- * @param props The ReferenceRangeGroupFilter React props.
+ * @param props - The ReferenceRangeGroupFilter React props.
  * @returns The ReferenceRangeGroupFilter React node.
  */
 function ReferenceRangeGroupFilters(props: ReferenceRangeGroupFiltersProps): JSX.Element {
@@ -342,14 +342,32 @@ function ReferenceRangeGroupFilters(props: ReferenceRangeGroupFiltersProps): JSX
           }
         }}
       />
+      <NativeSelect
+        data={['', 'reference', 'critical', 'absolute']}
+        label="Category: "
+        defaultValue={intervalGroup.filters.category}
+        onChange={(e) => {
+          for (const interval of intervalGroup.intervals) {
+            const newCategory: string | undefined = e.currentTarget.value;
+            if (newCategory === '') {
+              onChange(intervalGroup.id, { ...interval, category: undefined });
+            } else {
+              onChange(intervalGroup.id, {
+                ...interval,
+                category: newCategory as 'reference' | 'critical' | 'absolute',
+              });
+            }
+          }
+        }}
+      />
     </Stack>
   );
 }
 
 /**
  * Helper function that assigns ids to each qualifiedInterval of an ObservationDefinition
- * @param definition An ObservationDefinition
- * @param setIntervalId React setState function for the intervalId
+ * @param definition - An ObservationDefinition
+ * @param setIntervalId - React setState function for the intervalId
  * @returns The updated observation definition.
  */
 function ensureQualifiedIntervalKeys(
@@ -385,8 +403,8 @@ function ensureQualifiedIntervalKeys(
 /**
  * Group all ObservationDefinitionQualifiedIntervals based on the values of their "filter" properties,
  * so that similar ranges can be grouped together.
- * @param intervals Array of reference range intervals.
- * @param setGroupId Callback to set the group ID.
+ * @param intervals - Array of reference range intervals.
+ * @param setGroupId - Callback to set the group ID.
  * @returns The grouped intervals.
  */
 function groupQualifiedIntervals(
@@ -412,7 +430,7 @@ function groupQualifiedIntervals(
 
 /**
  * Generates a unique string for each set of filter values, so that similarly filtered intervals can be grouped together.
- * @param interval The reference range interval.
+ * @param interval - The reference range interval.
  * @returns A "group key" that corresponds to the value of the interval filter properties.
  */
 function generateGroupKey(interval: ObservationDefinitionQualifiedInterval): string {
@@ -422,6 +440,7 @@ function generateGroupKey(interval: ObservationDefinitionQualifiedInterval): str
     `gestationalAge=${formatRange(interval.gestationalAge)}`,
     `context=${interval.context?.text}`,
     `appliesTo=${interval.appliesTo?.map((c) => c.text).join('+')}`,
+    `category=${interval.category}`,
   ];
 
   return results.join(':');

@@ -1,16 +1,16 @@
 import { Anchor, Button, createStyles, NativeSelect, Stack, TextInput } from '@mantine/core';
-import { getReferenceString, IndexedStructureDefinition, PropertyType } from '@medplum/core';
-import { ElementDefinition, PlanDefinition, PlanDefinitionAction, Reference, ResourceType } from '@medplum/fhirtypes';
-import React, { useEffect, useRef, useState } from 'react';
+import { getReferenceString, InternalSchemaElement } from '@medplum/core';
+import { PlanDefinition, PlanDefinitionAction, Reference, ResourceType } from '@medplum/fhirtypes';
+import { useMedplum, useResource } from '@medplum/react-hooks';
+import { MouseEvent, SyntheticEvent, useEffect, useRef, useState } from 'react';
 import { Form } from '../Form/Form';
 import { FormSection } from '../FormSection/FormSection';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
 import { ReferenceDisplay } from '../ReferenceDisplay/ReferenceDisplay';
-import { setPropertyValue } from '../ResourceForm/ResourceForm';
+import { setPropertyValue } from '../ResourceForm/ResourceForm.utils';
 import { ResourceInput } from '../ResourceInput/ResourceInput';
-import { getValueAndType, ResourcePropertyDisplay } from '../ResourcePropertyDisplay/ResourcePropertyDisplay';
+import { ResourcePropertyDisplay } from '../ResourcePropertyDisplay/ResourcePropertyDisplay';
+import { getValueAndType } from '../ResourcePropertyDisplay/ResourcePropertyDisplay.utils';
 import { ResourcePropertyInput } from '../ResourcePropertyInput/ResourcePropertyInput';
-import { useResource } from '../useResource/useResource';
 import { killEvent } from '../utils/dom';
 
 const useStyles = createStyles((theme) => ({
@@ -52,7 +52,7 @@ export interface PlanDefinitionBuilderProps {
 export function PlanDefinitionBuilder(props: PlanDefinitionBuilderProps): JSX.Element | null {
   const medplum = useMedplum();
   const defaultValue = useResource(props.value);
-  const [schema, setSchema] = useState<IndexedStructureDefinition | undefined>(undefined);
+  const [schemaLoaded, setSchemaLoaded] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string>();
   const [hoverKey, setHoverKey] = useState<string>();
   const [value, setValue] = useState<PlanDefinition>();
@@ -69,7 +69,10 @@ export function PlanDefinitionBuilder(props: PlanDefinitionBuilderProps): JSX.El
   valueRef.current = value;
 
   useEffect(() => {
-    medplum.requestSchema('PlanDefinition').then(setSchema).catch(console.log);
+    medplum
+      .requestSchema('PlanDefinition')
+      .then(() => setSchemaLoaded(true))
+      .catch(console.log);
   }, [medplum]);
 
   useEffect(() => {
@@ -82,7 +85,7 @@ export function PlanDefinitionBuilder(props: PlanDefinitionBuilderProps): JSX.El
     };
   }, [defaultValue]);
 
-  if (!schema || !value) {
+  if (!schemaLoaded || !value) {
     return null;
   }
 
@@ -162,7 +165,7 @@ function ActionArrayBuilder(props: ActionArrayBuilderProps): JSX.Element {
       <div className={classes.bottomActions}>
         <Anchor
           href="#"
-          onClick={(e: React.MouseEvent) => {
+          onClick={(e: MouseEvent) => {
             killEvent(e);
             addAction({ id: generateId() });
           }}
@@ -191,12 +194,12 @@ function ActionBuilder(props: ActionBuilderProps): JSX.Element {
   const editing = props.selectedKey === props.action.id;
   const hovering = props.hoverKey === props.action.id;
 
-  function onClick(e: React.SyntheticEvent): void {
+  function onClick(e: SyntheticEvent): void {
     e.stopPropagation();
     props.setSelectedKey(props.action.id);
   }
 
-  function onHover(e: React.SyntheticEvent): void {
+  function onHover(e: SyntheticEvent): void {
     killEvent(e);
     props.setHoverKey(props.action.id);
   }
@@ -207,7 +210,7 @@ function ActionBuilder(props: ActionBuilderProps): JSX.Element {
   });
 
   return (
-    <div data-testid={action.id} className={className} onClick={onClick} onMouseOver={onHover}>
+    <div data-testid={action.id} className={className} onClick={onClick} onMouseOver={onHover} onFocus={onHover}>
       {editing ? (
         <ActionEditor
           action={action}
@@ -225,7 +228,7 @@ function ActionBuilder(props: ActionBuilderProps): JSX.Element {
       <div className={classes.bottomActions}>
         <Anchor
           href="#"
-          onClick={(e: React.MouseEvent) => {
+          onClick={(e: MouseEvent) => {
             e.preventDefault();
             props.onRemove();
           }}
@@ -237,11 +240,14 @@ function ActionBuilder(props: ActionBuilderProps): JSX.Element {
   );
 }
 
-const timingProperty: ElementDefinition = {
+const timingProperty: InternalSchemaElement = {
   path: 'PlanDefinition.action.timing[x]',
   min: 0,
-  max: '1',
-  type: [{ code: 'dateTime' }, { code: 'Period' }, { code: 'Range' }, { code: 'Timing' }],
+  max: 1,
+  description: '',
+  isArray: false,
+  constraints: [],
+  type: ['dateTime', 'Period', 'Range', 'Timing'].map((t) => ({ code: t })),
 };
 
 interface ActionDisplayProps {
@@ -427,6 +433,7 @@ function ActionTimingInput(props: ActionTimingInputProps): JSX.Element {
       onChange={(newValue: any, propName?: string) => {
         props.onChange(setPropertyValue(value, key, propName ?? key, timingProperty, newValue));
       }}
+      outcome={undefined}
     />
   );
 }
@@ -447,7 +454,7 @@ function getInitialActionType(action: PlanDefinitionAction): string | undefined 
   return undefined;
 }
 
-function getActionTiming(action: PlanDefinitionAction): [any, PropertyType] {
+function getActionTiming(action: PlanDefinitionAction): [any, string] {
   return getValueAndType({ type: 'PlanDefinitionAction', value: action }, 'timing');
 }
 
@@ -458,7 +465,7 @@ let nextId = 1;
  * React needs unique IDs for components for rendering performance.
  * All of the important components in the questionnaire builder have id properties for this:
  * Questionnaire, QuestionnaireItem, and QuestionnaireItemAnswerOption.
- * @param existing Optional existing id which will update nextId.
+ * @param existing - Optional existing id which will update nextId.
  * @returns A unique key.
  */
 function generateId(existing?: string): string {

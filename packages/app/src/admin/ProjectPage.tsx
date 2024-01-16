@@ -1,6 +1,6 @@
 import { Paper, ScrollArea, Tabs } from '@mantine/core';
 import { Document, useMedplum } from '@medplum/react';
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { InfoBar } from '../components/InfoBar';
 import { getProjectId } from '../utils';
@@ -17,7 +17,7 @@ export function ProjectPage(): JSX.Element {
 
   /**
    * Handles a tab change event.
-   * @param newTabName The new tab name.
+   * @param newTabName - The new tab name.
    */
   function onTabChange(newTabName: string): void {
     navigate(`/admin/${newTabName}`);

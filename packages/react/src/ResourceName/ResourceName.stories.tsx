@@ -1,6 +1,5 @@
 import { HomerSimpson } from '@medplum/mock';
 import { Meta } from '@storybook/react';
-import React from 'react';
 import { Document } from '../Document/Document';
 import { ResourceName } from './ResourceName';
 
@@ -21,7 +20,7 @@ export const Reference = (): JSX.Element => (
   </Document>
 );
 
-export const Error = (): JSX.Element => (
+export const Invalid = (): JSX.Element => (
   <Document>
     <ResourceName value={{ reference: 'Patient/xyz' }} />
   </Document>

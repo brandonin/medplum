@@ -1,5 +1,5 @@
 import { SendEmailCommand, SESv2Client } from '@aws-sdk/client-sesv2';
-import { createReference } from '@medplum/core';
+import { createReference, LOINC } from '@medplum/core';
 import { ClientApplication, Project } from '@medplum/fhirtypes';
 import { randomUUID } from 'crypto';
 import express from 'express';
@@ -11,7 +11,7 @@ import { inviteUser } from '../admin/invite';
 import { initApp, shutdownApp } from '../app';
 import { loadTestConfig } from '../config';
 import { systemRepo } from '../fhir/repo';
-import { createTestProject, setupPwnedPasswordMock, setupRecaptchaMock } from '../test.setup';
+import { createTestProject, setupPwnedPasswordMock, setupRecaptchaMock, withTestContext } from '../test.setup';
 import { registerNew } from './register';
 import { setPassword } from './setpassword';
 
@@ -26,25 +26,27 @@ let project: Project;
 let client: ClientApplication;
 
 describe('Login', () => {
-  beforeAll(async () => {
-    const config = await loadTestConfig();
-    await initApp(app, config);
+  beforeAll(() =>
+    withTestContext(async () => {
+      const config = await loadTestConfig();
+      await initApp(app, config);
 
-    // Create a test project
-    ({ project, client } = await createTestProject());
+      // Create a test project
+      ({ project, client } = await createTestProject());
 
-    // Create a test user
-    const { user } = await inviteUser({
-      project,
-      resourceType: 'Practitioner',
-      firstName: 'Test',
-      lastName: 'User',
-      email,
-    });
+      // Create a test user
+      const { user } = await inviteUser({
+        project,
+        resourceType: 'Practitioner',
+        firstName: 'Test',
+        lastName: 'User',
+        email,
+      });
 
-    // Set the test user password
-    await setPassword(user, password);
-  });
+      // Set the test user password
+      await setPassword(user, password);
+    })
+  );
 
   afterAll(async () => {
     await shutdownApp();
@@ -176,13 +178,15 @@ describe('Login', () => {
     const compartment = { reference: `Organization/${randomUUID()}` };
 
     // Register and create a project
-    const { project, accessToken } = await registerNew({
-      firstName: 'Admin',
-      lastName: 'Admin',
-      projectName: 'Access Policy Project',
-      email: adminEmail,
-      password: 'password!@#',
-    });
+    const { project, accessToken } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Admin',
+        lastName: 'Admin',
+        projectName: 'Access Policy Project',
+        email: adminEmail,
+        password: 'password!@#',
+      })
+    );
 
     // Create an access policy
     const resX = await request(app)
@@ -314,7 +318,7 @@ describe('Login', () => {
         code: {
           coding: [
             {
-              system: 'http://loinc.org',
+              system: LOINC,
               code: '1',
             },
           ],
@@ -329,18 +333,20 @@ describe('Login', () => {
     const password = 'password!@#';
 
     // Register and create a project
-    const { project } = await registerNew({
-      firstName: 'Google',
-      lastName: 'Google',
-      projectName: 'Require Google Auth',
-      email,
-      password,
-    });
+    await withTestContext(async () => {
+      const { project } = await registerNew({
+        firstName: 'Google',
+        lastName: 'Google',
+        projectName: 'Require Google Auth',
+        email,
+        password,
+      });
 
-    // As a super admin, update the project to require Google auth
-    await systemRepo.updateResource({
-      ...project,
-      features: ['google-auth-required'],
+      // As a super admin, update the project to require Google auth
+      await systemRepo.updateResource({
+        ...project,
+        features: ['google-auth-required'],
+      });
     });
 
     // Then try to login
@@ -432,13 +438,15 @@ describe('Login', () => {
     const password = 'password!@#';
 
     // Register and create a project
-    await registerNew({
-      firstName: 'Mixed',
-      lastName: 'Case',
-      projectName: 'Mixed Case Project',
-      email,
-      password,
-    });
+    await withTestContext(() =>
+      registerNew({
+        firstName: 'Mixed',
+        lastName: 'Case',
+        projectName: 'Mixed Case Project',
+        email,
+        password,
+      })
+    );
 
     // Try to login with mixed case email
     // This should work
@@ -463,5 +471,21 @@ describe('Login', () => {
     });
     expect(res2.status).toBe(200);
     expect(res2.body.code).toBeDefined();
+  });
+
+  test('No membership', async () => {
+    const otherTestProject = await createTestProject();
+
+    const res = await request(app).post('/auth/login').type('json').send({
+      email,
+      password,
+      scope: 'openid',
+      projectId: otherTestProject.project.id,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.login).toBeUndefined();
+    expect(res.body.code).toBeUndefined();
+    expect(res.body.memberships).toBeUndefined();
+    expect(res.body.issue[0].details.text).toBe('User not found');
   });
 });

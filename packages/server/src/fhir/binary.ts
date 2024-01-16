@@ -1,24 +1,25 @@
-import { badRequest } from '@medplum/core';
+import { badRequest, normalizeOperationOutcome } from '@medplum/core';
 import { Binary } from '@medplum/fhirtypes';
 import { Request, Response, Router } from 'express';
 import internal from 'stream';
 import zlib from 'zlib';
 import { asyncWrap } from '../async';
 import { sendOutcome } from './outcomes';
-import { Repository } from './repo';
 import { getPresignedUrl } from './signer';
 import { getBinaryStorage } from './storage';
+import { authenticateRequest } from '../oauth/middleware';
+import { getAuthenticatedContext } from '../context';
 
-export const binaryRouter = Router();
+export const binaryRouter = Router().use(authenticateRequest);
 
 // Create a binary
 binaryRouter.post(
   '/',
   asyncWrap(async (req: Request, res: Response) => {
+    const ctx = getAuthenticatedContext();
     const filename = req.query['_filename'] as string | undefined;
     const contentType = req.get('Content-Type');
-    const repo = res.locals.repo as Repository;
-    const resource = await repo.createResource<Binary>({
+    const resource = await ctx.repo.createResource<Binary>({
       resourceType: 'Binary',
       contentType,
       meta: {
@@ -39,7 +40,7 @@ binaryRouter.post(
         url: getPresignedUrl(resource),
       });
     } catch (err) {
-      sendOutcome(res, badRequest(err as string));
+      sendOutcome(res, normalizeOperationOutcome(err));
     }
   })
 );
@@ -48,11 +49,11 @@ binaryRouter.post(
 binaryRouter.put(
   '/:id',
   asyncWrap(async (req: Request, res: Response) => {
+    const ctx = getAuthenticatedContext();
     const { id } = req.params;
     const filename = req.query['_filename'] as string | undefined;
     const contentType = req.get('Content-Type');
-    const repo = res.locals.repo as Repository;
-    const resource = await repo.updateResource<Binary>({
+    const resource = await ctx.repo.updateResource<Binary>({
       resourceType: 'Binary',
       id,
       contentType,
@@ -76,9 +77,9 @@ binaryRouter.put(
 binaryRouter.get(
   '/:id',
   asyncWrap(async (req: Request, res: Response) => {
+    const ctx = getAuthenticatedContext();
     const { id } = req.params;
-    const repo = res.locals.repo as Repository;
-    const binary = await repo.readResource<Binary>('Binary', id);
+    const binary = await ctx.repo.readResource<Binary>('Binary', id);
 
     res.status(200).contentType(binary.contentType as string);
 
@@ -95,7 +96,7 @@ binaryRouter.get(
  *
  * Unfortunately body-parser will always write the content to a temporary file on local disk.
  * That is not acceptable for multi gigabyte files, which could easily fill up the disk.
- * @param req The HTTP request.
+ * @param req - The HTTP request.
  * @returns The content stream.
  */
 function getContentStream(req: Request): internal.Readable | undefined {

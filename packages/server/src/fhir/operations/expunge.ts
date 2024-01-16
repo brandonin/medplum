@@ -1,40 +1,49 @@
-import { allOk, forbidden, getResourceTypes, Operator } from '@medplum/core';
-import { Login, ResourceType } from '@medplum/fhirtypes';
+import { accepted, allOk, forbidden, getResourceTypes, Operator } from '@medplum/core';
+import { ResourceType } from '@medplum/fhirtypes';
 import { Request, Response } from 'express';
+import { getConfig } from '../../config';
 import { sendOutcome } from '../outcomes';
 import { Repository } from '../repo';
-import { logger } from '../../logger';
+import { AsyncJobExecutor } from './utils/asyncjobexecutor';
+import { getAuthenticatedContext } from '../../context';
 
 /**
  * Handles an expunge request.
  *
  * Endpoint: [fhir base]/[resourceType]/[id]/$expunge
- * @param req The HTTP request.
- * @param res The HTTP response.
+ * @param req - The HTTP request.
+ * @param res - The HTTP response.
  */
 export async function expungeHandler(req: Request, res: Response): Promise<void> {
-  if (!(res.locals.login as Login).superAdmin) {
+  const ctx = getAuthenticatedContext();
+  if (!ctx.login.superAdmin) {
     sendOutcome(res, forbidden);
     return;
   }
 
   const { resourceType, id } = req.params;
   const { everything } = req.query;
-  const repo = res.locals.repo as Repository;
   if (everything === 'true') {
-    logger.info(`expunge started for ${resourceType}/${id}`);
-    new Expunger(repo, id)
-      .expunge()
-      .then(() => logger.info(`expunge for ${resourceType}/${id} is completed`))
-      .catch((err) => logger.error(`expunge ${resourceType}/${id} failed: ${err}`));
+    const { baseUrl } = getConfig();
+    const exec = new AsyncJobExecutor(ctx.repo);
+    await exec.init(req.protocol + '://' + req.get('host') + req.originalUrl);
+    exec.start(async () => {
+      ctx.logger.info('Expunge started', { resourceType, id });
+      await new Expunger(ctx.repo, id).expunge();
+    });
+    sendOutcome(res, accepted(exec.getContentLocation(baseUrl)));
   } else {
-    await repo.expungeResource(resourceType, id);
+    await ctx.repo.expungeResource(resourceType, id);
+    sendOutcome(res, allOk);
   }
-  sendOutcome(res, allOk);
 }
 
 export class Expunger {
-  constructor(readonly repo: Repository, readonly compartment: string, readonly maxResultsPerPage = 10000) {
+  constructor(
+    readonly repo: Repository,
+    readonly compartment: string,
+    readonly maxResultsPerPage = 10000
+  ) {
     this.maxResultsPerPage = maxResultsPerPage;
   }
 

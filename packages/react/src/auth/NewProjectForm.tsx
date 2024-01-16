@@ -1,10 +1,10 @@
 import { Anchor, Button, Center, Group, Stack, Text, TextInput, Title } from '@mantine/core';
-import { LoginAuthenticationResponse } from '@medplum/core';
+import { LoginAuthenticationResponse, normalizeOperationOutcome } from '@medplum/core';
 import { OperationOutcome } from '@medplum/fhirtypes';
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Form } from '../Form/Form';
 import { Logo } from '../Logo/Logo';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
+import { useMedplum } from '@medplum/react-hooks';
 import { getErrorsForInput } from '../utils/outcomes';
 
 export interface NewProjectFormProps {
@@ -27,7 +27,7 @@ export function NewProjectForm(props: NewProjectFormProps): JSX.Element {
             })
           );
         } catch (err) {
-          setOutcome(err as OperationOutcome);
+          setOutcome(normalizeOperationOutcome(err));
         }
       }}
     >

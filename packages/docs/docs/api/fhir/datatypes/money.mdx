@@ -3,16 +3,25 @@ title: Money
 sidebar_position: 21
 ---
 
+import Link from '@docusaurus/Link';
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 import definition from '@site/static/data/datatypeDefinitions/money.json';
 import { ResourcePropertiesTable, SearchParamsTable } from '@site/src/components/ResourceTables';
 
 # Money
 
-Base StructureDefinition for Money Type: An amount of economic utility in some recognized currency.
+Base <Link to="/docs/api/fhir/resources/structuredefinition">StructureDefinition</Link> for <Link to="/docs/api/fhir/datatypes/money">Money</Link> Type: An amount of economic utility in some recognized currency.
 
-## Properties
+<Tabs queryString="section">
+  <TabItem value="schema" label="Schema" default>
 
-<ResourcePropertiesTable properties={definition.properties.filter((p) => !(p.inherited && p.base.includes('Resource')))} />
+## Elements
 
+<ResourcePropertiesTable
+  properties={definition.properties.filter((p) => !(p.inherited && p.base.includes('Resource')))}
+/>
 
+  </TabItem>
 
+</Tabs>

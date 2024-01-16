@@ -1,19 +1,22 @@
 import { AppShell as MantineAppShell, useMantineTheme } from '@mantine/core';
-import React, { Suspense, useState } from 'react';
+import { showNotification } from '@mantine/notifications';
+import { useMedplum, useMedplumProfile } from '@medplum/react-hooks';
+import { ReactNode, Suspense, useEffect, useState } from 'react';
 import { ErrorBoundary } from '../ErrorBoundary/ErrorBoundary';
 import { Loading } from '../Loading/Loading';
-import { useMedplum, useMedplumProfile } from '../MedplumProvider/MedplumProvider';
 import { Header } from './Header';
 import { Navbar, NavbarMenu } from './Navbar';
 
 export interface AppShellProps {
-  logo: React.ReactNode;
+  logo: ReactNode;
   pathname?: string;
   searchParams?: URLSearchParams;
+  headerSearchDisabled?: boolean;
   version?: string;
   menus?: NavbarMenu[];
-  children: React.ReactNode;
+  children: ReactNode;
   displayAddBookmark?: boolean;
+  resourceTypeSearchDisabled?: boolean;
 }
 
 export function AppShell(props: AppShellProps): JSX.Element {
@@ -21,6 +24,14 @@ export function AppShell(props: AppShellProps): JSX.Element {
   const [navbarOpen, setNavbarOpen] = useState(localStorage['navbarOpen'] === 'true');
   const medplum = useMedplum();
   const profile = useMedplumProfile();
+
+  useEffect(() => {
+    function eventListener(): void {
+      showNotification({ color: 'red', message: 'No connection to server', autoClose: false });
+    }
+    medplum.addEventListener('offline', eventListener);
+    return () => medplum.removeEventListener('offline', eventListener);
+  }, [medplum]);
 
   function setNavbarOpenWrapper(open: boolean): void {
     localStorage['navbarOpen'] = open.toString();
@@ -53,6 +64,7 @@ export function AppShell(props: AppShellProps): JSX.Element {
           <Header
             pathname={props.pathname}
             searchParams={props.searchParams}
+            headerSearchDisabled={props.headerSearchDisabled}
             logo={props.logo}
             version={props.version}
             navbarToggle={toggleNavbar}
@@ -67,11 +79,12 @@ export function AppShell(props: AppShellProps): JSX.Element {
             menus={props.menus}
             closeNavbar={closeNavbar}
             displayAddBookmark={props.displayAddBookmark}
+            resourceTypeSearchDisabled={props.resourceTypeSearchDisabled}
           />
         ) : undefined
       }
     >
-      <ErrorBoundary key={`${props.pathname}?${props.searchParams?.toString()}`}>
+      <ErrorBoundary>
         <Suspense fallback={<Loading />}>{props.children}</Suspense>
       </ErrorBoundary>
     </MantineAppShell>

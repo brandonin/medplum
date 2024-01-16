@@ -93,7 +93,7 @@ Let’s take a look at the resource that is created:
 
 Next, we'll write a Bot that creates a [Patient](/docs/api/fhir/resources/patient) and [ServiceRequest](/docs/api/fhir/resources/servicerequest) based on the the user's response. To learn how to set up a new Bot, see the [Bot Basics tutorial](./bot-basics)
 
-To parse out the answers in the '[QuestionnaireResponse](/docs/api/fhir/resources/questionnaireresponse), we'll use the [`getQuestionnaireAnswers`](/docs/sdk/modules#getquestionnaireanswers) utility function. This function returns a map from the question's `linkId` to the response.
+To parse out the answers in the '[QuestionnaireResponse](/docs/api/fhir/resources/questionnaireresponse), we'll use the [`getQuestionnaireAnswers`](/docs/sdk/core.getquestionnaireanswers) utility function. This function returns a map from the question's `linkId` to the response.
 
 ```ts
 // Use the getQuestionnaireAnswers utility function to convert the response into
@@ -110,7 +110,7 @@ const phone = answers['phone']?.valueString || 'No Phone Number Given';
 const reasonForVisiting = answers['reasonForVisit']?.valueString || 'No Reason Given';
 ```
 
-We can combine this with the [`medplum.createResource`](/docs/sdk/classes/MedplumClient#createresource) method to create the [Patient](/docs/api/fhir/resources/patient) and [ServiceRequest](/docs/api/fhir/resources/servicerequest) . The final Bot then looks like this:
+We can combine this with the [`medplum.createResource`](/docs/sdk/core.medplumclient.createresource) method to create the [Patient](/docs/api/fhir/resources/patient) and [ServiceRequest](/docs/api/fhir/resources/servicerequest) . The final Bot then looks like this:
 
 ```ts
 import { BotEvent, MedplumClient, getQuestionnaireAnswers, createReference } from '@medplum/core';
@@ -182,6 +182,12 @@ The last step is to have your Bot listen to your Questionnaire responses.
 import connectBotUrl from './connect-bot.png';
 
 <img alt='Connect Bot to Questionnaire' src={connectBotUrl} style={{maxHeight:'500px', width:'auto'}}/>
+
+:::caution Ordering of Subscription Events
+
+Because of the variable timing and routes of http traffic, the Medplum server cannot guarantee the order in which [`Subscription`](/docs/api/fhir/resources/subscription) webhooks are received by the client.
+
+:::
 
 ### 6. Watch it work
 

@@ -1,6 +1,5 @@
 import { createReference, MedplumClient, ProfileResource } from '@medplum/core';
 import { Attachment, Group, Patient, Reference, ResourceType, ServiceRequest } from '@medplum/fhirtypes';
-import React from 'react';
 import { ResourceTimeline } from '../ResourceTimeline/ResourceTimeline';
 
 export interface ServiceRequestTimelineProps {
@@ -19,6 +18,7 @@ export function ServiceRequestTimeline(props: ServiceRequestTimelineProps): JSX.
           medplum.search('Communication', { 'based-on': ref, _count }),
           medplum.search('DiagnosticReport', { 'based-on': ref, _count }),
           medplum.search('Media', { 'based-on': ref, _count }),
+          medplum.search('DocumentReference', { related: ref, _count }),
           medplum.search('Task', { _filter: `based-on eq ${ref} or focus eq ${ref} or subject eq ${ref}`, _count }),
         ]);
       }}

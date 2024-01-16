@@ -1,42 +1,36 @@
-import { allOk, forbidden } from '@medplum/core';
-import { Project, ProjectMembership, Reference } from '@medplum/fhirtypes';
+import { allOk, ContentType, forbidden } from '@medplum/core';
 import { Request, Response, Router } from 'express';
-import { body, check, validationResult } from 'express-validator';
+import { body, check } from 'express-validator';
 import { asyncWrap } from '../async';
-import { invalidRequest, sendOutcome } from '../fhir/outcomes';
-import { systemRepo } from '../fhir/repo';
-import { authenticateToken } from '../oauth/middleware';
+import { sendOutcome } from '../fhir/outcomes';
+import { authenticateRequest } from '../oauth/middleware';
 import { sendEmail } from './email';
+import { getAuthenticatedContext } from '../context';
+import { makeValidationMiddleware } from '../util/validator';
 
 export const emailRouter = Router();
-emailRouter.use(authenticateToken);
+emailRouter.use(authenticateRequest);
 
-const sendEmailValidators = [
-  check('content-type').equals('application/json'),
+const sendEmailValidator = makeValidationMiddleware([
+  check('content-type').equals(ContentType.JSON),
   body('to').notEmpty().withMessage('To is required'),
   body('subject').notEmpty().withMessage('Subject is required'),
-];
+]);
 
 emailRouter.post(
   '/send',
-  sendEmailValidators,
+  sendEmailValidator,
   asyncWrap(async (req: Request, res: Response) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      sendOutcome(res, invalidRequest(errors));
-      return;
-    }
+    const ctx = getAuthenticatedContext();
 
     // Make sure the user project has the email feature enabled
-    const project = await systemRepo.readReference(
-      (res.locals.membership as ProjectMembership).project as Reference<Project>
-    );
-    if (!project.features?.includes('email')) {
+    if (!ctx.project.features?.includes('email')) {
       sendOutcome(res, forbidden);
       return;
     }
 
-    await sendEmail(req.body);
+    // Use the user repository to enforce permission checks on email attachments
+    await sendEmail(ctx.repo, req.body);
     sendOutcome(res, allOk);
   })
 );

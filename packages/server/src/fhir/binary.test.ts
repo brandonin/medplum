@@ -1,6 +1,5 @@
+import { ContentType } from '@medplum/core';
 import express from 'express';
-import { mkdtempSync, rmSync } from 'fs';
-import { sep } from 'path';
 import { Duplex, Readable } from 'stream';
 import request from 'supertest';
 import zlib from 'zlib';
@@ -9,7 +8,6 @@ import { loadTestConfig } from '../config';
 import { initTestAuth } from '../test.setup';
 
 const app = express();
-const binaryDir = mkdtempSync(__dirname + sep + 'binary-');
 let accessToken: string;
 
 describe('Binary', () => {
@@ -21,14 +19,13 @@ describe('Binary', () => {
 
   afterAll(async () => {
     await shutdownApp();
-    rmSync(binaryDir, { recursive: true, force: true });
   });
 
   test('Create and read binary', async () => {
     const res = await request(app)
       .post('/fhir/R4/Binary')
       .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', 'text/plain')
+      .set('Content-Type', ContentType.TEXT)
       .send('Hello world');
     expect(res.status).toBe(201);
 
@@ -51,7 +48,7 @@ describe('Binary', () => {
     const res = await request(app)
       .post('/fhir/R4/Binary')
       .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', 'text/plain')
+      .set('Content-Type', ContentType.TEXT)
       .send('Hello world');
     expect(res.status).toBe(201);
 
@@ -59,7 +56,7 @@ describe('Binary', () => {
     const res2 = await request(app)
       .put('/fhir/R4/Binary/' + binary.id)
       .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', 'text/plain')
+      .set('Content-Type', ContentType.TEXT)
       .send('Hello world 2');
     expect(res2.status).toBe(200);
 
@@ -74,7 +71,7 @@ describe('Binary', () => {
     const res = await request(app)
       .post('/fhir/R4/Binary')
       .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', 'text/plain')
+      .set('Content-Type', ContentType.TEXT)
       .set('Origin', 'http://localhost:3000')
       .send('Hello world');
     expect(res.status).toBe(201);
@@ -85,7 +82,7 @@ describe('Binary', () => {
     const res = await request(app)
       .post('/fhir/R4/Binary')
       .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', 'text/plain')
+      .set('Content-Type', ContentType.TEXT)
       .set('Content-Encoding', 'fake')
       .send('Hello world');
     expect(res.status).toBe(400);
@@ -95,7 +92,7 @@ describe('Binary', () => {
     const res = await request(app)
       .post('/fhir/R4/Binary')
       .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', 'text/plain')
+      .set('Content-Type', ContentType.TEXT)
       .set('Content-Encoding', 'deflate')
       .send(await createBufferForStream('Hello world', zlib.createDeflate()));
     expect(res.status).toBe(201);
@@ -112,7 +109,7 @@ describe('Binary', () => {
     const res = await request(app)
       .post('/fhir/R4/Binary')
       .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', 'text/plain')
+      .set('Content-Type', ContentType.TEXT)
       .set('Content-Encoding', 'gzip')
       .send(await createBufferForStream('Hello world', zlib.createGzip()));
     expect(res.status).toBe(201);
@@ -129,7 +126,7 @@ describe('Binary', () => {
     const res = await request(app)
       .post('/fhir/R4/Binary')
       .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', 'text/plain')
+      .set('Content-Type', ContentType.TEXT)
       .send('Hello world');
     expect(res.status).toBe(201);
 
@@ -137,7 +134,7 @@ describe('Binary', () => {
     const res2 = await request(app)
       .put('/fhir/R4/Binary/' + binary.id)
       .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', 'text/plain')
+      .set('Content-Type', ContentType.TEXT)
       .set('Content-Encoding', 'gzip')
       .send(await createBufferForStream('Hello world 2', zlib.createGzip()));
     expect(res2.status).toBe(200);

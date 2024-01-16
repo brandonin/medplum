@@ -1,9 +1,8 @@
 import { Button, Center, Checkbox, Group, Stack, Title } from '@mantine/core';
 import { LoginAuthenticationResponse } from '@medplum/core';
-import React from 'react';
 import { Form } from '../Form/Form';
 import { Logo } from '../Logo/Logo';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
+import { useMedplum } from '@medplum/react-hooks';
 
 export interface ChooseScopeFormProps {
   login: string;
@@ -32,7 +31,7 @@ export function ChooseScopeForm(props: ChooseScopeFormProps): JSX.Element {
           <Title>Choose scope</Title>
         </Center>
         <Stack>
-          {(props.scope || 'openid').split(' ').map((scopeName: string) => (
+          {(props.scope ?? 'openid').split(' ').map((scopeName: string) => (
             <Checkbox key={scopeName} id={scopeName} name={scopeName} label={scopeName} defaultChecked />
           ))}
         </Stack>

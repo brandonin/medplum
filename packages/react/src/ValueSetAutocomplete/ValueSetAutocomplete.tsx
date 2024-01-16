@@ -1,17 +1,19 @@
-import { ElementDefinition, ValueSetExpansionContains } from '@medplum/fhirtypes';
-import React, { useCallback } from 'react';
+import { ValueSetExpandParams } from '@medplum/core';
+import { ValueSetExpansionContains } from '@medplum/fhirtypes';
+import { useMedplum } from '@medplum/react-hooks';
+import { useCallback } from 'react';
 import {
   AsyncAutocomplete,
   AsyncAutocompleteOption,
   AsyncAutocompleteProps,
 } from '../AsyncAutocomplete/AsyncAutocomplete';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
 
 export interface ValueSetAutocompleteProps
   extends Omit<AsyncAutocompleteProps<ValueSetExpansionContains>, 'loadOptions' | 'toKey' | 'toOption'> {
-  elementDefinition: ElementDefinition;
+  binding: string | undefined;
   creatable?: boolean;
   clearable?: boolean;
+  expandParams?: Partial<ValueSetExpandParams>;
 }
 
 function toKey(element: ValueSetExpansionContains): string {
@@ -46,20 +48,26 @@ function createValue(input: string): ValueSetExpansionContains {
 /**
  * A low-level component to autocomplete based on a FHIR Valueset.
  * This is the base component for CodeableConceptInput, CodingInput, and CodeInput.
- * @param props The ValueSetAutocomplete React props.
+ * @param props - The ValueSetAutocomplete React props.
  * @returns The ValueSetAutocomplete React node.
  */
 export function ValueSetAutocomplete(props: ValueSetAutocompleteProps): JSX.Element {
   const medplum = useMedplum();
-  const { elementDefinition, creatable, clearable, ...rest } = props;
+  const { binding, creatable, clearable, expandParams, ...rest } = props;
 
   const loadValues = useCallback(
     async (input: string, signal: AbortSignal): Promise<ValueSetExpansionContains[]> => {
-      if (!elementDefinition.binding) {
+      if (!binding) {
         return [];
       }
-      const system = elementDefinition.binding.valueSet as string;
-      const valueSet = await medplum.searchValueSet(system, input, { signal });
+      const valueSet = await medplum.valueSetExpand(
+        {
+          ...expandParams,
+          url: binding,
+          filter: input,
+        },
+        { signal }
+      );
       const valueSetElements = valueSet.expansion?.contains as ValueSetExpansionContains[];
       const newData: ValueSetExpansionContains[] = [];
       for (const valueSetElement of valueSetElements) {
@@ -70,7 +78,7 @@ export function ValueSetAutocomplete(props: ValueSetAutocompleteProps): JSX.Elem
 
       return newData;
     },
-    [medplum, elementDefinition]
+    [medplum, expandParams, binding]
   );
 
   return (

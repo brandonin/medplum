@@ -1,14 +1,13 @@
+import { ActionIcon, Box, CopyButton, Tooltip } from '@mantine/core';
 import {
+  InternalSchemaElement,
+  PropertyType,
   formatDateTime,
   formatPeriod,
   formatTiming,
-  getElementDefinitionTypeName,
-  getTypedPropertyValue,
-  PropertyType,
-  TypedValue,
+  isEmpty,
 } from '@medplum/core';
-import { ElementDefinition } from '@medplum/fhirtypes';
-import React from 'react';
+import { IconCheck, IconCopy } from '@tabler/icons-react';
 import { AddressDisplay } from '../AddressDisplay/AddressDisplay';
 import { AttachmentArrayDisplay } from '../AttachmentArrayDisplay/AttachmentArrayDisplay';
 import { AttachmentDisplay } from '../AttachmentDisplay/AttachmentDisplay';
@@ -27,8 +26,8 @@ import { ReferenceDisplay } from '../ReferenceDisplay/ReferenceDisplay';
 import { ResourceArrayDisplay } from '../ResourceArrayDisplay/ResourceArrayDisplay';
 
 export interface ResourcePropertyDisplayProps {
-  property?: ElementDefinition;
-  propertyType: PropertyType;
+  property?: InternalSchemaElement;
+  propertyType: string;
   value: any;
   arrayElement?: boolean;
   maxWidth?: number;
@@ -38,13 +37,33 @@ export interface ResourcePropertyDisplayProps {
 
 /**
  * Low-level component that renders a property from a given resource, given type information.
- * @param props The ResourcePropertyDisplay React props.
+ * @param props - The ResourcePropertyDisplay React props.
  * @returns The ResourcePropertyDisplay React node.
  */
 export function ResourcePropertyDisplay(props: ResourcePropertyDisplayProps): JSX.Element {
   const { property, propertyType, value } = props;
 
-  if (property?.max === '*' && !props.arrayElement) {
+  const isIdProperty = property?.path?.endsWith('.id');
+  if (isIdProperty) {
+    return (
+      <Box component="div" sx={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+        {value}
+        {!isEmpty(value) && (
+          <CopyButton value={value} timeout={2000}>
+            {({ copied, copy }) => (
+              <Tooltip label={copied ? 'Copied' : 'Copy'} withArrow position="right">
+                <ActionIcon color={copied ? 'teal' : 'gray'} onClick={copy}>
+                  {copied ? <IconCheck size="1rem" /> : <IconCopy size="1rem" />}
+                </ActionIcon>
+              </Tooltip>
+            )}
+          </CopyButton>
+        )}
+      </Box>
+    );
+  }
+
+  if (property?.max && property.max > 1 && !props.arrayElement) {
     if (propertyType === PropertyType.Attachment) {
       return <AttachmentArrayDisplay values={value} maxWidth={props.maxWidth} />;
     }
@@ -66,6 +85,8 @@ export function ResourcePropertyDisplay(props: ResourcePropertyDisplayProps): JS
       return <div style={{ whiteSpace: 'pre-wrap' }}>{value}</div>;
     case PropertyType.code:
     case PropertyType.date:
+    case PropertyType.decimal:
+    case PropertyType.id:
     case PropertyType.integer:
     case PropertyType.positiveInt:
     case PropertyType.unsignedInt:
@@ -122,38 +143,15 @@ export function ResourcePropertyDisplay(props: ResourcePropertyDisplayProps): JS
         />
       );
     default:
-      if (!property?.path) {
-        throw Error(`Displaying property of type ${props.propertyType} requires element definition path`);
+      if (!property) {
+        throw Error(`Displaying property of type ${props.propertyType} requires element schema`);
       }
       return (
         <BackboneElementDisplay
-          value={{ type: getElementDefinitionTypeName(property), value }}
+          value={{ type: property.type[0].code, value }}
           compact={true}
           ignoreMissingValues={props.ignoreMissingValues}
         />
       );
   }
-}
-
-/**
- * Returns the value of the property and the property type.
- * Some property definitions support multiple types.
- * For example, "Observation.value[x]" can be "valueString", "valueInteger", "valueQuantity", etc.
- * According to the spec, there can only be one property for a given element definition.
- * This function returns the value and the type.
- * @param context The base context (usually a FHIR resource).
- * @param path The property path.
- * @returns The value of the property and the property type.
- */
-export function getValueAndType(context: TypedValue, path: string): [any, PropertyType] {
-  const typedResult = getTypedPropertyValue(context, path);
-  if (!typedResult) {
-    return [undefined, 'undefined' as PropertyType];
-  }
-
-  if (Array.isArray(typedResult)) {
-    return [typedResult.map((e) => e.value), typedResult[0].type as PropertyType];
-  }
-
-  return [typedResult.value, typedResult.type as PropertyType];
 }

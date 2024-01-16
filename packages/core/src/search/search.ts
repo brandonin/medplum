@@ -1,6 +1,7 @@
 import { Resource, ResourceType, SearchParameter } from '@medplum/fhirtypes';
-import { globalSchema } from '../types';
+import { evalFhirPathTyped } from '../fhirpath/parse';
 import { OperationOutcomeError, badRequest } from '../outcomes';
+import { TypedValue, globalSchema, stringifyTypedValue } from '../types';
 
 export const DEFAULT_SEARCH_COUNT = 20;
 
@@ -15,14 +16,13 @@ export interface SearchRequest<T extends Resource = Resource> {
   total?: 'none' | 'estimate' | 'accurate';
   include?: IncludeTarget[];
   revInclude?: IncludeTarget[];
+  summary?: 'true' | 'text' | 'data';
 }
 
 export interface Filter {
   code: string;
   operator: Operator;
   value: string;
-  unitSystem?: string;
-  unitCode?: string;
 }
 
 export interface SortRule {
@@ -120,8 +120,8 @@ const PREFIX_OPERATORS: Record<string, Operator> = {
 
 /**
  * Parses a search URL into a search request.
- * @param resourceType The FHIR resource type.
- * @param query The collection of query string parameters.
+ * @param resourceType - The FHIR resource type.
+ * @param query - The collection of query string parameters.
  * @returns A parsed SearchRequest.
  */
 export function parseSearchRequest<T extends Resource = Resource>(
@@ -135,7 +135,7 @@ export function parseSearchRequest<T extends Resource = Resource>(
         queryArray.push([key, v]);
       }
     } else {
-      queryArray.push([key, value || '']);
+      queryArray.push([key, value ?? '']);
     }
   }
   return parseSearchImpl(resourceType, queryArray);
@@ -143,17 +143,22 @@ export function parseSearchRequest<T extends Resource = Resource>(
 
 /**
  * Parses a search URL into a search request.
- * @param url The search URL.
+ * @param url - The search URL.
  * @returns A parsed SearchRequest.
  */
 export function parseSearchUrl<T extends Resource = Resource>(url: URL): SearchRequest<T> {
-  const resourceType = url.pathname.split('/').filter(Boolean).pop() as ResourceType;
-  return parseSearchImpl<T>(resourceType, url.searchParams.entries());
+  let resourceType;
+  for (const part of url.pathname.split('/')) {
+    if (part) {
+      resourceType = part;
+    }
+  }
+  return parseSearchImpl<T>(resourceType as ResourceType, url.searchParams.entries());
 }
 
 /**
  * Parses a URL string into a SearchRequest.
- * @param url The URL to parse.
+ * @param url - The URL to parse.
  * @returns Parsed search definition.
  */
 export function parseSearchDefinition<T extends Resource = Resource>(url: string): SearchRequest<T> {
@@ -163,7 +168,7 @@ export function parseSearchDefinition<T extends Resource = Resource>(url: string
 /**
  * Parses a FHIR criteria string into a SearchRequest.
  * FHIR criteria strings are found on resources such as Subscription.
- * @param criteria The FHIR criteria string.
+ * @param criteria - The FHIR criteria string.
  * @returns Parsed search definition.
  */
 export function parseCriteriaAsSearchRequest(criteria: string): SearchRequest {
@@ -172,7 +177,7 @@ export function parseCriteriaAsSearchRequest(criteria: string): SearchRequest {
 
 function parseSearchImpl<T extends Resource = Resource>(
   resourceType: T['resourceType'],
-  query: [string, string][] | IterableIterator<[string, string]>
+  query: Iterable<[string, string]>
 ): SearchRequest<T> {
   const searchRequest: SearchRequest<T> = {
     resourceType,
@@ -198,6 +203,11 @@ function parseKeyValue(searchRequest: SearchRequest, key: string, value: string)
     modifier = '';
   }
 
+  if (code === '_has' || key.includes('.')) {
+    addFilter(searchRequest, { code: key, operator: Operator.EQUALS, value });
+    return;
+  }
+
   switch (code) {
     case '_sort':
       parseSortRule(searchRequest, value);
@@ -216,8 +226,12 @@ function parseKeyValue(searchRequest: SearchRequest, key: string, value: string)
       break;
 
     case '_summary':
-      searchRequest.total = 'accurate';
-      searchRequest.count = 0;
+      if (value === 'count') {
+        searchRequest.total = 'accurate';
+        searchRequest.count = 0;
+      } else if (value === 'true' || value === 'data' || value === 'text') {
+        searchRequest.summary = value;
+      }
       break;
 
     case '_include': {
@@ -247,15 +261,16 @@ function parseKeyValue(searchRequest: SearchRequest, key: string, value: string)
     }
 
     case '_fields':
+    case '_elements':
       searchRequest.fields = value.split(',');
       break;
 
     default: {
       const param = globalSchema.types[searchRequest.resourceType]?.searchParams?.[code];
       if (param) {
-        parseParameter(searchRequest, param, modifier, value);
+        addFilter(searchRequest, parseParameter(param, modifier, value));
       } else {
-        parseUnknownParameter(searchRequest, code, modifier, value);
+        addFilter(searchRequest, parseUnknownParameter(code, modifier, value));
       }
     }
   }
@@ -278,74 +293,47 @@ function parseSortRule(searchRequest: SearchRequest, value: string): void {
   }
 }
 
-function parseParameter(
-  searchRequest: SearchRequest,
-  searchParam: SearchParameter,
-  modifier: string,
-  value: string
-): void {
+export function parseParameter(searchParam: SearchParameter, modifier: string, value: string): Filter {
   if (modifier === 'missing') {
-    addFilter(searchRequest, {
+    return {
       code: searchParam.code as string,
       operator: Operator.MISSING,
       value,
-    });
-    return;
+    };
   }
   switch (searchParam.type) {
     case 'number':
     case 'date':
-      parsePrefixType(searchRequest, searchParam, value);
-      break;
+    case 'quantity':
+      return parsePrefixType(searchParam, value);
     case 'reference':
     case 'string':
     case 'token':
     case 'uri':
-      parseModifierType(searchRequest, searchParam, modifier, value);
-      break;
-    case 'quantity':
-      parseQuantity(searchRequest, searchParam, value);
-      break;
+      return parseModifierType(searchParam, modifier, value);
     default:
-      break;
+      throw new Error('Unrecognized search parameter type: ' + searchParam.type);
   }
 }
 
-function parsePrefixType(searchRequest: SearchRequest, param: SearchParameter, input: string): void {
+function parsePrefixType(param: SearchParameter, input: string): Filter {
   const { operator, value } = parsePrefix(input);
-  addFilter(searchRequest, {
+  return {
     code: param.code as string,
     operator,
     value,
-  });
+  };
 }
 
-function parseModifierType(
-  searchRequest: SearchRequest,
-  param: SearchParameter,
-  modifier: string,
-  value: string
-): void {
-  addFilter(searchRequest, {
+function parseModifierType(param: SearchParameter, modifier: string, value: string): Filter {
+  return {
     code: param.code as string,
     operator: parseModifier(modifier),
     value,
-  });
+  };
 }
 
-function parseQuantity(searchRequest: SearchRequest, param: SearchParameter, input: string): void {
-  const [prefixNumber, unitSystem, unitCode] = input.split('|');
-  const { operator, value } = parsePrefix(prefixNumber);
-  addFilter(searchRequest, {
-    code: param.code as string,
-    operator,
-    value,
-    unitSystem,
-    unitCode,
-  });
-}
-
-function parseUnknownParameter(searchRequest: SearchRequest, code: string, modifier: string, value: string): void {
+function parseUnknownParameter(code: string, modifier: string, value: string): Filter {
   let operator = Operator.EQUALS;
   if (modifier) {
     operator = modifier as Operator;
@@ -358,12 +346,7 @@ function parseUnknownParameter(searchRequest: SearchRequest, code: string, modif
       }
     }
   }
-
-  addFilter(searchRequest, {
-    code,
-    operator,
-    value,
-  });
+  return { code, operator, value };
 }
 
 function parsePrefix(input: string): { operator: Operator; value: string } {
@@ -376,17 +359,15 @@ function parsePrefix(input: string): { operator: Operator; value: string } {
 }
 
 function parseModifier(modifier: string): Operator {
-  return MODIFIER_OPERATORS[modifier] || Operator.EQUALS;
+  return MODIFIER_OPERATORS[modifier] ?? Operator.EQUALS;
 }
 
 function parseIncludeTarget(input: string): IncludeTarget {
   const parts = input.split(':');
 
-  parts.forEach((p) => {
-    if (p === '*') {
-      throw new OperationOutcomeError(badRequest(`'*' is not supported as a value for search inclusion parameters`));
-    }
-  });
+  if (parts.includes('*')) {
+    throw new OperationOutcomeError(badRequest(`'*' is not supported as a value for search inclusion parameters`));
+  }
 
   if (parts.length === 1) {
     // Full wildcard, not currently supported
@@ -417,10 +398,40 @@ function addFilter(searchRequest: SearchRequest, filter: Filter): void {
   }
 }
 
+const subexpressionPattern = /{{([^{}]+)}}/g;
+
+/**
+ * Parses an extended FHIR search criteria string (i.e. application/x-fhir-query).
+ *
+ * @example Evaluating a FHIRPath subexpression
+ *
+ * ```typescript
+ * const query = 'Patient?name={{ %patient.name }}';
+ * const variables = { patient: { name: 'John Doe' } };
+ * const request = parseXFhirQuery(query, variables);
+ * console.log(request.filters[0].value); // "John Doe"
+ * ```
+ *
+ * @see https://hl7.org/fhir/fhir-xquery.html
+ * @param query - The X-Fhir-Query string to parse
+ * @param variables - Values to pass into embedded FHIRPath expressions
+ * @returns The parsed search request
+ */
+export function parseXFhirQuery(query: string, variables: Record<string, TypedValue>): SearchRequest {
+  query = query.replaceAll(subexpressionPattern, (_, expr) => {
+    const replacement = evalFhirPathTyped(expr, [], variables);
+    if (replacement.length !== 1) {
+      return '';
+    }
+    return stringifyTypedValue(replacement[0]);
+  });
+  return parseCriteriaAsSearchRequest(query);
+}
+
 /**
  * Formats a search definition object into a query string.
  * Note: The return value does not include the resource type.
- * @param definition The search definition.
+ * @param definition - The search definition.
  * @returns Formatted URL.
  */
 export function formatSearchQuery(definition: SearchRequest): string {
@@ -450,11 +461,19 @@ export function formatSearchQuery(definition: SearchRequest): string {
     params.push('_total=' + definition.total);
   }
 
+  if (definition.include) {
+    definition.include.forEach((target) => params.push(formatIncludeTarget('_include', target)));
+  }
+
+  if (definition.revInclude) {
+    definition.revInclude.forEach((target) => params.push(formatIncludeTarget('_revinclude', target)));
+  }
+
   if (params.length === 0) {
     return '';
   }
 
-  params.sort();
+  params.sort((a, b) => a.localeCompare(b));
   return '?' + params.join('&');
 }
 
@@ -466,4 +485,10 @@ function formatFilter(filter: Filter): string {
 
 function formatSortRules(sortRules: SortRule[]): string {
   return '_sort=' + sortRules.map((sr) => (sr.descending ? '-' + sr.code : sr.code)).join(',');
+}
+
+function formatIncludeTarget(kind: '_include' | '_revinclude', target: IncludeTarget): string {
+  return (
+    kind + '=' + target.resourceType + ':' + target.searchParam + (target.targetType ? ':' + target.targetType : '')
+  );
 }

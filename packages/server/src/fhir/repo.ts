@@ -1,85 +1,74 @@
 import {
+  AccessPolicyInteraction,
+  OperationOutcomeError,
+  Operator,
+  SearchParameterDetails,
+  SearchParameterType,
+  SearchRequest,
   allOk,
   badRequest,
   canReadResourceType,
   canWriteResourceType,
   deepEquals,
-  DEFAULT_SEARCH_COUNT,
   evalFhirPath,
   evalFhirPathTyped,
-  experimentalValidateResource,
-  FhirFilterComparison,
-  FhirFilterConnective,
-  FhirFilterExpression,
-  FhirFilterNegation,
-  Operator as FhirOperator,
-  Filter,
   forbidden,
   formatSearchQuery,
-  getReferenceString,
   getSearchParameterDetails,
+  getSearchParameters,
   getStatus,
   gone,
-  IncludeTarget,
   isGone,
   isNotFound,
   isOk,
-  isResource,
-  matchesAccessPolicy,
   normalizeErrorString,
   normalizeOperationOutcome,
   notFound,
-  OperationOutcomeError,
   parseCriteriaAsSearchRequest,
-  parseFilterParameter,
-  PropertyType,
   protectedResourceTypes,
-  publicResourceTypes,
   resolveId,
-  SearchParameterDetails,
-  SearchParameterType,
-  SearchRequest,
-  SortRule,
+  satisfiedAccessPolicy,
+  serverError,
   stringify,
   tooManyRequests,
-  toTypedValue,
   validateResource,
   validateResourceType,
 } from '@medplum/core';
 import { BaseRepository, FhirRepository } from '@medplum/fhir-router';
 import {
   AccessPolicy,
-  AccessPolicyResource,
   Bundle,
   BundleEntry,
-  BundleLink,
   Meta,
   OperationOutcome,
   Reference,
   Resource,
   ResourceType,
   SearchParameter,
+  StructureDefinition,
+  Subscription,
 } from '@medplum/fhirtypes';
 import { randomUUID } from 'crypto';
 import { Pool, PoolClient } from 'pg';
-import { applyPatch, Operation } from 'rfc6902';
+import { Operation, applyPatch } from 'rfc6902';
 import validator from 'validator';
 import { getConfig } from '../config';
+import { getRequestContext } from '../context';
 import { getClient } from '../database';
-import { logger } from '../logger';
 import { getRedis } from '../redis';
+import { r4ProjectId } from '../seed';
 import {
   AuditEventOutcome,
   AuditEventSubtype,
   CreateInteraction,
   DeleteInteraction,
   HistoryInteraction,
-  logRestfulEvent,
   PatchInteraction,
   ReadInteraction,
   SearchInteraction,
   UpdateInteraction,
   VreadInteraction,
+  logRestfulEvent,
 } from '../util/auditevent';
 import { addBackgroundJobs } from '../workers';
 import { addSubscriptionJobs } from '../workers/subscription';
@@ -87,25 +76,14 @@ import { validateResourceWithJsonSchema } from './jsonschema';
 import { AddressTable } from './lookups/address';
 import { HumanNameTable } from './lookups/humanname';
 import { LookupTable } from './lookups/lookuptable';
+import { ReferenceTable } from './lookups/reference';
 import { TokenTable } from './lookups/token';
-import { deriveIdentifierSearchParameter } from './lookups/util';
 import { ValueSetElementTable } from './lookups/valuesetelement';
-import { getPatient } from './patient';
+import { getPatients } from './patient';
 import { validateReferences } from './references';
-import { rewriteAttachments, RewriteMode } from './rewrite';
-import {
-  Column,
-  Condition,
-  Conjunction,
-  DeleteQuery,
-  Disjunction,
-  Expression,
-  InsertQuery,
-  Negation,
-  Operator,
-  SelectQuery,
-} from './sql';
-import { getSearchParameter, getSearchParameters } from './structure';
+import { RewriteMode, rewriteAttachments } from './rewrite';
+import { buildSearchExpression, getFullUrl, searchImpl } from './search';
+import { Condition, DeleteQuery, Disjunction, Expression, InsertQuery, SelectQuery } from './sql';
 
 /**
  * The RepositoryContext interface defines standard metadata for repository actions.
@@ -189,12 +167,8 @@ const lookupTables: LookupTable<unknown>[] = [
   new HumanNameTable(),
   new TokenTable(),
   new ValueSetElementTable(),
+  new ReferenceTable(),
 ];
-
-/**
- * Defines the maximum number of resources returned in a single search result.
- */
-const maxSearchResults = 1000;
 
 /**
  * The Repository class manages reading and writing to the FHIR repository.
@@ -224,7 +198,7 @@ export class Repository extends BaseRepository implements FhirRepository {
       this.logEvent(CreateInteraction, AuditEventOutcome.Success, undefined, result);
       return result;
     } catch (err) {
-      this.logEvent(CreateInteraction, AuditEventOutcome.MinorFailure, err);
+      this.logEvent(CreateInteraction, AuditEventOutcome.MinorFailure, err, resource);
       throw err;
     }
   }
@@ -270,7 +244,7 @@ export class Repository extends BaseRepository implements FhirRepository {
 
   private async readResourceFromDatabase<T extends Resource>(resourceType: string, id: string): Promise<T> {
     const client = getClient();
-    const builder = new SelectQuery(resourceType).column('content').column('deleted').where('id', Operator.EQUALS, id);
+    const builder = new SelectQuery(resourceType).column('content').column('deleted').where('id', '=', id);
 
     this.addSecurityFilters(builder, resourceType);
 
@@ -297,7 +271,7 @@ export class Repository extends BaseRepository implements FhirRepository {
     ) {
       return false;
     }
-    if (!this.matchesAccessPolicy(cacheEntry.resource, true)) {
+    if (!satisfiedAccessPolicy(cacheEntry.resource, AccessPolicyInteraction.READ, this.context.accessPolicy)) {
       return false;
     }
     return true;
@@ -364,8 +338,8 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Results are sorted with oldest versions last
    *
    * See: https://www.hl7.org/fhir/http.html#history
-   * @param resourceType The FHIR resource type.
-   * @param id The FHIR resource ID.
+   * @param resourceType - The FHIR resource type.
+   * @param id - The FHIR resource ID.
    * @returns Operation outcome and a history bundle.
    */
   async readHistory<T extends Resource>(resourceType: string, id: string): Promise<Bundle<T>> {
@@ -385,7 +359,7 @@ export class Repository extends BaseRepository implements FhirRepository {
         .column('id')
         .column('content')
         .column('lastUpdated')
-        .where('id', Operator.EQUALS, id)
+        .where('id', '=', id)
         .orderBy('lastUpdated', true)
         .limit(100)
         .execute(client);
@@ -410,7 +384,7 @@ export class Repository extends BaseRepository implements FhirRepository {
               ],
             };
         entries.push({
-          fullUrl: this.getFullUrl(resourceType, row.id),
+          fullUrl: getFullUrl(resourceType, row.id),
           request: {
             method: 'GET',
             url: `${resourceType}/${row.id}/_history/${row.versionId}`,
@@ -441,13 +415,19 @@ export class Repository extends BaseRepository implements FhirRepository {
         throw new OperationOutcomeError(notFound);
       }
 
-      await this.readResourceImpl<T>(resourceType, id);
+      try {
+        await this.readResourceImpl<T>(resourceType, id);
+      } catch (err) {
+        if (!isGone(normalizeOperationOutcome(err))) {
+          throw err;
+        }
+      }
 
       const client = getClient();
       const rows = await new SelectQuery(resourceType + '_History')
         .column('content')
-        .where('id', Operator.EQUALS, id)
-        .where('versionId', Operator.EQUALS, vid)
+        .where('id', '=', id)
+        .where('versionId', '=', vid)
         .execute(client);
 
       if (rows.length === 0) {
@@ -469,7 +449,7 @@ export class Repository extends BaseRepository implements FhirRepository {
       this.logEvent(UpdateInteraction, AuditEventOutcome.Success, undefined, result);
       return result;
     } catch (err) {
-      this.logEvent(UpdateInteraction, AuditEventOutcome.MinorFailure, err);
+      this.logEvent(UpdateInteraction, AuditEventOutcome.MinorFailure, err, resource);
       throw err;
     }
   }
@@ -479,30 +459,22 @@ export class Repository extends BaseRepository implements FhirRepository {
     if (!id) {
       throw new OperationOutcomeError(badRequest('Missing id'));
     }
-
     if (!validator.isUUID(id)) {
       throw new OperationOutcomeError(badRequest('Invalid id'));
     }
-    this.validate(resource);
-
-    if (this.context.checkReferencesOnWrite) {
-      await validateReferences(this, resource);
-    }
+    await this.validateResource(resource);
 
     if (!this.canWriteResourceType(resourceType)) {
       throw new OperationOutcomeError(forbidden);
     }
 
     const existing = await this.checkExistingResource<T>(resourceType, id, create);
-
     if (await this.isTooManyVersions(resourceType, id, create)) {
       throw new OperationOutcomeError(tooManyRequests);
     }
-
     if (existing) {
       (existing.meta as Meta).compartment = this.getCompartments(existing);
-
-      if (!this.canWriteResource(existing)) {
+      if (!this.canWriteToResource(existing)) {
         // Check before the update
         throw new OperationOutcomeError(forbidden);
       }
@@ -510,10 +482,6 @@ export class Repository extends BaseRepository implements FhirRepository {
 
     const updated = await rewriteAttachments<T>(RewriteMode.REFERENCE, this, {
       ...this.restoreReadonlyFields(resource, existing),
-      meta: {
-        ...existing?.meta,
-        ...resource.meta,
-      },
     });
 
     const resultMeta = {
@@ -522,84 +490,155 @@ export class Repository extends BaseRepository implements FhirRepository {
       lastUpdated: this.getLastUpdated(existing, resource),
       author: this.getAuthor(resource),
     };
-
     const result: T = { ...updated, meta: resultMeta };
 
-    const project = this.getProjectId(updated);
+    const project = this.getProjectId(existing, updated);
     if (project) {
       resultMeta.project = project;
     }
-
     const account = await this.getAccount(existing, updated, create);
     if (account) {
       resultMeta.account = account;
     }
-
     resultMeta.compartment = this.getCompartments(result);
+
+    if (this.context.checkReferencesOnWrite) {
+      await validateReferences(result);
+    }
 
     if (this.isNotModified(existing, result)) {
       return existing as T;
     }
 
-    if (!this.canWriteResource(result)) {
+    if (!this.isResourceWriteable(existing, result)) {
       // Check after the update
       throw new OperationOutcomeError(forbidden);
     }
 
-    if (!this.isCacheOnly(result)) {
-      await this.writeToDatabase(result);
-    }
-
+    await this.handleMaybeCacheOnly(result);
     await setCacheEntry(result);
     await addBackgroundJobs(result, { interaction: create ? 'create' : 'update' });
     this.removeHiddenFields(result);
     return result;
   }
 
-  private validate(resource: Resource): void {
-    let currentErr, experimentErr;
-    let currentTime = 0n;
-    let experimentTime = 0n;
-    if (this.context.strictMode) {
-      try {
-        const start = process.hrtime.bigint();
-        validateResource(resource);
-        currentTime = process.hrtime.bigint() - start;
-      } catch (err) {
-        currentErr = err;
+  private async handleMaybeCacheOnly(result: Resource): Promise<void> {
+    if (!this.isCacheOnly(result)) {
+      await this.writeToDatabase(result);
+    } else if (result.resourceType === 'Subscription' && result.channel?.type === 'websocket') {
+      const redis = getRedis();
+      const project = result?.meta?.project;
+      if (!project) {
+        throw new OperationOutcomeError(serverError(new Error('No project connected to the specified Subscription.')));
       }
-      try {
-        const start = process.hrtime.bigint();
-        experimentalValidateResource(resource);
-        experimentTime = process.hrtime.bigint() - start;
-      } catch (err) {
-        experimentErr = err;
+      // WebSocket Subscriptions are also cache-only, but also need to be added to a special cache key
+      const currentWsSubscriptionsStr = await redis.get(`medplum:subscriptions:r4:project:${project}`);
+      const currentWsSubscriptions = (
+        currentWsSubscriptionsStr ? JSON.parse(currentWsSubscriptionsStr) : []
+      ) as Subscription[];
+      const existingIdx = currentWsSubscriptions.findIndex(
+        (sub: Subscription) => (sub.id as string) === (result.id as string)
+      );
+      if (existingIdx !== -1) {
+        currentWsSubscriptions[existingIdx] = result;
+      } else {
+        currentWsSubscriptions.push(result);
+      }
+      await redis.set(`medplum:subscriptions:r4:project:${project}`, JSON.stringify(currentWsSubscriptions));
+    }
+  }
+
+  private async validateResource(resource: Resource): Promise<void> {
+    if (this.context.strictMode) {
+      const start = process.hrtime.bigint();
+      const profileUrls = resource.meta?.profile;
+      validateResource(resource);
+      if (profileUrls) {
+        await this.validateProfiles(resource, profileUrls);
       }
 
-      if (Boolean(currentErr) !== Boolean(experimentErr)) {
-        logger.warn(
-          `Experimental validator deviation on ${resource.resourceType}/${resource.id}: current=${currentErr}; next=${experimentErr}`
-        );
-      } else {
-        const MILLISECONDS = 1e6; // Conversion factor from ns to ms
-        const timeDiff = currentTime && experimentTime ? experimentTime - currentTime : 0n;
-        // Log if experiment is more than 25% / 0.5ms slower
-        if (timeDiff / currentTime > 0.25 && timeDiff > 0.5 * MILLISECONDS) {
-          logger.warn(`Experimental validator latency: current=${currentTime}; next=${experimentTime}`);
-        }
-      }
-      if (currentErr) {
-        throw currentErr as Error;
+      const elapsedTime = Number(process.hrtime.bigint() - start);
+      const MILLISECONDS = 1e6; // Conversion factor from ns to ms
+      if (elapsedTime > 10 * MILLISECONDS) {
+        const ctx = getRequestContext();
+        ctx.logger.debug('High validator latency', {
+          resourceType: resource.resourceType,
+          id: resource.id,
+          time: elapsedTime / MILLISECONDS,
+        });
       }
     } else {
       validateResourceWithJsonSchema(resource);
     }
   }
 
+  private async validateProfiles(resource: Resource, profileUrls: string[]): Promise<void> {
+    for (const url of profileUrls) {
+      const loadStart = process.hrtime.bigint();
+      const profile = await this.loadProfile(url);
+      const loadTime = Number(process.hrtime.bigint() - loadStart);
+      const ctx = getRequestContext();
+      if (!profile) {
+        ctx.logger.warn('Unknown profile referenced', {
+          resource: `${resource.resourceType}/${resource.id}`,
+          url,
+        });
+        continue;
+      }
+      const validateStart = process.hrtime.bigint();
+      validateResource(resource, profile);
+      const validateTime = Number(process.hrtime.bigint() - validateStart);
+      ctx.logger.debug('Profile loaded', {
+        url,
+        loadTime,
+        validateTime,
+      });
+    }
+  }
+
+  private async loadProfile(url: string): Promise<StructureDefinition | undefined> {
+    const redis = getRedis();
+    const cacheKey = `Project/${this.context.project}/StructureDefinition/${url}`;
+    // Try retrieving from cache
+    const cachedProfile = await redis.get(cacheKey);
+    if (cachedProfile) {
+      return (JSON.parse(cachedProfile) as CacheEntry<StructureDefinition>).resource;
+    }
+
+    // Fall back to loading from the DB; descending version sort approximates version resolution for some cases
+    const profile = await this.searchOne<StructureDefinition>({
+      resourceType: 'StructureDefinition',
+      filters: [
+        {
+          code: 'url',
+          operator: Operator.EQUALS,
+          value: url,
+        },
+      ],
+      sortRules: [
+        {
+          code: 'version',
+          descending: true,
+        },
+      ],
+    });
+
+    if (profile) {
+      // Store loaded profile in cache
+      await redis.set(
+        cacheKey,
+        JSON.stringify({ resource: profile, projectId: profile.meta?.project }),
+        'EX',
+        24 * 60 * 60 // 24 hours in seconds
+      );
+    }
+    return profile;
+  }
+
   /**
    * Writes the resource to the database.
    * This is a single atomic operation inside of a transaction.
-   * @param resource The resource to write to the database.
+   * @param resource - The resource to write to the database.
    */
   private async writeToDatabase<T extends Resource>(resource: T): Promise<void> {
     // Note: We don't try/catch this because if connecting throws an exception.
@@ -608,9 +647,11 @@ export class Repository extends BaseRepository implements FhirRepository {
     const client = await getClient().connect();
     try {
       await client.query('BEGIN');
-      await this.writeResource(client, resource);
-      await this.writeResourceVersion(client, resource);
-      await this.writeLookupTables(client, resource);
+      await Promise.all([
+        this.writeResource(client, resource),
+        this.writeResourceVersion(client, resource),
+        this.writeLookupTables(client, resource),
+      ]);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');
@@ -627,9 +668,9 @@ export class Repository extends BaseRepository implements FhirRepository {
    *  - Previous version was deleted, and user is restoring it
    *  - Previous version does not exist, and user does not have permission to create by ID
    *  - Previous version does not exist, and user does have permission to create by ID
-   * @param resourceType The FHIR resource type.
-   * @param id The resource ID.
-   * @param create Flag for "creating" vs "updating".
+   * @param resourceType - The FHIR resource type.
+   * @param id - The resource ID.
+   * @param create - Flag for "creating" vs "updating".
    * @returns The existing resource, if found.
    */
   private async checkExistingResource<T extends Resource>(
@@ -658,9 +699,9 @@ export class Repository extends BaseRepository implements FhirRepository {
 
   /**
    * Returns true if the resource has too many versions within the specified time period.
-   * @param resourceType The resource type.
-   * @param id The resource ID.
-   * @param create If true, then the resource is being created.
+   * @param resourceType - The resource type.
+   * @param id - The resource ID.
+   * @param create - If true, then the resource is being created.
    * @returns True if the resource has too many versions within the specified time period.
    */
   private async isTooManyVersions(resourceType: string, id: string, create: boolean): Promise<boolean> {
@@ -672,16 +713,16 @@ export class Repository extends BaseRepository implements FhirRepository {
     const client = getClient();
     const rows = await new SelectQuery(resourceType + '_History')
       .raw(`COUNT (DISTINCT "versionId")::int AS "count"`)
-      .where('id', Operator.EQUALS, id)
-      .where('lastUpdated', Operator.GREATER_THAN, new Date(Date.now() - 1000 * seconds))
+      .where('id', '=', id)
+      .where('lastUpdated', '>', new Date(Date.now() - 1000 * seconds))
       .execute(client);
-    return (rows[0].count as number) >= maxVersions;
+    return rows[0].count >= maxVersions;
   }
 
   /**
    * Returns true if the resource is not modified from the existing resource.
-   * @param existing The existing resource.
-   * @param updated The updated resource.
+   * @param existing - The existing resource.
+   * @param updated - The updated resource.
    * @returns True if the resource is not modified.
    */
   private isNotModified(existing: Resource | undefined, updated: Resource): boolean {
@@ -699,7 +740,7 @@ export class Repository extends BaseRepository implements FhirRepository {
   /**
    * Rebuilds compartments for all resources of the specified type.
    * This is only available to super admins.
-   * @param resourceType The resource type.
+   * @param resourceType - The resource type.
    */
   async rebuildCompartmentsForResourceType(resourceType: string): Promise<void> {
     if (!this.isSuperAdmin()) {
@@ -716,7 +757,9 @@ export class Repository extends BaseRepository implements FhirRepository {
         (resource.meta as Meta).compartment = this.getCompartments(resource);
         await this.updateResourceImpl(JSON.parse(row.content) as Resource, false);
       } catch (err) {
-        logger.error('Failed to rebuild compartments for resource', normalizeErrorString(err));
+        getRequestContext().logger.error('Failed to rebuild compartments for resource', {
+          error: normalizeErrorString(err),
+        });
       }
     });
   }
@@ -725,7 +768,7 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Reindexes all resources of the specified type.
    * This is only available to the system account.
    * This should not result in any change to resources or history.
-   * @param resourceType The resource type.
+   * @param resourceType - The resource type.
    */
   async reindexResourceType(resourceType: string): Promise<void> {
     if (!this.isSuperAdmin()) {
@@ -740,7 +783,7 @@ export class Repository extends BaseRepository implements FhirRepository {
       try {
         await this.reindexResourceImpl(JSON.parse(row.content) as Resource);
       } catch (err) {
-        logger.error('Failed to reindex resource', normalizeErrorString(err));
+        getRequestContext().logger.error('Failed to reindex resource', { error: normalizeErrorString(err) });
       }
     });
   }
@@ -749,8 +792,8 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Reindexes the resource.
    * This is only available to the system and super admin accounts.
    * This should not result in any change to the resource or its history.
-   * @param resourceType The resource type.
-   * @param id The resource ID.
+   * @param resourceType - The resource type.
+   * @param id - The resource ID.
    * @returns Promise to complete.
    */
   async reindexResource<T extends Resource>(resourceType: string, id: string): Promise<void> {
@@ -766,7 +809,7 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Internal implementation of reindexing a resource.
    * This accepts a resource as a parameter, rather than a resource type and ID.
    * When doing a bulk reindex, this will be more efficient because it avoids unnecessary reads.
-   * @param resource The resource.
+   * @param resource - The resource.
    * @returns The reindexed resource.
    */
   private async reindexResourceImpl<T extends Resource>(resource: T): Promise<void> {
@@ -778,8 +821,7 @@ export class Repository extends BaseRepository implements FhirRepository {
     const client = await getClient().connect();
     try {
       await client.query('BEGIN');
-      await this.writeResource(client, resource);
-      await this.writeLookupTables(client, resource);
+      await Promise.all([this.writeResource(client, resource), this.writeLookupTables(client, resource)]);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');
@@ -793,8 +835,8 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Resends subscriptions for the resource.
    * This is only available to the admin accounts.
    * This should not result in any change to the resource or its history.
-   * @param resourceType The resource type.
-   * @param id The resource ID.
+   * @param resourceType - The resource type.
+   * @param id - The resource ID.
    * @returns Promise to complete.
    */
   async resendSubscriptions<T extends Resource>(resourceType: string, id: string): Promise<void> {
@@ -810,7 +852,7 @@ export class Repository extends BaseRepository implements FhirRepository {
     try {
       const resource = await this.readResourceImpl(resourceType, id);
 
-      if (!this.canWriteResourceType(resourceType)) {
+      if (!this.canWriteResourceType(resourceType) || !this.isResourceWriteable(undefined, resource)) {
         throw new OperationOutcomeError(forbidden);
       }
 
@@ -835,7 +877,7 @@ export class Repository extends BaseRepository implements FhirRepository {
         }
       }
 
-      await new InsertQuery(resourceType, [columns]).mergeOnConflict(true).execute(client);
+      await new InsertQuery(resourceType, [columns]).mergeOnConflict().execute(client);
 
       await new InsertQuery(resourceType + '_History', [
         {
@@ -880,50 +922,48 @@ export class Repository extends BaseRepository implements FhirRepository {
   /**
    * Permanently deletes the specified resource and all of its history.
    * This is only available to the system and super admin accounts.
-   * @param resourceType The FHIR resource type.
-   * @param id The resource ID.
+   * @param resourceType - The FHIR resource type.
+   * @param id - The resource ID.
    */
   async expungeResource(resourceType: string, id: string): Promise<void> {
     if (!this.isSuperAdmin()) {
       throw new OperationOutcomeError(forbidden);
     }
-    await new DeleteQuery(resourceType).where('id', Operator.EQUALS, id).execute(getClient());
-    await new DeleteQuery(resourceType + '_History').where('id', Operator.EQUALS, id).execute(getClient());
+    await new DeleteQuery(resourceType).where('id', '=', id).execute(getClient());
+    await new DeleteQuery(resourceType + '_History').where('id', '=', id).execute(getClient());
     await deleteCacheEntry(resourceType, id);
   }
 
   /**
    * Permanently deletes the specified resources and all of its history.
    * This is only available to the system and super admin accounts.
-   * @param resourceType The FHIR resource type.
-   * @param ids The resource IDs.
+   * @param resourceType - The FHIR resource type.
+   * @param ids - The resource IDs.
    */
   async expungeResources(resourceType: string, ids: string[]): Promise<void> {
     if (!this.isSuperAdmin()) {
       throw new OperationOutcomeError(forbidden);
     }
-    await new DeleteQuery(resourceType).where('id', Operator.IN, ids).execute(getClient());
-    await new DeleteQuery(resourceType + '_History').where('id', Operator.IN, ids).execute(getClient());
+    await new DeleteQuery(resourceType).where('id', 'IN', ids).execute(getClient());
+    await new DeleteQuery(resourceType + '_History').where('id', 'IN', ids).execute(getClient());
     await deleteCacheEntries(resourceType, ids);
   }
 
   /**
    * Purges resources of the specified type that were last updated before the specified date.
    * This is only available to the system and super admin accounts.
-   * @param resourceType The FHIR resource type.
-   * @param before The date before which resources should be purged.
+   * @param resourceType - The FHIR resource type.
+   * @param before - The date before which resources should be purged.
    */
   async purgeResources(resourceType: ResourceType, before: string): Promise<void> {
     if (!this.isSuperAdmin()) {
       throw new OperationOutcomeError(forbidden);
     }
-    await new DeleteQuery(resourceType).where('lastUpdated', Operator.LESS_THAN_OR_EQUALS, before).execute(getClient());
-    await new DeleteQuery(resourceType + '_History')
-      .where('lastUpdated', Operator.LESS_THAN_OR_EQUALS, before)
-      .execute(getClient());
+    await new DeleteQuery(resourceType).where('lastUpdated', '<=', before).execute(getClient());
+    await new DeleteQuery(resourceType + '_History').where('lastUpdated', '<=', before).execute(getClient());
   }
 
-  async search<T extends Resource>(searchRequest: SearchRequest): Promise<Bundle<T>> {
+  async search<T extends Resource>(searchRequest: SearchRequest<T>): Promise<Bundle<T>> {
     try {
       const resourceType = searchRequest.resourceType;
       validateResourceType(resourceType);
@@ -932,35 +972,9 @@ export class Repository extends BaseRepository implements FhirRepository {
         throw new OperationOutcomeError(forbidden);
       }
 
-      // Ensure that "count" is set.
-      // Count is an optional field.  From this point on, it is safe to assume it is a number.
-      if (searchRequest.count === undefined) {
-        searchRequest.count = DEFAULT_SEARCH_COUNT;
-      } else if (searchRequest.count > maxSearchResults) {
-        searchRequest.count = maxSearchResults;
-      }
-
-      let entry = undefined;
-      let hasMore = false;
-      if (searchRequest.count > 0) {
-        ({ entry, hasMore } = await this.getSearchEntries<T>(searchRequest));
-      }
-
-      let total = undefined;
-      if (searchRequest.total === 'accurate') {
-        total = await this.getAccurateCount(searchRequest);
-      } else if (searchRequest.total === 'estimate') {
-        total = await this.getEstimateCount(searchRequest);
-      }
-
+      const result = await searchImpl(this, searchRequest);
       this.logEvent(SearchInteraction, AuditEventOutcome.Success, undefined, undefined, searchRequest);
-      return {
-        resourceType: 'Bundle',
-        type: 'searchset',
-        entry,
-        total,
-        link: this.getSearchLinks(searchRequest, hasMore),
-      };
+      return result;
     } catch (err) {
       this.logEvent(SearchInteraction, AuditEventOutcome.MinorFailure, err, undefined, searchRequest);
       throw err;
@@ -968,331 +982,42 @@ export class Repository extends BaseRepository implements FhirRepository {
   }
 
   /**
-   * Returns the bundle entries for a search request.
-   * @param searchRequest The search request.
-   * @returns The bundle entries for the search result.
-   */
-  private async getSearchEntries<T extends Resource>(
-    searchRequest: SearchRequest
-  ): Promise<{ entry: BundleEntry<T>[]; hasMore: boolean }> {
-    const resourceType = searchRequest.resourceType;
-    const client = getClient();
-    const builder = new SelectQuery(resourceType)
-      .column({ tableName: resourceType, columnName: 'id' })
-      .column({ tableName: resourceType, columnName: 'content' });
-
-    this.addSortRules(builder, searchRequest);
-    this.addDeletedFilter(builder);
-    this.addSecurityFilters(builder, resourceType);
-    this.addSearchFilters(builder, searchRequest);
-
-    if (builder.joins.length > 0) {
-      builder.groupBy({ tableName: resourceType, columnName: 'id' });
-    }
-
-    const count = searchRequest.count as number;
-    builder.limit(count + 1); // Request one extra to test if there are more results
-    builder.offset(searchRequest.offset || 0);
-
-    const rows = await builder.execute(client);
-    const resources = rows.slice(0, count).map((row) => JSON.parse(row.content as string)) as T[];
-    const entries = resources.map(
-      (resource) =>
-        ({
-          fullUrl: this.getFullUrl(resourceType, resource.id as string),
-          resource,
-        } as BundleEntry)
-    );
-
-    if (searchRequest.include || searchRequest.revInclude) {
-      let base = resources;
-      let iterateOnly = false;
-      const seen: Record<string, boolean> = {};
-      resources.forEach((r) => {
-        seen[`${r.resourceType}/${r.id}`] = true;
-      });
-      let depth = 0;
-      while (base.length > 0) {
-        // Circuit breaker / load limit
-        if (depth >= 5 || entries.length > 1000) {
-          throw new Error(
-            `Search with _(rev)include reached query scope limit: depth=${depth}, results=${entries.length}`
-          );
-        }
-
-        const includes =
-          searchRequest.include
-            ?.filter((param) => !iterateOnly || param.modifier === FhirOperator.ITERATE)
-            ?.map((param) => this.getSearchIncludeEntries(param, base)) || [];
-        const revincludes =
-          searchRequest.revInclude
-            ?.filter((param) => !iterateOnly || param.modifier === FhirOperator.ITERATE)
-            ?.map((param) => this.getSearchRevIncludeEntries(param, base)) || [];
-
-        const includedResources = (await Promise.all([...includes, ...revincludes])).flat();
-        includedResources.forEach((r) => {
-          const ref = `${r.resource?.resourceType}/${r.resource?.id}`;
-          if (!seen[ref]) {
-            entries.push(r);
-          }
-          seen[ref] = true;
-        });
-        base = includedResources.map((entry) => entry.resource) as T[];
-        iterateOnly = true; // Only consider :iterate params on iterations after the first
-        depth++;
-      }
-    }
-
-    for (const entry of entries) {
-      this.removeHiddenFields(entry.resource as Resource);
-    }
-
-    return {
-      entry: entries as BundleEntry<T>[],
-      hasMore: rows.length > count,
-    };
-  }
-
-  /**
-   * Returns bundle entries for the resources that are included in the search result.
-   *
-   * See documentation on _include: https://hl7.org/fhir/R4/search.html#include
-   * @param include The include parameter.
-   * @param resources The base search result resources.
-   * @returns The bundle entries for the included resources.
-   */
-  private async getSearchIncludeEntries(include: IncludeTarget, resources: Resource[]): Promise<BundleEntry[]> {
-    const searchParam = getSearchParameter(include.resourceType, include.searchParam);
-    if (!searchParam) {
-      throw new OperationOutcomeError(
-        badRequest(`Invalid include parameter: ${include.resourceType}:${include.searchParam}`)
-      );
-    }
-
-    const fhirPathResult = evalFhirPathTyped(searchParam.expression as string, resources.map(toTypedValue));
-
-    const references = fhirPathResult
-      .filter((typedValue) => (typedValue.type as PropertyType) === PropertyType.Reference)
-      .map((typedValue) => typedValue.value as Reference);
-    const readResult = await this.readReferences(references);
-    const includedResources = readResult.filter((e) => isResource(e as Resource | undefined)) as Resource[];
-
-    const canonicalReferences = fhirPathResult
-      .filter((typedValue) => [PropertyType.canonical, PropertyType.uri].includes(typedValue.type as PropertyType))
-      .map((typedValue) => typedValue.value as string);
-    if (canonicalReferences.length > 0) {
-      const canonicalSearches = (searchParam.target || []).map((resourceType) =>
-        this.searchResources({
-          resourceType: resourceType,
-          filters: [
-            {
-              code: 'url',
-              operator: FhirOperator.EQUALS,
-              value: canonicalReferences.join(','),
-            },
-          ],
-        })
-      );
-      (await Promise.all(canonicalSearches)).forEach((resources) => {
-        includedResources.push(...resources);
-      });
-    }
-
-    return includedResources.map(
-      (resource: Resource) =>
-        ({
-          fullUrl: this.getFullUrl(resource.resourceType, resource.id as string),
-          resource,
-        } as BundleEntry)
-    ) as BundleEntry[];
-  }
-
-  /**
-   * Returns bundle entries for the resources that are reverse included in the search result.
-   *
-   * See documentation on _revinclude: https://hl7.org/fhir/R4/search.html#revinclude
-   * @param revInclude The revInclude parameter.
-   * @param resources The base search result resources.
-   * @returns The bundle entries for the reverse included resources.
-   */
-  private async getSearchRevIncludeEntries(revInclude: IncludeTarget, resources: Resource[]): Promise<BundleEntry[]> {
-    const searchParam = getSearchParameter(revInclude.resourceType, revInclude.searchParam);
-    if (!searchParam) {
-      throw new OperationOutcomeError(
-        badRequest(`Invalid include parameter: ${revInclude.resourceType}:${revInclude.searchParam}`)
-      );
-    }
-
-    const paramDetails = getSearchParameterDetails(revInclude.resourceType, searchParam);
-    let value: string;
-    if (paramDetails.type === SearchParameterType.CANONICAL) {
-      value = resources
-        .map((r) => (r as any).url)
-        .filter((u) => u !== undefined)
-        .join(',');
-    } else {
-      value = resources.map(getReferenceString).join(',');
-    }
-
-    return (
-      await this.getSearchEntries({
-        resourceType: revInclude.resourceType as ResourceType,
-        filters: [
-          {
-            code: revInclude.searchParam,
-            operator: FhirOperator.EQUALS,
-            value: value,
-          },
-        ],
-      })
-    ).entry;
-  }
-
-  /**
-   * Returns the search bundle links for a search request.
-   * At minimum, the 'self' link will be returned.
-   * If "count" does not equal zero, then 'first', 'next', and 'previous' links will be included.
-   * @param searchRequest The search request.
-   * @param hasMore True if there are more entries after the current page.
-   * @returns The search bundle links.
-   */
-  private getSearchLinks(searchRequest: SearchRequest, hasMore: boolean | undefined): BundleLink[] {
-    const result: BundleLink[] = [
-      {
-        relation: 'self',
-        url: this.getSearchUrl(searchRequest),
-      },
-    ];
-
-    const count = searchRequest.count as number;
-    if (count > 0) {
-      const offset = searchRequest.offset || 0;
-
-      result.push({
-        relation: 'first',
-        url: this.getSearchUrl({ ...searchRequest, offset: 0 }),
-      });
-
-      if (hasMore) {
-        result.push({
-          relation: 'next',
-          url: this.getSearchUrl({ ...searchRequest, offset: offset + count }),
-        });
-      }
-
-      if (offset > 0) {
-        result.push({
-          relation: 'previous',
-          url: this.getSearchUrl({ ...searchRequest, offset: offset - count }),
-        });
-      }
-    }
-
-    return result;
-  }
-
-  private getFullUrl(resourceType: string, id: string): string {
-    return `${getConfig().baseUrl}fhir/R4/${resourceType}/${id}`;
-  }
-
-  private getSearchUrl(searchRequest: SearchRequest): string {
-    return `${getConfig().baseUrl}fhir/R4/${searchRequest.resourceType}${formatSearchQuery(searchRequest)}`;
-  }
-
-  /**
-   * Returns the total number of matching results for a search request.
-   * This ignores page number and page size.
-   * @param searchRequest The search request.
-   * @returns The total number of matching results.
-   */
-  private async getAccurateCount(searchRequest: SearchRequest): Promise<number> {
-    const client = getClient();
-    const builder = new SelectQuery(searchRequest.resourceType);
-    this.addDeletedFilter(builder);
-    this.addSecurityFilters(builder, searchRequest.resourceType);
-    this.addSearchFilters(builder, searchRequest);
-
-    if (builder.joins.length > 0) {
-      builder.raw(`COUNT (DISTINCT "${searchRequest.resourceType}"."id")::int AS "count"`);
-    } else {
-      builder.raw('COUNT("id")::int AS "count"');
-    }
-
-    const rows = await builder.execute(client);
-    return rows[0].count as number;
-  }
-
-  /**
-   * Returns the estimated number of matching results for a search request.
-   * This ignores page number and page size.
-   * This uses the estimated row count technique as described here: https://wiki.postgresql.org/wiki/Count_estimate
-   * @param searchRequest The search request.
-   * @returns The total number of matching results.
-   */
-  private async getEstimateCount(searchRequest: SearchRequest): Promise<number> {
-    const client = getClient();
-    const builder = new SelectQuery(searchRequest.resourceType);
-    this.addDeletedFilter(builder);
-    this.addSecurityFilters(builder, searchRequest.resourceType);
-    this.addSearchFilters(builder, searchRequest);
-    builder.raw(`DISTINCT "${searchRequest.resourceType}"."id"`);
-    builder.explain = true;
-
-    // See: https://wiki.postgresql.org/wiki/Count_estimate
-    // This parses the query plan to find the estimated number of rows.
-    const rows = await builder.execute(client);
-    for (const row of rows) {
-      const queryPlan = row['QUERY PLAN'];
-      const match = /rows=(\d+)/.exec(queryPlan);
-      if (match) {
-        return parseInt(match[1], 10);
-      }
-    }
-    return 0;
-  }
-
-  /**
    * Adds filters to ignore soft-deleted resources.
-   * @param builder The select query builder.
+   * @param builder - The select query builder.
    */
-  private addDeletedFilter(builder: SelectQuery): void {
-    builder.where('deleted', Operator.EQUALS, false);
+  addDeletedFilter(builder: SelectQuery): void {
+    builder.where('deleted', '=', false);
   }
 
   /**
    * Adds security filters to the select query.
-   * @param builder The select query builder.
-   * @param resourceType The resource type for compartments.
+   * @param builder - The select query builder.
+   * @param resourceType - The resource type for compartments.
    */
-  private addSecurityFilters(builder: SelectQuery, resourceType: string): void {
-    if (publicResourceTypes.includes(resourceType)) {
-      // No compartment restrictions for public resources.
-      return;
-    }
-
+  addSecurityFilters(builder: SelectQuery, resourceType: string): void {
     if (this.isSuperAdmin()) {
       // No compartment restrictions for admins.
       return;
     }
 
-    this.addProjectFilter(builder);
+    this.addProjectFilters(builder);
     this.addAccessPolicyFilters(builder, resourceType);
   }
 
   /**
    * Adds the "project" filter to the select query.
-   * @param builder The select query builder.
+   * @param builder - The select query builder.
    */
-  private addProjectFilter(builder: SelectQuery): void {
+  private addProjectFilters(builder: SelectQuery): void {
     if (this.context.project) {
-      builder.where('compartments', Operator.ARRAY_CONTAINS, [this.context.project], 'UUID[]');
+      builder.where('compartments', 'ARRAY_CONTAINS', [this.context.project, r4ProjectId], 'UUID[]');
     }
   }
 
   /**
    * Adds access policy filters to the select query.
-   * @param builder The select query builder.
-   * @param resourceType The resource type being searched.
+   * @param builder - The select query builder.
+   * @param resourceType - The resource type being searched.
    */
   private addAccessPolicyFilters(builder: SelectQuery, resourceType: string): void {
     if (!this.context.accessPolicy?.resource) {
@@ -1307,11 +1032,11 @@ export class Repository extends BaseRepository implements FhirRepository {
         if (policyCompartmentId) {
           // Deprecated - to be removed
           // Add compartment restriction for the access policy.
-          expressions.push(new Condition('compartments', Operator.ARRAY_CONTAINS, [policyCompartmentId], 'UUID[]'));
+          expressions.push(new Condition('compartments', 'ARRAY_CONTAINS', policyCompartmentId, 'UUID[]'));
         } else if (policy.criteria) {
           // Add subquery for access policy criteria.
           const searchRequest = parseCriteriaAsSearchRequest(policy.criteria);
-          const accessPolicyExpression = this.buildSearchExpression(builder, searchRequest);
+          const accessPolicyExpression = buildSearchExpression(builder, searchRequest);
           if (accessPolicyExpression) {
             expressions.push(accessPolicyExpression);
           }
@@ -1328,354 +1053,11 @@ export class Repository extends BaseRepository implements FhirRepository {
   }
 
   /**
-   * Adds all search filters as "WHERE" clauses to the query builder.
-   * @param selectQuery The select query builder.
-   * @param searchRequest The search request.
-   */
-  private addSearchFilters(selectQuery: SelectQuery, searchRequest: SearchRequest): void {
-    const expr = this.buildSearchExpression(selectQuery, searchRequest);
-    if (expr) {
-      selectQuery.predicate.expressions.push(expr);
-    }
-  }
-
-  private buildSearchExpression(selectQuery: SelectQuery, searchRequest: SearchRequest): Expression | undefined {
-    const expressions: Expression[] = [];
-    if (searchRequest.filters) {
-      for (const filter of searchRequest.filters) {
-        const expr = this.buildSearchFilterExpression(selectQuery, searchRequest, filter);
-        if (expr) {
-          expressions.push(expr);
-        }
-      }
-    }
-    if (expressions.length === 0) {
-      return undefined;
-    }
-    if (expressions.length === 1) {
-      return expressions[0];
-    }
-    return new Conjunction(expressions);
-  }
-
-  /**
-   * Builds a single search filter as "WHERE" clause to the query builder.
-   * @param selectQuery The select query builder.
-   * @param searchRequest The search request.
-   * @param filter The search filter.
-   * @returns The search query where expression
-   */
-  private buildSearchFilterExpression(
-    selectQuery: SelectQuery,
-    searchRequest: SearchRequest,
-    filter: Filter
-  ): Expression | undefined {
-    if (typeof filter.value !== 'string') {
-      throw new OperationOutcomeError(badRequest('Search filter value must be a string'));
-    }
-
-    const specialParamExpression = this.trySpecialSearchParameter(selectQuery, searchRequest, filter);
-    if (specialParamExpression) {
-      return specialParamExpression;
-    }
-
-    const resourceType = searchRequest.resourceType;
-    let param = getSearchParameter(resourceType, filter.code);
-    if (!param?.code) {
-      throw new OperationOutcomeError(badRequest(`Unknown search parameter: ${filter.code}`));
-    }
-
-    if (filter.operator === FhirOperator.IDENTIFIER) {
-      param = deriveIdentifierSearchParameter(param);
-      filter = {
-        ...filter,
-        code: param.code as string,
-        operator: FhirOperator.EQUALS,
-      };
-    }
-
-    const lookupTable = this.getLookupTable(resourceType, param);
-    if (lookupTable) {
-      return lookupTable.buildWhere(selectQuery, resourceType, filter);
-    }
-
-    // Not any special cases, just a normal search parameter.
-    return this.buildNormalSearchFilterExpression(resourceType, param, filter);
-  }
-
-  /**
-   * Builds a search filter expression for a normal search parameter.
-   *
-   * Not any special cases, just a normal search parameter.
-   * @param resourceType The FHIR resource type.
-   * @param param The FHIR search parameter.
-   * @param filter The search filter.
-   * @returns A SQL "WHERE" clause expression.
-   */
-  private buildNormalSearchFilterExpression(resourceType: string, param: SearchParameter, filter: Filter): Expression {
-    const details = getSearchParameterDetails(resourceType, param);
-    if (filter.operator === FhirOperator.MISSING) {
-      return new Condition(details.columnName, filter.value === 'true' ? Operator.EQUALS : Operator.NOT_EQUALS, null);
-    } else if (param.type === 'string') {
-      return this.buildStringSearchFilter(details, filter);
-    } else if (param.type === 'token' || param.type === 'uri') {
-      return this.buildTokenSearchFilter(resourceType, details, filter);
-    } else if (param.type === 'reference') {
-      return this.buildReferenceSearchFilter(details, filter);
-    } else if (param.type === 'date') {
-      return this.buildDateSearchFilter(details, filter);
-    } else if (param.type === 'quantity') {
-      return new Condition(details.columnName, fhirOperatorToSqlOperator(filter.operator), parseFloat(filter.value));
-    } else {
-      return new Condition(details.columnName, fhirOperatorToSqlOperator(filter.operator), filter.value);
-    }
-  }
-
-  /**
-   * Returns true if the search parameter code is a special search parameter.
-   *
-   * See: https://www.hl7.org/fhir/search.html#all
-   * @param selectQuery The select query builder.
-   * @param searchRequest The overall search request.
-   * @param filter The search filter.
-   * @returns True if the search parameter is a special code.
-   */
-  private trySpecialSearchParameter(
-    selectQuery: SelectQuery,
-    searchRequest: SearchRequest,
-    filter: Filter
-  ): Expression | undefined {
-    const resourceType = searchRequest.resourceType;
-    const code = filter.code;
-
-    if (code === '_id') {
-      return this.buildIdSearchFilter(resourceType, { columnName: 'id', type: SearchParameterType.UUID }, filter);
-    }
-
-    if (code === '_lastUpdated') {
-      return this.buildDateSearchFilter({ type: SearchParameterType.DATETIME, columnName: 'lastUpdated' }, filter);
-    }
-
-    if (code === '_compartment' || code === '_project') {
-      return this.buildIdSearchFilter(
-        resourceType,
-        { columnName: 'compartments', type: SearchParameterType.UUID, array: true },
-        filter
-      );
-    }
-
-    if (code === '_filter') {
-      return this.buildFilterParameterExpression(selectQuery, searchRequest, parseFilterParameter(filter.value));
-    }
-
-    return undefined;
-  }
-
-  private buildFilterParameterExpression(
-    selectQuery: SelectQuery,
-    searchRequest: SearchRequest,
-    filterExpression: FhirFilterExpression
-  ): Expression {
-    if (filterExpression instanceof FhirFilterNegation) {
-      return this.buildFilterParameterNegation(selectQuery, searchRequest, filterExpression);
-    } else if (filterExpression instanceof FhirFilterConnective) {
-      return this.buildFilterParameterConnective(selectQuery, searchRequest, filterExpression);
-    } else if (filterExpression instanceof FhirFilterComparison) {
-      return this.buildFilterParameterComparison(selectQuery, searchRequest, filterExpression);
-    } else {
-      throw new OperationOutcomeError(badRequest('Unknown filter expression type'));
-    }
-  }
-
-  private buildFilterParameterNegation(
-    selectQuery: SelectQuery,
-    searchRequest: SearchRequest,
-    filterNegation: FhirFilterNegation
-  ): Expression {
-    return new Negation(this.buildFilterParameterExpression(selectQuery, searchRequest, filterNegation.child));
-  }
-
-  private buildFilterParameterConnective(
-    selectQuery: SelectQuery,
-    searchRequest: SearchRequest,
-    filterConnective: FhirFilterConnective
-  ): Expression {
-    const expressions = [
-      this.buildFilterParameterExpression(selectQuery, searchRequest, filterConnective.left),
-      this.buildFilterParameterExpression(selectQuery, searchRequest, filterConnective.right),
-    ];
-    return filterConnective.keyword === 'and' ? new Conjunction(expressions) : new Disjunction(expressions);
-  }
-
-  private buildFilterParameterComparison(
-    selectQuery: SelectQuery,
-    searchRequest: SearchRequest,
-    filterComparison: FhirFilterComparison
-  ): Expression {
-    return this.buildSearchFilterExpression(selectQuery, searchRequest, {
-      code: filterComparison.path,
-      operator: filterComparison.operator as FhirOperator,
-      value: filterComparison.value,
-    }) as Expression;
-  }
-
-  /**
-   * Adds a string search filter as "WHERE" clause to the query builder.
-   * @param details The search parameter details.
-   * @param filter The search filter.
-   * @returns The select query condition.
-   */
-  private buildStringSearchFilter(details: SearchParameterDetails, filter: Filter): Expression {
-    if (filter.operator === FhirOperator.EXACT) {
-      return new Condition(details.columnName, Operator.EQUALS, filter.value);
-    }
-    return new Condition(details.columnName, Operator.LIKE, '%' + filter.value + '%');
-  }
-
-  /**
-   * Adds an ID search filter as "WHERE" clause to the query builder.
-   * @param resourceType The resource type.
-   * @param details The search parameter details.
-   * @param filter The search filter.
-   * @returns The select query condition.
-   */
-  private buildIdSearchFilter(resourceType: string, details: SearchParameterDetails, filter: Filter): Expression {
-    const column = new Column(resourceType, details.columnName);
-    const expressions = [];
-    for (const valueStr of filter.value.split(',')) {
-      let value: string | boolean = valueStr;
-      if (valueStr.includes('/')) {
-        value = valueStr.split('/').pop() as string;
-      }
-      if (!validator.isUUID(value)) {
-        value = '00000000-0000-0000-0000-000000000000';
-      }
-      if (details.array) {
-        expressions.push(new Condition(column, Operator.ARRAY_CONTAINS, value, details.type + '[]'));
-      } else {
-        expressions.push(new Condition(column, Operator.EQUALS, value));
-      }
-    }
-    const disjunction = new Disjunction(expressions);
-    if (filter.operator === FhirOperator.NOT_EQUALS || filter.operator === FhirOperator.NOT) {
-      return new Negation(disjunction);
-    }
-    return disjunction;
-  }
-
-  /**
-   * Adds a token search filter as "WHERE" clause to the query builder.
-   * @param resourceType The resource type.
-   * @param details The search parameter details.
-   * @param filter The search filter.
-   * @returns The select query condition.
-   */
-  private buildTokenSearchFilter(resourceType: string, details: SearchParameterDetails, filter: Filter): Expression {
-    const column = new Column(resourceType, details.columnName);
-    const expressions = [];
-    for (const valueStr of filter.value.split(',')) {
-      let value: string | boolean = valueStr;
-      if (details.type === SearchParameterType.BOOLEAN) {
-        value = valueStr === 'true';
-      } else if (valueStr.includes('|')) {
-        value = valueStr.split('|').pop() as string;
-      }
-      if (details.array) {
-        expressions.push(new Condition(column, Operator.ARRAY_CONTAINS, value, details.type + '[]'));
-      } else if (filter.operator === FhirOperator.CONTAINS) {
-        expressions.push(new Condition(column, Operator.LIKE, '%' + value + '%'));
-      } else {
-        expressions.push(new Condition(column, Operator.EQUALS, value));
-      }
-    }
-    const disjunction = new Disjunction(expressions);
-    if (filter.operator === FhirOperator.NOT_EQUALS || filter.operator === FhirOperator.NOT) {
-      return new Negation(disjunction);
-    }
-    return disjunction;
-  }
-
-  /**
-   * Adds a reference search filter as "WHERE" clause to the query builder.
-   * @param details The search parameter details.
-   * @param filter The search filter.
-   * @returns The select query condition.
-   */
-  private buildReferenceSearchFilter(details: SearchParameterDetails, filter: Filter): Expression {
-    const values = [];
-    for (const value of filter.value.split(',')) {
-      if (!value.includes('/') && (details.columnName === 'subject' || details.columnName === 'patient')) {
-        values.push('Patient/' + value);
-      } else {
-        values.push(value);
-      }
-    }
-    if (details.array) {
-      return new Condition(details.columnName, Operator.ARRAY_CONTAINS, values);
-    }
-    if (values.length === 1) {
-      return new Condition(details.columnName, Operator.EQUALS, values[0]);
-    }
-    return new Condition(details.columnName, Operator.IN, values);
-  }
-
-  /**
-   * Adds a date or date/time search filter.
-   * @param details The search parameter details.
-   * @param filter The search filter.
-   * @returns The select query condition.
-   */
-  private buildDateSearchFilter(details: SearchParameterDetails, filter: Filter): Expression {
-    const dateValue = new Date(filter.value);
-    if (isNaN(dateValue.getTime())) {
-      throw new OperationOutcomeError(badRequest(`Invalid date value: ${filter.value}`));
-    }
-    return new Condition(details.columnName, fhirOperatorToSqlOperator(filter.operator), filter.value);
-  }
-
-  /**
-   * Adds all "order by" clauses to the query builder.
-   * @param builder The client query builder.
-   * @param searchRequest The search request.
-   */
-  private addSortRules(builder: SelectQuery, searchRequest: SearchRequest): void {
-    searchRequest.sortRules?.forEach((sortRule) => this.addOrderByClause(builder, searchRequest, sortRule));
-  }
-
-  /**
-   * Adds a single "order by" clause to the query builder.
-   * @param builder The client query builder.
-   * @param searchRequest The search request.
-   * @param sortRule The sort rule.
-   */
-  private addOrderByClause(builder: SelectQuery, searchRequest: SearchRequest, sortRule: SortRule): void {
-    if (sortRule.code === '_lastUpdated') {
-      builder.orderBy('lastUpdated', !!sortRule.descending);
-      return;
-    }
-
-    const resourceType = searchRequest.resourceType;
-    const param = getSearchParameter(resourceType, sortRule.code);
-    if (!param?.code) {
-      return;
-    }
-
-    const lookupTable = this.getLookupTable(resourceType, param);
-    if (lookupTable) {
-      lookupTable.addOrderBy(builder, resourceType, sortRule);
-      return;
-    }
-
-    const details = getSearchParameterDetails(resourceType, param);
-    builder.orderBy(details.columnName, !!sortRule.descending);
-  }
-
-  /**
    * Writes the resource to the resource table.
    * This builds all search parameter columns.
    * This does *not* write the version to the history table.
-   * @param client The database client inside the transaction.
-   * @param resource The resource.
+   * @param client - The database client inside the transaction.
+   * @param resource - The resource.
    */
   private async writeResource(client: PoolClient, resource: Resource): Promise<void> {
     const resourceType = resource.resourceType;
@@ -1699,13 +1081,13 @@ export class Repository extends BaseRepository implements FhirRepository {
       }
     }
 
-    await new InsertQuery(resourceType, [columns]).mergeOnConflict(true).execute(client);
+    await new InsertQuery(resourceType, [columns]).mergeOnConflict().execute(client);
   }
 
   /**
    * Writes a version of the resource to the resource history table.
-   * @param client The database client inside the transaction.
-   * @param resource The resource.
+   * @param client - The database client inside the transaction.
+   * @param resource - The resource.
    */
   private async writeResourceVersion(client: PoolClient, resource: Resource): Promise<void> {
     const resourceType = resource.resourceType;
@@ -1727,23 +1109,27 @@ export class Repository extends BaseRepository implements FhirRepository {
    * FHIR compartments are used for two purposes.
    * 1) Search narrowing (i.e., /Patient/123/Observation searches within the patient compartment).
    * 2) Access controls.
-   * @param resource The resource.
+   * @param resource - The resource.
    * @returns The list of compartments for the resource.
    */
   private getCompartments(resource: Resource): Reference[] {
     const result: Reference[] = [];
 
     if (resource.meta?.project) {
-      // Deprecated - to be removed
+      // Deprecated - to be removed after migrating all tables to use "projectId" column
       result.push({ reference: 'Project/' + resource.meta.project });
+    }
+
+    if (resource.resourceType === 'User' && resource.project?.reference) {
+      // Deprecated - to be removed after migrating all tables to use "projectId" column
+      result.push(resource.project);
     }
 
     if (resource.meta?.account) {
       result.push(resource.meta.account);
     }
 
-    const patient = getPatient(resource);
-    if (patient) {
+    for (const patient of getPatients(resource)) {
       const patientId = resolveId(patient);
       if (patientId && validator.isUUID(patientId)) {
         result.push(patient);
@@ -1757,9 +1143,9 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Builds the columns to write for a given resource and search parameter.
    * If nothing to write, then no columns will be added.
    * Some search parameters can result in multiple columns (for example, Reference objects).
-   * @param resource The resource to write.
-   * @param columns The output columns to write.
-   * @param searchParam The search parameter definition.
+   * @param resource - The resource to write.
+   * @param columns - The output columns to write.
+   * @param searchParam - The search parameter definition.
    */
   private buildColumn(resource: Resource, columns: Record<string, any>, searchParam: SearchParameter): void {
     if (
@@ -1767,7 +1153,7 @@ export class Repository extends BaseRepository implements FhirRepository {
       searchParam.code === '_lastUpdated' ||
       searchParam.code === '_compartment' ||
       searchParam.type === 'composite' ||
-      this.isIndexTable(resource.resourceType, searchParam)
+      isIndexTable(resource.resourceType, searchParam)
     ) {
       return;
     }
@@ -1790,9 +1176,9 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Builds a single value for a given search parameter.
    * If the search parameter is an array, then this method will be called for each element.
    * If the search parameter is not an array, then this method will be called for the value.
-   * @param searchParam The search parameter definition.
-   * @param details The extra search parameter details.
-   * @param value The FHIR resource value.
+   * @param searchParam - The search parameter definition.
+   * @param details - The extra search parameter details.
+   * @param value - The FHIR resource value.
    * @returns The column value.
    */
   private buildColumnValue(searchParam: SearchParameter, details: SearchParameterDetails, value: any): any {
@@ -1827,7 +1213,7 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Builds the column value for a date parameter.
    * Tries to parse the date string.
    * Silently ignores failure.
-   * @param value The FHIRPath result.
+   * @param value - The FHIRPath result.
    * @returns The date string if parsed; undefined otherwise.
    */
   private buildDateColumn(value: any): string | undefined {
@@ -1849,7 +1235,7 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Builds the column value for a date/time parameter.
    * Tries to parse the date string.
    * Silently ignores failure.
-   * @param value The FHIRPath result.
+   * @param value - The FHIRPath result.
    * @returns The date/time string if parsed; undefined otherwise.
    */
   private buildDateTimeColumn(value: any): string | undefined {
@@ -1864,7 +1250,8 @@ export class Repository extends BaseRepository implements FhirRepository {
       // Can be a Period
       if ('start' in value) {
         return this.buildDateTimeColumn(value.start);
-      } else if ('end' in value) {
+      }
+      if ('end' in value) {
         return this.buildDateTimeColumn(value.end);
       }
     }
@@ -1873,7 +1260,7 @@ export class Repository extends BaseRepository implements FhirRepository {
 
   /**
    * Builds the columns to write for a Reference value.
-   * @param value The property value of the reference.
+   * @param value - The property value of the reference.
    * @returns The reference column value.
    */
   private buildReferenceColumns(value: any): string | undefined {
@@ -1884,8 +1271,16 @@ export class Repository extends BaseRepository implements FhirRepository {
         return value;
       }
       if (typeof value === 'object') {
-        // Handle normal "reference" properties
-        return (value as Reference).reference;
+        if (value.reference) {
+          // Handle normal "reference" properties
+          return value.reference;
+        }
+        if (typeof value.identifier === 'object') {
+          // Handle logical (identifier-only) references by putting a placeholder in the column
+          // NOTE(mattwiller 2023-11-01): This is done to enable searches using the :missing modifier;
+          // actual identifier search matching is handled by the `<ResourceType>_Token` lookup tables
+          return `identifier:${value.identifier.system}|${value.identifier.value}`;
+        }
       }
     }
     return undefined;
@@ -1897,7 +1292,7 @@ export class Repository extends BaseRepository implements FhirRepository {
    *  1) The property value is a string, so return directly.
    *  2) The property value is a CodeableConcept.
    *  3) Otherwise fallback to stringify.
-   * @param value The property value of the code.
+   * @param value - The property value of the code.
    * @returns The value to write to the database column.
    */
   private buildTokenColumn(value: any): string | undefined {
@@ -1923,7 +1318,7 @@ export class Repository extends BaseRepository implements FhirRepository {
 
   /**
    * Builds a CodeableConcept column value.
-   * @param value The property value of the code.
+   * @param value - The property value of the code.
    * @returns The value to write to the database column.
    */
   private buildCodeableConceptColumn(value: any): string | undefined {
@@ -1954,7 +1349,7 @@ export class Repository extends BaseRepository implements FhirRepository {
 
   /**
    * Builds a Quantity column value.
-   * @param value The property value of the quantity.
+   * @param value - The property value of the quantity.
    * @returns The numeric value if available; undefined otherwise.
    */
   private buildQuantityColumn(value: any): number | undefined {
@@ -1971,8 +1366,8 @@ export class Repository extends BaseRepository implements FhirRepository {
 
   /**
    * Writes resources values to the lookup tables.
-   * @param client The database client inside the transaction.
-   * @param resource The resource to index.
+   * @param client - The database client inside the transaction.
+   * @param resource - The resource to index.
    */
   private async writeLookupTables(client: PoolClient, resource: Resource): Promise<void> {
     for (const lookupTable of lookupTables) {
@@ -1982,8 +1377,8 @@ export class Repository extends BaseRepository implements FhirRepository {
 
   /**
    * Deletes values from lookup tables.
-   * @param client The database client inside the transaction.
-   * @param resource The resource to delete.
+   * @param client - The database client inside the transaction.
+   * @param resource - The resource to delete.
    */
   private async deleteFromLookupTables(client: Pool | PoolClient, resource: Resource): Promise<void> {
     for (const lookupTable of lookupTables) {
@@ -1991,25 +1386,12 @@ export class Repository extends BaseRepository implements FhirRepository {
     }
   }
 
-  private isIndexTable(resourceType: string, searchParam: SearchParameter): boolean {
-    return !!this.getLookupTable(resourceType, searchParam);
-  }
-
-  private getLookupTable(resourceType: string, searchParam: SearchParameter): LookupTable<unknown> | undefined {
-    for (const lookupTable of lookupTables) {
-      if (lookupTable.isIndexed(searchParam, resourceType)) {
-        return lookupTable;
-      }
-    }
-    return undefined;
-  }
-
   /**
    * Returns the last updated timestamp for the resource.
    * During historical data migration, some client applications are allowed
    * to override the timestamp.
-   * @param existing Existing resource if one exists.
-   * @param resource The FHIR resource.
+   * @param existing - Existing resource if one exists.
+   * @param resource - The FHIR resource.
    * @returns The last updated date.
    */
   private getLastUpdated(existing: Resource | undefined, resource: Resource): string {
@@ -2019,7 +1401,7 @@ export class Repository extends BaseRepository implements FhirRepository {
       // and the current context is a ClientApplication (i.e., OAuth client credentials),
       // then allow the ClientApplication to set the date.
       const lastUpdated = resource.meta?.lastUpdated;
-      if (lastUpdated && this.canWriteMeta()) {
+      if (lastUpdated && this.canWriteProtectedMeta()) {
         return lastUpdated;
       }
     }
@@ -2033,35 +1415,32 @@ export class Repository extends BaseRepository implements FhirRepository {
    * If it is a public resource type, then returns the public project ID.
    * If it is a protected resource type, then returns the Medplum project ID.
    * Otherwise, by default, return the current context project ID.
-   * @param resource The FHIR resource.
+   * @param existing - Existing resource if one exists.
+   * @param updated - The FHIR resource.
    * @returns The project ID.
    */
-  private getProjectId(resource: Resource): string | undefined {
-    if (resource.resourceType === 'Project') {
-      return resource.id;
+  private getProjectId(existing: Resource | undefined, updated: Resource): string | undefined {
+    if (updated.resourceType === 'Project') {
+      return updated.id;
     }
 
-    if (resource.resourceType === 'ProjectMembership') {
-      return resolveId(resource.project);
+    if (updated.resourceType === 'ProjectMembership') {
+      return resolveId(updated.project);
     }
 
-    if (publicResourceTypes.includes(resource.resourceType)) {
+    if (protectedResourceTypes.includes(updated.resourceType)) {
       return undefined;
     }
 
-    if (protectedResourceTypes.includes(resource.resourceType)) {
-      return undefined;
-    }
-
-    const submittedProjectId = resource.meta?.project;
-    if (submittedProjectId && this.canWriteMeta()) {
+    const submittedProjectId = updated.meta?.project;
+    if (submittedProjectId && this.canWriteProtectedMeta()) {
       // If the resource has an project (whether provided or from existing),
       // and the current context is allowed to write meta,
       // then use the provided value.
       return submittedProjectId;
     }
 
-    return this.context.project;
+    return existing?.meta?.project ?? this.context.project;
   }
 
   /**
@@ -2070,7 +1449,7 @@ export class Repository extends BaseRepository implements FhirRepository {
    * and the provided resource includes an author reference,
    * then use the provided value.
    * Otherwise uses the current context profile.
-   * @param resource The FHIR resource.
+   * @param resource - The FHIR resource.
    * @returns The author value.
    */
   private getAuthor(resource: Resource): Reference {
@@ -2078,7 +1457,7 @@ export class Repository extends BaseRepository implements FhirRepository {
     // and the current context is allowed to write meta,
     // then use the provided value.
     const author = resource.meta?.author;
-    if (author && this.canWriteMeta()) {
+    if (author && this.canWriteProtectedMeta()) {
       return author;
     }
 
@@ -2089,9 +1468,9 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Returns the author reference string (resourceType/id).
    * If the current context is a ClientApplication, handles "on behalf of".
    * Otherwise uses the current context profile.
-   * @param existing Existing resource if one exists.
-   * @param updated The incoming updated resource.
-   * @param create Flag for when "creating" vs "updating".
+   * @param existing - Existing resource if one exists.
+   * @param updated - The incoming updated resource.
+   * @param create - Flag for when "creating" vs "updating".
    * @returns The account value.
    */
   private async getAccount(
@@ -2111,8 +1490,7 @@ export class Repository extends BaseRepository implements FhirRepository {
     }
 
     if (updated.resourceType !== 'Patient') {
-      const patientRef = getPatient(updated);
-      if (patientRef) {
+      for (const patientRef of getPatients(updated)) {
         // If the resource is in a patient compartment, then lookup the patient.
         try {
           const patient = await systemRepo.readReference(patientRef);
@@ -2120,8 +1498,9 @@ export class Repository extends BaseRepository implements FhirRepository {
             // If the patient has an account, then use it as the resource account.
             return patient.meta.account;
           }
-        } catch (err) {
-          logger.debug('Error setting patient compartment', err);
+        } catch (err: any) {
+          const ctx = getRequestContext();
+          ctx.logger.debug('Error setting patient compartment', err);
         }
       }
     }
@@ -2140,10 +1519,11 @@ export class Repository extends BaseRepository implements FhirRepository {
   }
 
   /**
-   * Determines if the current user can manually set meta fields.
-   * @returns True if the current user can manually set meta fields.
+   * Determines if the current user can manually set certain protected meta fields
+   * such as author, project, lastUpdated, etc.
+   * @returns True if the current user can manually set protected meta fields.
    */
-  private canWriteMeta(): boolean {
+  private canWriteProtectedMeta(): boolean {
     return this.isSuperAdmin();
   }
 
@@ -2153,18 +1533,15 @@ export class Repository extends BaseRepository implements FhirRepository {
 
   /**
    * Determines if the current user can read the specified resource type.
-   * @param resourceType The resource type.
+   * @param resourceType - The resource type.
    * @returns True if the current user can read the specified resource type.
    */
-  private canReadResourceType(resourceType: string): boolean {
+  canReadResourceType(resourceType: string): boolean {
     if (this.isSuperAdmin()) {
       return true;
     }
     if (protectedResourceTypes.includes(resourceType)) {
       return false;
-    }
-    if (publicResourceTypes.includes(resourceType)) {
-      return true;
     }
     if (!this.context.accessPolicy) {
       return true;
@@ -2176,7 +1553,7 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Determines if the current user can write the specified resource type.
    * This is a preliminary check before evaluating a write operation in depth.
    * If a user cannot write a resource type at all, then don't bother looking up previous versions.
-   * @param resourceType The resource type.
+   * @param resourceType - The resource type.
    * @returns True if the current user can write the specified resource type.
    */
   private canWriteResourceType(resourceType: string): boolean {
@@ -2186,9 +1563,6 @@ export class Repository extends BaseRepository implements FhirRepository {
     if (protectedResourceTypes.includes(resourceType)) {
       return false;
     }
-    if (publicResourceTypes.includes(resourceType)) {
-      return false;
-    }
     if (!this.context.accessPolicy) {
       return true;
     }
@@ -2196,12 +1570,12 @@ export class Repository extends BaseRepository implements FhirRepository {
   }
 
   /**
-   * Determines if the current user can write the specified resource.
+   * Determines if the current user can write to the specified resource.
    * This is a more in-depth check after building the candidate result of a write operation.
-   * @param resource The resource.
+   * @param resource - The resource.
    * @returns True if the current user can write the specified resource type.
    */
-  private canWriteResource(resource: Resource): boolean {
+  private canWriteToResource(resource: Resource): boolean {
     if (this.isSuperAdmin()) {
       return true;
     }
@@ -2209,43 +1583,71 @@ export class Repository extends BaseRepository implements FhirRepository {
     if (protectedResourceTypes.includes(resourceType)) {
       return false;
     }
-    if (publicResourceTypes.includes(resourceType)) {
+    if (resource.meta?.project !== this.context.project) {
       return false;
     }
-    return this.matchesAccessPolicy(resource, false);
+    return !!satisfiedAccessPolicy(resource, AccessPolicyInteraction.UPDATE, this.context.accessPolicy);
   }
 
   /**
-   * Returns true if the resource satisfies the current access policy.
-   * @param resource The resource.
-   * @param readonlyMode True if the resource is being read.
-   * @returns True if the resource matches the access policy.
+   * Check that a resource can be written in its current form.
+   * @param previous - The resource before updates were applied.
+   * @param current - The resource as it will be written.
+   * @returns True if the current user can write the specified resource type.
    */
-  private matchesAccessPolicy(resource: Resource, readonlyMode: boolean): boolean {
-    if (!this.context.accessPolicy) {
+  private isResourceWriteable(previous: Resource | undefined, current: Resource): boolean {
+    if (this.isSuperAdmin()) {
       return true;
     }
-    return matchesAccessPolicy(this.context.accessPolicy, resource, readonlyMode);
+
+    if (current.meta?.project !== this.context.project) {
+      return false;
+    }
+
+    const matchingPolicy = satisfiedAccessPolicy(current, AccessPolicyInteraction.UPDATE, this.context.accessPolicy);
+    if (!matchingPolicy) {
+      return false;
+    }
+    if (matchingPolicy?.writeConstraint) {
+      return matchingPolicy.writeConstraint.every((constraint) => {
+        const invariant = evalFhirPathTyped(
+          constraint.expression as string,
+          [{ type: current.resourceType, value: current }],
+          {
+            '%before': { type: previous?.resourceType ?? 'undefined', value: previous },
+            '%after': { type: current.resourceType, value: current },
+          }
+        );
+        return invariant.length === 1 && invariant[0].value === true;
+      });
+    }
+    return true;
   }
 
   /**
    * Returns true if the resource is "cache only" and not written to the database.
    * This is a highly specialized use case for internal system resources.
-   * @param resource The candidate resource.
+   * @param resource - The candidate resource.
    * @returns True if the resource should be cached only and not written to the database.
    */
   private isCacheOnly(resource: Resource): boolean {
-    return resource.resourceType === 'Login' && (resource.authMethod === 'client' || resource.authMethod === 'execute');
+    if (resource.resourceType === 'Login' && (resource.authMethod === 'client' || resource.authMethod === 'execute')) {
+      return true;
+    }
+    if (resource.resourceType === 'Subscription' && resource.channel?.type === 'websocket') {
+      return true;
+    }
+    return false;
   }
 
   /**
    * Removes hidden fields from a resource as defined by the access policy.
    * This should be called for any "read" operation.
-   * @param input The input resource.
+   * @param input - The input resource.
    * @returns The resource with hidden fields removed.
    */
-  private removeHiddenFields<T extends Resource>(input: T): T {
-    const policy = this.getResourceAccessPolicy(input.resourceType);
+  removeHiddenFields<T extends Resource>(input: T): T {
+    const policy = satisfiedAccessPolicy(input, AccessPolicyInteraction.READ, this.context.accessPolicy);
     if (policy?.hiddenFields) {
       for (const field of policy.hiddenFields) {
         this.removeField(input, field);
@@ -2265,12 +1667,16 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Overwrites readonly fields from a resource as defined by the access policy.
    * If no original (i.e., this is the first version), then blank them out.
    * This should be called for any "write" operation.
-   * @param input The input resource.
-   * @param original The previous version, if it exists.
+   * @param input - The input resource.
+   * @param original - The previous version, if it exists.
    * @returns The resource with restored hidden fields.
    */
   private restoreReadonlyFields<T extends Resource>(input: T, original: T | undefined): T {
-    const policy = this.getResourceAccessPolicy(input.resourceType);
+    const policy = satisfiedAccessPolicy(
+      original ?? input,
+      original ? AccessPolicyInteraction.UPDATE : AccessPolicyInteraction.CREATE,
+      this.context.accessPolicy
+    );
     if (policy?.readonlyFields) {
       for (const field of policy.readonlyFields) {
         this.removeField(input, field);
@@ -2288,25 +1694,16 @@ export class Repository extends BaseRepository implements FhirRepository {
   /**
    * Removes a field from the input resource.
    * Uses JSONPatch to process the remove operation, which supports nested fields.
-   * @param input The input resource.
-   * @param path The path to the field to remove.
+   * @param input - The input resource.
+   * @param path - The path to the field to remove.
    * @returns The new document with the field removed.
    */
   private removeField<T extends Resource>(input: T, path: string): T {
     const patch: Operation[] = [{ op: 'remove', path: `/${path.replaceAll('.', '/')}` }];
+    // applyPatch returns errors if the value is missing
+    // but we don't care if the value is missing in this case
     applyPatch(input, patch);
     return input;
-  }
-
-  private getResourceAccessPolicy(resourceType: string): AccessPolicyResource | undefined {
-    if (this.context.accessPolicy?.resource) {
-      for (const resourcePolicy of this.context.accessPolicy.resource) {
-        if (resourcePolicy.resourceType === resourceType) {
-          return resourcePolicy;
-        }
-      }
-    }
-    return undefined;
   }
 
   private isSuperAdmin(): boolean {
@@ -2319,11 +1716,11 @@ export class Repository extends BaseRepository implements FhirRepository {
 
   /**
    * Logs an AuditEvent for a restful operation.
-   * @param subtype The AuditEvent subtype.
-   * @param outcome The AuditEvent outcome.
-   * @param description The description.  Can be a string, object, or Error.  Will be normalized to a string.
-   * @param resource Optional resource to associate with the AuditEvent.
-   * @param search Optional search parameters to associate with the AuditEvent.
+   * @param subtype - The AuditEvent subtype.
+   * @param outcome - The AuditEvent outcome.
+   * @param description - The description.  Can be a string, object, or Error.  Will be normalized to a string.
+   * @param resource - Optional resource to associate with the AuditEvent.
+   * @param search - Optional search parameters to associate with the AuditEvent.
    */
   private logEvent(
     subtype: AuditEventSubtype,
@@ -2336,14 +1733,6 @@ export class Repository extends BaseRepository implements FhirRepository {
       // Don't log system events.
       return;
     }
-    if (resource && publicResourceTypes.includes(resource.resourceType)) {
-      // Don't log public events.
-      return;
-    }
-    if (search && publicResourceTypes.includes(search.resourceType)) {
-      // Don't log public events.
-      return;
-    }
     let outcomeDesc: string | undefined = undefined;
     if (description) {
       outcomeDesc = normalizeErrorString(description);
@@ -2352,7 +1741,7 @@ export class Repository extends BaseRepository implements FhirRepository {
     if (search) {
       query = search.resourceType + formatSearchQuery(search);
     }
-    logRestfulEvent(
+    const auditEvent = logRestfulEvent(
       subtype,
       this.context.project as string,
       this.context.author,
@@ -2362,13 +1751,31 @@ export class Repository extends BaseRepository implements FhirRepository {
       resource,
       query
     );
+
+    if (getConfig().saveAuditEvents && resource?.resourceType !== 'AuditEvent') {
+      auditEvent.id = randomUUID();
+      this.updateResourceImpl(auditEvent, true).catch(console.error);
+    }
   }
+}
+
+export function isIndexTable(resourceType: string, searchParam: SearchParameter): boolean {
+  return !!getLookupTable(resourceType, searchParam);
+}
+
+export function getLookupTable(resourceType: string, searchParam: SearchParameter): LookupTable<unknown> | undefined {
+  for (const lookupTable of lookupTables) {
+    if (lookupTable.isIndexed(searchParam, resourceType)) {
+      return lookupTable;
+    }
+  }
+  return undefined;
 }
 
 /**
  * Tries to read a cache entry from Redis by resource type and ID.
- * @param resourceType The resource type.
- * @param id The resource ID.
+ * @param resourceType - The resource type.
+ * @param id - The resource ID.
  * @returns The cache entry if found; otherwise, undefined.
  */
 async function getCacheEntry<T extends Resource>(resourceType: string, id: string): Promise<CacheEntry<T> | undefined> {
@@ -2378,7 +1785,7 @@ async function getCacheEntry<T extends Resource>(resourceType: string, id: strin
 
 /**
  * Performs a bulk read of cache entries from Redis.
- * @param references Array of FHIR references.
+ * @param references - Array of FHIR references.
  * @returns Array of cache entries or undefined.
  */
 async function getCacheEntries(references: Reference[]): Promise<(CacheEntry | undefined)[]> {
@@ -2394,7 +1801,7 @@ async function getCacheEntries(references: Reference[]): Promise<(CacheEntry | u
 
 /**
  * Writes a cache entry to Redis.
- * @param resource The resource to cache.
+ * @param resource - The resource to cache.
  */
 async function setCacheEntry(resource: Resource): Promise<void> {
   await getRedis().set(
@@ -2407,8 +1814,8 @@ async function setCacheEntry(resource: Resource): Promise<void> {
 
 /**
  * Deletes a cache entry from Redis.
- * @param resourceType The resource type.
- * @param id The resource ID.
+ * @param resourceType - The resource type.
+ * @param id - The resource ID.
  */
 async function deleteCacheEntry(resourceType: string, id: string): Promise<void> {
   await getRedis().del(getCacheKey(resourceType, id));
@@ -2416,8 +1823,8 @@ async function deleteCacheEntry(resourceType: string, id: string): Promise<void>
 
 /**
  * Deletes cache entries from Redis.
- * @param resourceType The resource type.
- * @param ids The resource IDs.
+ * @param resourceType - The resource type.
+ * @param ids - The resource IDs.
  */
 async function deleteCacheEntries(resourceType: string, ids: string[]): Promise<void> {
   const cacheKeys = ids.map((id) => {
@@ -2429,41 +1836,12 @@ async function deleteCacheEntries(resourceType: string, ids: string[]): Promise<
 
 /**
  * Returns the redis cache key for the given resource type and resource ID.
- * @param resourceType The resource type.
- * @param id The resource ID.
+ * @param resourceType - The resource type.
+ * @param id - The resource ID.
  * @returns The Redis cache key.
  */
 function getCacheKey(resourceType: string, id: string): string {
   return `${resourceType}/${id}`;
-}
-
-/**
- * Converts a FHIR search operator into a SQL operator.
- * Only works for simple conversions.
- * For complex conversions, need to build custom SQL.
- * @param fhirOperator The FHIR operator.
- * @returns The equivalent SQL operator.
- */
-function fhirOperatorToSqlOperator(fhirOperator: FhirOperator): Operator {
-  switch (fhirOperator) {
-    case FhirOperator.EQUALS:
-      return Operator.EQUALS;
-    case FhirOperator.NOT:
-    case FhirOperator.NOT_EQUALS:
-      return Operator.NOT_EQUALS;
-    case FhirOperator.GREATER_THAN:
-    case FhirOperator.STARTS_AFTER:
-      return Operator.GREATER_THAN;
-    case FhirOperator.GREATER_THAN_OR_EQUALS:
-      return Operator.GREATER_THAN_OR_EQUALS;
-    case FhirOperator.LESS_THAN:
-    case FhirOperator.ENDS_BEFORE:
-      return Operator.LESS_THAN;
-    case FhirOperator.LESS_THAN_OR_EQUALS:
-      return Operator.LESS_THAN_OR_EQUALS;
-    default:
-      throw new Error(`Unknown FHIR operator: ${fhirOperator}`);
-  }
 }
 
 export const systemRepo = new Repository({
@@ -2473,4 +1851,5 @@ export const systemRepo = new Repository({
   author: {
     reference: 'system',
   },
+  // System repo does not have an associated Project; it can write to any
 });

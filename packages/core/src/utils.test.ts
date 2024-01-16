@@ -1,5 +1,8 @@
 import { Attachment, CodeableConcept, ObservationDefinition, Patient, Resource } from '@medplum/fhirtypes';
+import { ContentType } from './contenttype';
+import { OperationOutcomeError } from './outcomes';
 import {
+  ResourceWithCode,
   arrayBufferToBase64,
   arrayBufferToHex,
   calculateAge,
@@ -8,19 +11,27 @@ import {
   createReference,
   deepClone,
   deepEquals,
+  deepIncludes,
   findObservationInterval,
   findObservationReferenceRange,
+  findResourceByCode,
+  getAllQuestionnaireAnswers,
   getCodeBySystem,
   getDateProperty,
   getDisplayString,
-  getExtensionValue,
   getExtension,
+  getExtensionValue,
   getIdentifier,
   getImageSrc,
   getQuestionnaireAnswers,
+  getReferenceString,
+  isEmpty,
   isLowerCase,
+  isPopulated,
   isProfileResource,
   isUUID,
+  lazy,
+  parseReference,
   preciseEquals,
   preciseGreaterThan,
   preciseGreaterThanOrEquals,
@@ -29,10 +40,9 @@ import {
   preciseRound,
   resolveId,
   setCodeBySystem,
+  setIdentifier,
+  splitN,
   stringify,
-  findResourceByCode,
-  ResourceWithCode,
-  deepIncludes,
 } from './utils';
 
 if (typeof btoa === 'undefined') {
@@ -69,12 +79,32 @@ describe('Core Utils', () => {
     });
   });
 
+  test('getReferenceString', () => {
+    expect(getReferenceString({ resourceType: 'Patient', id: '123' })).toBe('Patient/123');
+    expect(getReferenceString({ reference: 'Patient/123' })).toBe('Patient/123');
+  });
+
   test('resolveId', () => {
     expect(resolveId(undefined)).toBeUndefined();
     expect(resolveId({})).toBeUndefined();
-    expect(resolveId({ id: '123' })).toBeUndefined();
+    expect(resolveId({ id: '123' })).toBe('123');
     expect(resolveId({ reference: 'Patient' })).toBeUndefined();
     expect(resolveId({ reference: 'Patient/123' })).toBe('123');
+  });
+
+  test('parseReference', () => {
+    expect(() => parseReference(undefined)).toThrow(OperationOutcomeError);
+    expect(() => parseReference({})).toThrow(OperationOutcomeError);
+    expect(() => parseReference({ id: '123' })).toThrow(OperationOutcomeError);
+    expect(() => parseReference({ reference: 'Patient' })).toThrow(OperationOutcomeError);
+    expect(() => parseReference({ reference: '/' })).toThrow(OperationOutcomeError);
+    expect(() => parseReference({ reference: 'Patient/' })).toThrow(OperationOutcomeError);
+    expect(parseReference({ reference: 'Patient/123' })).toEqual(['Patient', '123']);
+
+    // Destructuring test
+    const [resourceType, id] = parseReference({ reference: 'Patient/123' });
+    expect(resourceType).toEqual('Patient');
+    expect(id).toEqual('123');
   });
 
   test('isProfileResource', () => {
@@ -112,6 +142,40 @@ describe('Core Utils', () => {
     expect(getDisplayString({ resourceType: 'User', id: '123' })).toEqual('User/123');
   });
 
+  const EMPTY = [true, false];
+  const POPULATED = [false, true];
+  test.each([
+    [undefined, EMPTY],
+    [null, EMPTY],
+
+    ['', EMPTY],
+    [' ', POPULATED],
+    ['foo', POPULATED],
+
+    [{}, EMPTY],
+    [Object.create(null), EMPTY],
+    [{ foo: 'bar' }, POPULATED],
+    [{ length: 0 }, POPULATED],
+    [{ length: 1 }, POPULATED],
+
+    [[], EMPTY],
+    [[undefined], POPULATED],
+    [[null], POPULATED],
+    [[0], POPULATED],
+    [[1, 2, 3], POPULATED],
+
+    [NaN, [false, false]],
+    [123, [false, false]],
+    [5.5, [false, false]],
+    [true, [false, false]],
+    [false, [false, false]],
+  ])('for %j, [isEmpty, isPopulated] should be %j', (input: any, expected: any) => {
+    const [emptyExpected, populatedExpected] = expected;
+
+    expect(isEmpty(input)).toBe(emptyExpected);
+    expect(isPopulated(input)).toBe(populatedExpected);
+  });
+
   test('getImageSrc', () => {
     expect(getImageSrc({ resourceType: 'Observation' })).toBeUndefined();
     expect(getImageSrc({ resourceType: 'Patient' })).toBeUndefined();
@@ -124,7 +188,7 @@ describe('Core Utils', () => {
         photo: [
           {
             url: 'http://abc/xyz.txt',
-            contentType: 'text/plain',
+            contentType: ContentType.TEXT,
           },
         ],
       })
@@ -262,6 +326,60 @@ describe('Core Utils', () => {
     ).toMatchObject({ q1: { valueString: 'xyz' } });
   });
 
+  test('Get All Questionnaire answers', () => {
+    expect(
+      getAllQuestionnaireAnswers({
+        resourceType: 'QuestionnaireResponse',
+      })
+    ).toMatchObject({});
+
+    expect(
+      getAllQuestionnaireAnswers({
+        resourceType: 'QuestionnaireResponse',
+        item: [
+          { linkId: 'q1', answer: [{ valueString: 'xyz' }, { valueString: 'abc' }] },
+          { linkId: 'q2', answer: [{ valueDecimal: 2.0 }, { valueDecimal: 3.0 }] },
+          { linkId: 'q3', answer: [{ valueBoolean: true }] },
+        ],
+      })
+    ).toMatchObject({
+      q1: [{ valueString: 'xyz' }, { valueString: 'abc' }],
+      q2: [{ valueDecimal: 2.0 }, { valueDecimal: 3.0 }],
+      q3: [{ valueBoolean: true }],
+    });
+
+    expect(
+      getAllQuestionnaireAnswers({
+        resourceType: 'QuestionnaireResponse',
+        item: [
+          {
+            linkId: 'group1',
+            item: [
+              {
+                linkId: 'group2',
+                item: [
+                  {
+                    linkId: 'q1',
+                    answer: [
+                      {
+                        valueString: 'xyz',
+                      },
+                      {
+                        valueString: 'abc',
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      })
+    ).toMatchObject({
+      q1: [{ valueString: 'xyz' }, { valueString: 'abc' }],
+    });
+  });
+
   test('Get identifier', () => {
     expect(getIdentifier({} as unknown as Resource, 'x')).toBeUndefined();
     expect(getIdentifier({ identifier: null } as unknown as Resource, 'x')).toBeUndefined();
@@ -280,6 +398,33 @@ describe('Core Utils', () => {
     expect(
       getIdentifier({ resourceType: 'SpecimenDefinition', identifier: { system: 'y', value: 'y' } }, 'x')
     ).toBeUndefined();
+  });
+
+  test('Set identifier', () => {
+    const r1: Patient = { resourceType: 'Patient' };
+    setIdentifier(r1, 'x', 'y');
+    expect(r1).toEqual({ resourceType: 'Patient', identifier: [{ system: 'x', value: 'y' }] });
+
+    const r2: Patient = { resourceType: 'Patient', identifier: [] };
+    setIdentifier(r2, 'x', 'y');
+    expect(r2).toEqual({ resourceType: 'Patient', identifier: [{ system: 'x', value: 'y' }] });
+
+    const r3: Patient = { resourceType: 'Patient', identifier: [{ system: 'a', value: 'b' }] };
+    setIdentifier(r3, 'x', 'y');
+    expect(r3).toEqual({
+      resourceType: 'Patient',
+      identifier: [
+        { system: 'a', value: 'b' },
+        { system: 'x', value: 'y' },
+      ],
+    });
+
+    const r4: Patient = { resourceType: 'Patient', identifier: [{ system: 'x', value: 'b' }] };
+    setIdentifier(r4, 'x', 'y');
+    expect(r4).toEqual({
+      resourceType: 'Patient',
+      identifier: [{ system: 'x', value: 'y' }],
+    });
   });
 
   test('Get extension value', () => {
@@ -439,10 +584,31 @@ describe('Core Utils', () => {
     expect(deepIncludes({ value: 1 }, { value: {} })).toEqual(false);
     expect(deepIncludes({ value: {} }, { value: {} })).toEqual(true);
     expect(deepIncludes({ value: { x: 1 } }, { value: { x: 1 } })).toEqual(true);
-    expect(deepIncludes({ value: { x: 1, y: '2' } }, { value: { x: 1, y: '2', z: 4 } })).toEqual(true);
-    expect(deepIncludes([{ value: 1 }, { value: 2 }], [{ value: 2 }, { value: 1 }, { y: 6 }])).toEqual(true);
+
+    expect(deepIncludes({ value: { x: 1, y: '2' } }, { value: { x: 1, y: '2', z: 4 } })).toEqual(false);
+    expect(deepIncludes({ value: { x: 1, y: '2', z: 4 } }, { value: { x: 1, y: '2' } })).toEqual(true);
+
+    expect(deepIncludes([{ value: 1 }, { value: 2 }], [{ value: 2 }, { value: 1 }, { y: 6 }])).toEqual(false);
+    expect(deepIncludes([{ value: 2 }, { value: 1 }, { y: 6 }], [{ value: 1 }, { value: 2 }])).toEqual(true);
+
     expect(deepIncludes([{ value: 1 }], { value: 1 })).toEqual(false);
     expect(deepIncludes([{ value: 1 }], [{ y: 2, z: 3 }])).toEqual(false);
+
+    const value = {
+      type: 'CodeableConcept',
+      value: {
+        coding: [{ system: 'http://loinc.org', code: '8480-6', display: 'Systolic blood pressure' }],
+        text: 'Systolic blood pressure',
+      },
+    };
+    const pattern = {
+      type: 'CodeableConcept',
+      value: {
+        coding: [{ system: 'http://loinc.org', code: '8480-6' }],
+      },
+    };
+    expect(deepIncludes(value, pattern)).toEqual(true);
+    expect(deepIncludes(pattern, value)).toEqual(false);
   });
 
   test('deepClone', () => {
@@ -887,5 +1053,28 @@ describe('Core Utils', () => {
 
     const result = findResourceByCode(observations, codeToFindAsString, system);
     expect(result).toEqual(observations[0]);
+  });
+
+  test('splitN', () => {
+    expect(
+      splitN('_has:Observation:subject:encounter:Encounter._has:DiagnosticReport:encounter:result.status', ':', 3)
+    ).toEqual(['_has', 'Observation', 'subject:encounter:Encounter._has:DiagnosticReport:encounter:result.status']);
+    expect(splitN('organization', ':', 2)).toEqual(['organization']);
+  });
+
+  test('lazy', () => {
+    const mockFn = jest.fn().mockReturnValue('test result');
+    const lazyFn = lazy(mockFn);
+
+    // the mock function should not have been called
+    expect(mockFn).not.toHaveBeenCalled();
+
+    // Call the lazy function for the first time
+    expect(lazyFn()).toBe('test result');
+    expect(mockFn).toHaveBeenCalledTimes(1);
+
+    // Call the lazy function for the second time, wrapped fn still only called once
+    expect(lazyFn()).toBe('test result');
+    expect(mockFn).toHaveBeenCalledTimes(1);
   });
 });

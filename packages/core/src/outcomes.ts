@@ -1,4 +1,5 @@
 import { OperationOutcome, OperationOutcomeIssue } from '@medplum/fhirtypes';
+import { Constraint } from './typeschema/types';
 
 const OK_ID = 'ok';
 const CREATED_ID = 'created';
@@ -196,6 +197,10 @@ export function isOk(outcome: OperationOutcome): boolean {
   );
 }
 
+export function isCreated(outcome: OperationOutcome): boolean {
+  return outcome.id === CREATED_ID;
+}
+
 export function isAccepted(outcome: OperationOutcome): boolean {
   return outcome.id === ACCEPTED_ID;
 }
@@ -209,33 +214,34 @@ export function isGone(outcome: OperationOutcome): boolean {
 }
 
 export function getStatus(outcome: OperationOutcome): number {
-  if (outcome.id === OK_ID) {
-    return 200;
-  } else if (outcome.id === CREATED_ID) {
-    return 201;
-  } else if (outcome.id === ACCEPTED_ID) {
-    return 202;
-  } else if (outcome.id === NOT_MODIFIED_ID) {
-    return 304;
-  } else if (outcome.id === UNAUTHORIZED_ID) {
-    return 401;
-  } else if (outcome.id === FORBIDDEN_ID) {
-    return 403;
-  } else if (outcome.id === NOT_FOUND_ID) {
-    return 404;
-  } else if (outcome.id === GONE_ID) {
-    return 410;
-  } else if (outcome.id === TOO_MANY_REQUESTS_ID) {
-    return 429;
-  } else {
-    return 400;
+  switch (outcome.id) {
+    case OK_ID:
+      return 200;
+    case CREATED_ID:
+      return 201;
+    case ACCEPTED_ID:
+      return 202;
+    case NOT_MODIFIED_ID:
+      return 304;
+    case UNAUTHORIZED_ID:
+      return 401;
+    case FORBIDDEN_ID:
+      return 403;
+    case NOT_FOUND_ID:
+      return 404;
+    case GONE_ID:
+      return 410;
+    case TOO_MANY_REQUESTS_ID:
+      return 429;
+    default:
+      return outcome.issue?.[0]?.code === 'exception' ? 500 : 400;
   }
 }
 
 /**
  * Asserts that the operation completed successfully and that the resource is defined.
- * @param outcome The operation outcome.
- * @param resource The resource that may or may not have been returned.
+ * @param outcome - The operation outcome.
+ * @param resource - The resource that may or may not have been returned.
  */
 export function assertOk<T>(outcome: OperationOutcome, resource: T | undefined): asserts resource is T {
   if (!isOk(outcome) || resource === undefined) {
@@ -255,7 +261,7 @@ export class OperationOutcomeError extends Error {
 
 /**
  * Normalizes an error object into an OperationOutcome.
- * @param error The error value which could be a string, Error, OperationOutcome, or other unknown type.
+ * @param error - The error value which could be a string, Error, OperationOutcome, or other unknown type.
  * @returns The normalized OperationOutcome.
  */
 export function normalizeOperationOutcome(error: unknown): OperationOutcome {
@@ -270,7 +276,7 @@ export function normalizeOperationOutcome(error: unknown): OperationOutcome {
 
 /**
  * Normalizes an error object into a displayable error string.
- * @param error The error value which could be a string, Error, OperationOutcome, or other unknown type.
+ * @param error - The error value which could be a string, Error, OperationOutcome, or other unknown type.
  * @returns A display string for the error.
  */
 export function normalizeErrorString(error: unknown): string {
@@ -286,12 +292,15 @@ export function normalizeErrorString(error: unknown): string {
   if (isOperationOutcome(error)) {
     return operationOutcomeToString(error);
   }
+  if (typeof error === 'object' && 'code' in error && typeof error.code === 'string') {
+    return error.code;
+  }
   return JSON.stringify(error);
 }
 
 /**
  * Returns a string represenation of the operation outcome.
- * @param outcome The operation outcome.
+ * @param outcome - The operation outcome.
  * @returns The string representation of the operation outcome.
  */
 export function operationOutcomeToString(outcome: OperationOutcome): string {
@@ -301,13 +310,60 @@ export function operationOutcomeToString(outcome: OperationOutcome): string {
 
 /**
  * Returns a string represenation of the operation outcome issue.
- * @param issue The operation outcome issue.
+ * @param issue - The operation outcome issue.
  * @returns The string representation of the operation outcome issue.
  */
 export function operationOutcomeIssueToString(issue: OperationOutcomeIssue): string {
-  let issueStr = issue.details?.text ?? issue.diagnostics ?? 'Unknown error';
+  let issueStr;
+  if (issue.details?.text) {
+    if (issue.diagnostics) {
+      issueStr = `${issue.details.text} (${issue.diagnostics})`;
+    } else {
+      issueStr = issue.details.text;
+    }
+  } else if (issue.diagnostics) {
+    issueStr = issue.diagnostics;
+  } else {
+    issueStr = 'Unknown error';
+  }
   if (issue.expression?.length) {
     issueStr += ` (${issue.expression.join(', ')})`;
   }
   return issueStr;
+}
+
+type IssueType = 'structure' | 'invariant' | 'processing';
+
+function errorIssue(code: IssueType, message: string, path: string, data?: Record<string, any>): OperationOutcomeIssue {
+  const issue: OperationOutcomeIssue = {
+    severity: 'error',
+    code,
+    details: {
+      text: message,
+    },
+    expression: [path],
+  };
+  if (data) {
+    issue.diagnostics = JSON.stringify(data);
+  }
+  return issue;
+}
+
+export function createStructureIssue(expression: string, details: string): OperationOutcomeIssue {
+  return errorIssue('structure', details, expression);
+}
+
+export function createConstraintIssue(expression: string, constraint: Constraint): OperationOutcomeIssue {
+  return errorIssue('invariant', `Constraint ${constraint.key} not met: ${constraint.description}`, expression, {
+    fhirpath: constraint.expression,
+  });
+}
+
+export function createProcessingIssue(
+  expression: string,
+  message: string,
+  err: Error,
+  data?: Record<string, any>
+): OperationOutcomeIssue {
+  return errorIssue('processing', message, expression, { ...data, error: err });
 }

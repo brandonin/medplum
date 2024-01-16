@@ -15,7 +15,7 @@ import {
 } from 'jose';
 import { MedplumServerConfig } from '../config';
 import { systemRepo } from '../fhir/repo';
-import { logger } from '../logger';
+import { globalLogger } from '../logger';
 
 export interface MedplumBaseClaims extends JWTPayload {
   /**
@@ -109,12 +109,12 @@ export async function initKeys(config: MedplumServerConfig): Promise<void> {
   let jsonWebKeys: JsonWebKey[] | undefined;
 
   if (searchResult.length > 0) {
-    logger.info(`Loaded ${searchResult.length} key(s) from the database`);
+    globalLogger.info(`Loaded ${searchResult.length} key(s) from the database`);
     jsonWebKeys = searchResult;
   } else {
     // Generate a key pair
     // https://github.com/panva/jose/blob/HEAD/docs/functions/util_generate_key_pair.generatekeypair.md
-    logger.info('No keys found.  Creating new key...');
+    globalLogger.info('No keys found.  Creating new key...');
     const keyResult = await generateKeyPair(ALG);
     const jwk = await exportJWK(keyResult.privateKey);
     const createResult = await systemRepo.createResource<JsonWebKey>({
@@ -172,7 +172,7 @@ export function getSigningKey(): KeyLike {
 
 /**
  * Generates a secure random string suitable for a client secret or refresh secret.
- * @param size Size of the secret in bytes.  16 recommended for auth codes.  32 recommended for client and refresh secrets.
+ * @param size - Size of the secret in bytes.  16 recommended for auth codes.  32 recommended for client and refresh secrets.
  * @returns Secure random string.
  */
 export function generateSecret(size: number): string {
@@ -181,7 +181,7 @@ export function generateSecret(size: number): string {
 
 /**
  * Generates an ID token JWT.
- * @param claims The ID token claims.
+ * @param claims - The ID token claims.
  * @returns A well-formed JWT that can be used as an ID token.
  */
 export function generateIdToken(claims: MedplumIdTokenClaims): Promise<string> {
@@ -190,16 +190,20 @@ export function generateIdToken(claims: MedplumIdTokenClaims): Promise<string> {
 
 /**
  * Generates an access token JWT.
- * @param claims The access token claims.
+ * @param claims - The access token claims.
+ * @param additionalClaims - Any additional custom claims. Optional.
  * @returns A well-formed JWT that can be used as an access token.
  */
-export function generateAccessToken(claims: MedplumAccessTokenClaims): Promise<string> {
-  return generateJwt('1h', claims);
+export function generateAccessToken(
+  claims: MedplumAccessTokenClaims,
+  additionalClaims?: Record<string, string | number>
+): Promise<string> {
+  return generateJwt('1h', additionalClaims ? { ...claims, ...additionalClaims } : claims);
 }
 
 /**
  * Generates a refresh token JWT.
- * @param claims The refresh token claims.
+ * @param claims - The refresh token claims.
  * @returns A well-formed JWT that can be used as a refresh token.
  */
 export function generateRefreshToken(claims: MedplumRefreshTokenClaims): Promise<string> {
@@ -208,8 +212,8 @@ export function generateRefreshToken(claims: MedplumRefreshTokenClaims): Promise
 
 /**
  * Generates a JWT.
- * @param exp Expiration time resolved to a time span.
- * @param claims The key/value pairs to include in the payload section.
+ * @param exp - Expiration time resolved to a time span.
+ * @param claims - The key/value pairs to include in the payload section.
  * @returns Promise to generate and sign the JWT.
  */
 async function generateJwt(exp: '1h' | '2w', claims: JWTPayload): Promise<string> {
@@ -228,7 +232,7 @@ async function generateJwt(exp: '1h' | '2w', claims: JWTPayload): Promise<string
 
 /**
  * Decodes and verifies a JWT.
- * @param token The jwt token / bearer token.
+ * @param token - The jwt token / bearer token.
  * @returns Returns the decoded claims on success.
  */
 export async function verifyJwt(token: string): Promise<{ payload: JWTPayload; protectedHeader: JWSHeaderParameters }> {
@@ -247,7 +251,7 @@ export async function verifyJwt(token: string): Promise<{ payload: JWTPayload; p
 /**
  * Returns a public key to verify a JWT.
  * Implements the "JWTVerifyGetKey" interface for jwtVerify.
- * @param protectedHeader The JWT protected header.
+ * @param protectedHeader - The JWT protected header.
  * @returns The public key.
  */
 function getKeyForHeader(protectedHeader: JWSHeaderParameters): KeyLike {

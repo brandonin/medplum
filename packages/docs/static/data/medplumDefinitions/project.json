@@ -1,7 +1,7 @@
 {
   "name": "Project",
   "location": "medplum",
-  "description": "",
+  "description": "Encapsulation of resources for a specific project or organization.",
   "properties": [
     {
       "name": "Project",
@@ -408,19 +408,19 @@
       "expression": "Project.name"
     },
     {
-      "name": "name",
+      "name": "owner",
       "type": "reference",
       "description": "The user who owns the project",
       "expression": "Project.owner"
     },
     {
-      "name": "name",
+      "name": "google-client-id",
       "type": "token",
       "description": "The Google Client ID of the project",
       "expression": "Project.site.googleClientId"
     },
     {
-      "name": "name",
+      "name": "recaptcha-site-key",
       "type": "token",
       "description": "The reCAPTCHA site key of the project",
       "expression": "Project.site.recaptchaSiteKey"

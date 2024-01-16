@@ -3,16 +3,25 @@ title: Ratio
 sidebar_position: 30
 ---
 
+import Link from '@docusaurus/Link';
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 import definition from '@site/static/data/datatypeDefinitions/ratio.json';
 import { ResourcePropertiesTable, SearchParamsTable } from '@site/src/components/ResourceTables';
 
 # Ratio
 
-Base StructureDefinition for Ratio Type: A relationship of two Quantity values - expressed as a numerator and a denominator.
+Base <Link to="/docs/api/fhir/resources/structuredefinition">StructureDefinition</Link> for <Link to="/docs/api/fhir/datatypes/ratio">Ratio</Link> Type: A relationship of two <Link to="/docs/api/fhir/datatypes/quantity">Quantity</Link> values - expressed as a numerator and a denominator.
 
-## Properties
+<Tabs queryString="section">
+  <TabItem value="schema" label="Schema" default>
 
-<ResourcePropertiesTable properties={definition.properties.filter((p) => !(p.inherited && p.base.includes('Resource')))} />
+## Elements
 
+<ResourcePropertiesTable
+  properties={definition.properties.filter((p) => !(p.inherited && p.base.includes('Resource')))}
+/>
 
+  </TabItem>
 
+</Tabs>

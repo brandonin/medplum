@@ -1,7 +1,7 @@
 import { Loader, MultiSelect, MultiSelectProps, SelectItem } from '@mantine/core';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { showNotification } from '@mantine/notifications';
 import { normalizeErrorString } from '@medplum/core';
+import { KeyboardEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { killEvent } from '../utils/dom';
 
 export interface AsyncAutocompleteOption<T> extends SelectItem {
@@ -23,14 +23,14 @@ export function AsyncAutocomplete<T>(props: AsyncAutocompleteProps<T>): JSX.Elem
   const { defaultValue, toKey, toOption, loadOptions, onChange, onCreate, creatable, ...rest } = props;
   const defaultItems = toDefaultItems(defaultValue);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [lastValue, setLastValue] = useState<string | undefined>(undefined);
   const [timer, setTimer] = useState<number>();
   const [abortController, setAbortController] = useState<AbortController>();
   const [autoSubmit, setAutoSubmit] = useState<boolean>();
-  const [options, setOptions] = useState<AsyncAutocompleteOption<T>[]>(defaultItems.map(toOption));
+  const [selected, setSelected] = useState<AsyncAutocompleteOption<T>[]>(defaultItems.map(toOption));
+  const [options, setOptions] = useState<AsyncAutocompleteOption<T>[]>([]);
 
+  const lastLoadOptionsRef = useRef<AsyncAutocompleteProps<T>['loadOptions']>();
   const lastValueRef = useRef<string>();
-  lastValueRef.current = lastValue;
 
   const timerRef = useRef<number>();
   timerRef.current = timer;
@@ -48,12 +48,13 @@ export function AsyncAutocomplete<T>(props: AsyncAutocompleteProps<T>): JSX.Elem
     setTimer(undefined);
 
     const value = inputRef.current?.value.trim() || '';
-    if (value === lastValueRef.current) {
-      // Nothing has changed, move on
+    if (value === lastValueRef.current && loadOptions === lastLoadOptionsRef.current) {
+      // Same search input and loadOptions function, move on
       return;
     }
 
-    setLastValue(value);
+    lastValueRef.current = value;
+    lastLoadOptionsRef.current = loadOptions;
 
     const newAbortController = new AbortController();
     setAbortController(newAbortController);
@@ -95,23 +96,31 @@ export function AsyncAutocomplete<T>(props: AsyncAutocompleteProps<T>): JSX.Elem
   const handleChange = useCallback(
     (values: string[]): void => {
       const result: T[] = [];
+      const newSelected: AsyncAutocompleteOption<T>[] = [];
       for (const value of values) {
-        let item = optionsRef.current?.find((option) => option.value === value)?.resource;
-        if (!item && creatable !== false) {
-          item = (onCreate as (input: string) => T)(value);
+        let option = optionsRef.current?.find((option) => option.value === value);
+        let item = option?.resource;
+        if (!item && creatable !== false && onCreate) {
+          item = onCreate(value);
+          option = toOption(item);
         }
 
         if (item) {
           result.push(item);
         }
+
+        if (option) {
+          newSelected.push(option);
+        }
       }
       onChange(result);
+      setSelected(newSelected);
     },
-    [creatable, onChange, onCreate]
+    [creatable, onChange, onCreate, toOption]
   );
 
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent): void => {
+    (e: KeyboardEvent): void => {
       if (e.key === 'Enter') {
         if (!timerRef.current && !abortControllerRef.current) {
           killEvent(e);
@@ -156,7 +165,7 @@ export function AsyncAutocomplete<T>(props: AsyncAutocompleteProps<T>): JSX.Elem
       searchable
       onKeyDown={handleKeyDown}
       onSearchChange={handleSearchChange}
-      data={options}
+      data={[...selected, ...options]}
       onFocus={handleTimer}
       onChange={handleChange}
       onCreate={handleCreate}
@@ -164,6 +173,7 @@ export function AsyncAutocomplete<T>(props: AsyncAutocompleteProps<T>): JSX.Elem
       rightSection={abortController ? <Loader size={16} /> : null}
       filter={handleFilter}
       creatable
+      withinPortal={true}
     />
   );
 }

@@ -12,6 +12,7 @@ import { getConfig } from '../../config';
 import { getPatientCompartments } from '../patient';
 import { Repository } from '../repo';
 import { sendResponse } from '../routes';
+import { getAuthenticatedContext } from '../../context';
 
 // Patient everything operation.
 // https://hl7.org/fhir/operation-patient-everything.html
@@ -19,18 +20,18 @@ import { sendResponse } from '../routes';
 /**
  * Handles a Patient everything request.
  * Searches for all resources related to the patient.
- * @param req The HTTP request.
- * @param res The HTTP response.
+ * @param req - The HTTP request.
+ * @param res - The HTTP response.
  */
 export async function patientEverythingHandler(req: Request, res: Response): Promise<void> {
+  const ctx = getAuthenticatedContext();
   const { id } = req.params;
-  const repo = res.locals.repo as Repository;
 
   // First read the patient to verify access
-  const patient = await repo.readResource<Patient>('Patient', id);
+  const patient = await ctx.repo.readResource<Patient>('Patient', id);
 
   // Then read all of the patient data
-  const bundle = await getPatientEverything(repo, patient);
+  const bundle = await getPatientEverything(ctx.repo, patient);
 
   await sendResponse(res, allOk, bundle);
 }
@@ -38,8 +39,8 @@ export async function patientEverythingHandler(req: Request, res: Response): Pro
 /**
  * Executes the Patient $everything operation.
  * Searches for all resources related to the patient.
- * @param repo The repository.
- * @param patient The root patient.
+ * @param repo - The repository.
+ * @param patient - The root patient.
  * @returns The patient everything search result bundle.
  */
 export async function getPatientEverything(repo: Repository, patient: Patient): Promise<Bundle> {

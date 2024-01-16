@@ -1,5 +1,5 @@
 import { createStyles, Group, List, Stack, Text, Title } from '@mantine/core';
-import { capitalize, formatDateTime, formatObservationValue } from '@medplum/core';
+import { capitalize, formatCodeableConcept, formatDateTime, formatObservationValue, isReference } from '@medplum/core';
 import {
   Annotation,
   DiagnosticReport,
@@ -9,16 +9,15 @@ import {
   Reference,
   Specimen,
 } from '@medplum/fhirtypes';
-import React, { useEffect, useState } from 'react';
+import { useMedplum, useResource } from '@medplum/react-hooks';
+import { useEffect, useState } from 'react';
 import { CodeableConceptDisplay } from '../CodeableConceptDisplay/CodeableConceptDisplay';
 import { MedplumLink } from '../MedplumLink/MedplumLink';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
 import { NoteDisplay } from '../NoteDisplay/NoteDisplay';
 import { RangeDisplay } from '../RangeDisplay/RangeDisplay';
 import { ReferenceDisplay } from '../ReferenceDisplay/ReferenceDisplay';
 import { ResourceBadge } from '../ResourceBadge/ResourceBadge';
 import { StatusBadge } from '../StatusBadge/StatusBadge';
-import { useResource } from '../useResource/useResource';
 
 const useStyles = createStyles((theme) => ({
   table: {
@@ -93,7 +92,7 @@ export function DiagnosticReportDisplay(props: DiagnosticReportDisplayProps): JS
     <Stack>
       <Title>Diagnostic Report</Title>
       <DiagnosticReportHeader value={diagnosticReport} />
-      {!props.hideSpecimenInfo && SpecimenInfo(specimens)}
+      {specimens && !props.hideSpecimenInfo && SpecimenInfo(specimens)}
       {diagnosticReport.result && (
         <ObservationTable hideObservationNotes={props.hideObservationNotes} value={diagnosticReport.result} />
       )}
@@ -167,8 +166,8 @@ function SpecimenInfo(specimens: Specimen[] | undefined): JSX.Element {
       </Title>
 
       <List type="ordered">
-        {specimens?.map((specimen, index) => (
-          <List.Item ml={'sm'} key={`specimen-${specimen.id}-${index}`}>
+        {specimens?.map((specimen) => (
+          <List.Item ml={'sm'} key={`specimen-${specimen.id}`}>
             <Group spacing={20}>
               <Group spacing={5}>
                 <Text fw={500}>Collected:</Text> {formatDateTime(specimen.collection?.collectedDateTime)}
@@ -186,6 +185,7 @@ function SpecimenInfo(specimens: Specimen[] | undefined): JSX.Element {
 
 export interface ObservationTableProps {
   value?: Observation[] | Reference<Observation>[];
+  ancestorIds?: string[];
   hideObservationNotes?: boolean;
 }
 
@@ -205,20 +205,40 @@ export function ObservationTable(props: ObservationTableProps): JSX.Element {
         </tr>
       </thead>
       <tbody>
-        {props.value?.map((observation, index) => (
-          <ObservationRow
-            key={`obs-${observation.id}-${index}`}
-            hideObservationNotes={props.hideObservationNotes}
-            value={observation}
-          />
-        ))}
+        <ObservationRowGroup
+          value={props.value}
+          ancestorIds={props.ancestorIds}
+          hideObservationNotes={props.hideObservationNotes}
+        />
       </tbody>
     </table>
   );
 }
 
+interface ObservationRowGroupProps {
+  value?: Observation[] | Reference<Observation>[];
+  ancestorIds?: string[];
+  hideObservationNotes?: boolean;
+}
+
+function ObservationRowGroup(props: ObservationRowGroupProps): JSX.Element {
+  return (
+    <>
+      {props.value?.map((observation) => (
+        <ObservationRow
+          key={`obs-${isReference(observation) ? observation.reference : observation.id}`}
+          value={observation}
+          ancestorIds={props.ancestorIds}
+          hideObservationNotes={props.hideObservationNotes}
+        />
+      ))}
+    </>
+  );
+}
+
 interface ObservationRowProps {
   value: Observation | Reference<Observation>;
+  ancestorIds?: string[];
   hideObservationNotes?: boolean;
 }
 
@@ -226,9 +246,10 @@ function ObservationRow(props: ObservationRowProps): JSX.Element | null {
   const { classes, cx } = useStyles();
   const observation = useResource(props.value);
 
-  if (!observation) {
+  if (!observation || props.ancestorIds?.includes(observation.id as string)) {
     return null;
   }
+
   const displayNotes = !props.hideObservationNotes && observation.note;
 
   const critical = isCritical(observation);
@@ -254,22 +275,29 @@ function ObservationRow(props: ObservationRowProps): JSX.Element | null {
         </td>
         <td>
           {observation.category && observation.category.length > 0 && (
-            <ul>
-              {observation.category.map((concept, index) => (
-                <li key={`category-${index}`}>
+            <>
+              {observation.category.map((concept) => (
+                <div key={`category-${formatCodeableConcept(concept)}`}>
                   <CodeableConceptDisplay value={concept} />
-                </li>
+                </div>
               ))}
-            </ul>
+            </>
           )}
         </td>
         <td>
-          {observation.performer?.map((performer) => (
-            <ReferenceDisplay key={performer.reference} value={performer} />
-          ))}
+          {observation.performer?.map((performer) => <ReferenceDisplay key={performer.reference} value={performer} />)}
         </td>
         <td>{observation.status && <StatusBadge status={observation.status} />}</td>
       </tr>
+      {observation.hasMember && (
+        <ObservationRowGroup
+          value={observation.hasMember as Reference<Observation>[]}
+          ancestorIds={
+            props.ancestorIds ? [...props.ancestorIds, observation.id as string] : [observation.id as string]
+          }
+          hideObservationNotes={props.hideObservationNotes}
+        />
+      )}
       {displayNotes && (
         <tr>
           <td colSpan={6}>
@@ -308,7 +336,7 @@ function ReferenceRangeDisplay(props: ReferenceRangeProps): JSX.Element | null {
 /**
  * Returns true if the observation is critical.
  * See: https://www.hl7.org/fhir/valueset-observation-interpretation.html
- * @param observation The FHIR observation.
+ * @param observation - The FHIR observation.
  * @returns True if the FHIR observation is a critical value.
  */
 function isCritical(observation: Observation): boolean {

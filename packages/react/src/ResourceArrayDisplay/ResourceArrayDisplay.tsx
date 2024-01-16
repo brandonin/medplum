@@ -1,10 +1,8 @@
-import { PropertyType } from '@medplum/core';
-import { ElementDefinition } from '@medplum/fhirtypes';
-import React from 'react';
+import { InternalSchemaElement } from '@medplum/core';
 import { ResourcePropertyDisplay } from '../ResourcePropertyDisplay/ResourcePropertyDisplay';
 
-interface ResourceArrayDisplayProps {
-  property: ElementDefinition;
+export interface ResourceArrayDisplayProps {
+  property: InternalSchemaElement;
   values: any[];
   arrayElement?: boolean;
   ignoreMissingValues?: boolean;
@@ -12,10 +10,9 @@ interface ResourceArrayDisplayProps {
 }
 
 export function ResourceArrayDisplay(props: ResourceArrayDisplayProps): JSX.Element {
-  const property = props.property;
-  const values = props.values ?? [];
-  const propertyType = property.type?.[0]?.code as PropertyType;
-  return (
+  const { property, values } = props;
+  const propertyType = property.type[0].code;
+  return props.values ? (
     <>
       {values.map((v: any, index: number) => (
         <div key={`${index}-${values.length}`}>
@@ -30,5 +27,7 @@ export function ResourceArrayDisplay(props: ResourceArrayDisplayProps): JSX.Elem
         </div>
       ))}
     </>
+  ) : (
+    <></>
   );
 }

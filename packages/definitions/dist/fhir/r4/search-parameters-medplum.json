@@ -17,9 +17,7 @@
         "code": "name",
         "base": ["Project"],
         "type": "string",
-        "expression": "Project.name",
-        "xpath": "f:Project/f:name",
-        "xpathUsage": "normal"
+        "expression": "Project.name"
       }
     },
     {
@@ -29,7 +27,7 @@
         "id": "Project-owner",
         "url": "https://medplum.com/fhir/SearchParameter/Project-owner",
         "version": "4.0.1",
-        "name": "name",
+        "name": "owner",
         "status": "draft",
         "publisher": "Medplum",
         "description": "The user who owns the project",
@@ -37,8 +35,6 @@
         "base": ["Project"],
         "type": "reference",
         "expression": "Project.owner",
-        "xpath": "f:Project/f:owner",
-        "xpathUsage": "normal",
         "target": ["User"]
       }
     },
@@ -49,16 +45,14 @@
         "id": "Project-google-client-id",
         "url": "https://medplum.com/fhir/SearchParameter/Project-google-client-id",
         "version": "4.0.1",
-        "name": "name",
+        "name": "google-client-id",
         "status": "draft",
         "publisher": "Medplum",
         "description": "The Google Client ID of the project",
         "code": "google-client-id",
         "base": ["Project"],
         "type": "token",
-        "expression": "Project.site.googleClientId",
-        "xpath": "f:Project/f:site/f:googleClientId",
-        "xpathUsage": "normal"
+        "expression": "Project.site.googleClientId"
       }
     },
     {
@@ -68,16 +62,14 @@
         "id": "Project-recaptcha-site-key",
         "url": "https://medplum.com/fhir/SearchParameter/Project-recaptcha-site-key",
         "version": "4.0.1",
-        "name": "name",
+        "name": "recaptcha-site-key",
         "status": "draft",
         "publisher": "Medplum",
         "description": "The reCAPTCHA site key of the project",
         "code": "recaptcha-site-key",
         "base": ["Project"],
         "type": "token",
-        "expression": "Project.site.recaptchaSiteKey",
-        "xpath": "f:Project/f:site/f:recaptchaSiteKey",
-        "xpathUsage": "normal"
+        "expression": "Project.site.recaptchaSiteKey"
       }
     },
     {
@@ -95,8 +87,6 @@
         "base": ["ProjectMembership"],
         "type": "reference",
         "expression": "ProjectMembership.project",
-        "xpath": "f:ProjectMembership/f:project",
-        "xpathUsage": "normal",
         "target": ["Project"]
       }
     },
@@ -115,8 +105,6 @@
         "base": ["ProjectMembership"],
         "type": "reference",
         "expression": "ProjectMembership.user",
-        "xpath": "f:ProjectMembership/f:user",
-        "xpathUsage": "normal",
         "target": ["ClientApplication", "User"]
       }
     },
@@ -135,8 +123,6 @@
         "base": ["ProjectMembership"],
         "type": "reference",
         "expression": "ProjectMembership.profile",
-        "xpath": "f:ProjectMembership/f:profile",
-        "xpathUsage": "normal",
         "target": ["ClientApplication", "Patient", "Practitioner"]
       }
     },
@@ -154,9 +140,7 @@
         "code": "profile-type",
         "base": ["ProjectMembership"],
         "type": "token",
-        "expression": "ProjectMembership.profile.resolve().resourceType",
-        "xpath": "f:ProjectMembership/f:profile",
-        "xpathUsage": "normal"
+        "expression": "ProjectMembership.profile.resolve().resourceType"
       }
     },
     {
@@ -173,9 +157,25 @@
         "code": "external-id",
         "base": ["ProjectMembership"],
         "type": "string",
-        "expression": "ProjectMembership.externalId",
-        "xpath": "f:ProjectMembership/f:externalId",
-        "xpathUsage": "normal"
+        "expression": "ProjectMembership.externalId"
+      }
+    },
+    {
+      "fullUrl": "https://medplum.com/fhir/SearchParameter/ProjectMembership-access-policy",
+      "resource": {
+        "resourceType": "SearchParameter",
+        "id": "ProjectMembership-access-policy",
+        "url": "https://medplum.com/fhir/SearchParameter/ProjectMembership-access-policy",
+        "version": "4.0.1",
+        "name": "access-policy",
+        "status": "draft",
+        "publisher": "Medplum",
+        "description": "The access policy of the user",
+        "code": "access-policy",
+        "base": ["ProjectMembership"],
+        "type": "reference",
+        "expression": "ProjectMembership.accessPolicy | ProjectMembership.access.policy",
+        "target": ["AccessPolicy"]
       }
     },
     {
@@ -192,9 +192,7 @@
         "code": "name",
         "base": ["ClientApplication"],
         "type": "string",
-        "expression": "ClientApplication.name",
-        "xpath": "f:ClientApplication/f:name",
-        "xpathUsage": "normal"
+        "expression": "ClientApplication.name"
       }
     },
     {
@@ -211,9 +209,7 @@
         "code": "active",
         "base": ["JsonWebKey"],
         "type": "token",
-        "expression": "JsonWebKey.active",
-        "xpath": "f:JsonWebKey/f:active",
-        "xpathUsage": "normal"
+        "expression": "JsonWebKey.active"
       }
     },
     {
@@ -230,9 +226,7 @@
         "code": "email",
         "base": ["User"],
         "type": "string",
-        "expression": "User.email",
-        "xpath": "f:User/f:email",
-        "xpathUsage": "normal"
+        "expression": "User.email"
       }
     },
     {
@@ -249,9 +243,7 @@
         "code": "external-id",
         "base": ["User"],
         "type": "string",
-        "expression": "User.externalId",
-        "xpath": "f:User/f:externalId",
-        "xpathUsage": "normal"
+        "expression": "User.externalId"
       }
     },
     {
@@ -269,8 +261,6 @@
         "base": ["User"],
         "type": "reference",
         "expression": "User.project",
-        "xpath": "f:User/f:project",
-        "xpathUsage": "normal",
         "target": ["Project"]
       }
     },
@@ -281,7 +271,7 @@
         "id": "Login-user",
         "url": "https://medplum.com/fhir/SearchParameter/Login-user",
         "version": "4.0.1",
-        "name": "code",
+        "name": "user",
         "status": "draft",
         "publisher": "Medplum",
         "description": "The user of the login",
@@ -289,8 +279,6 @@
         "base": ["Login"],
         "type": "reference",
         "expression": "Login.user",
-        "xpath": "f:Login/f:user",
-        "xpathUsage": "normal",
         "target": ["Bot", "ClientApplication", "User"]
       }
     },
@@ -308,9 +296,7 @@
         "code": "code",
         "base": ["Login"],
         "type": "token",
-        "expression": "Login.code",
-        "xpath": "f:Login/f:code",
-        "xpathUsage": "normal"
+        "expression": "Login.code"
       }
     },
     {
@@ -327,9 +313,7 @@
         "code": "cookie",
         "base": ["Login"],
         "type": "token",
-        "expression": "Login.cookie",
-        "xpath": "f:Login/f:cookie",
-        "xpathUsage": "normal"
+        "expression": "Login.cookie"
       }
     },
     {
@@ -339,16 +323,14 @@
         "id": "Bot-identifier",
         "url": "https://medplum.com/fhir/SearchParameter/Bot-identifier",
         "version": "4.0.1",
-        "name": "name",
+        "name": "identifier",
         "status": "draft",
         "publisher": "Medplum",
         "description": "The identifier of the bot",
         "code": "identifier",
         "base": ["Bot"],
         "type": "token",
-        "expression": "Bot.identifier",
-        "xpath": "f:Bot/f:identifier",
-        "xpathUsage": "normal"
+        "expression": "Bot.identifier"
       }
     },
     {
@@ -365,9 +347,7 @@
         "code": "name",
         "base": ["Bot"],
         "type": "string",
-        "expression": "Bot.name",
-        "xpath": "f:Bot/f:name",
-        "xpathUsage": "normal"
+        "expression": "Bot.name"
       }
     },
     {
@@ -384,9 +364,7 @@
         "code": "category",
         "base": ["Bot"],
         "type": "token",
-        "expression": "Bot.category",
-        "xpath": "f:Bot/f:category",
-        "xpathUsage": "normal"
+        "expression": "Bot.category"
       }
     },
     {
@@ -403,9 +381,7 @@
         "code": "name",
         "base": ["UserConfiguration"],
         "type": "string",
-        "expression": "UserConfiguration.name",
-        "xpath": "f:UserConfiguration/f:name",
-        "xpathUsage": "normal"
+        "expression": "UserConfiguration.name"
       }
     },
     {
@@ -422,9 +398,7 @@
         "code": "name",
         "base": ["AccessPolicy"],
         "type": "string",
-        "expression": "AccessPolicy.name",
-        "xpath": "f:AccessPolicy/f:name",
-        "xpathUsage": "normal"
+        "expression": "AccessPolicy.name"
       }
     },
     {
@@ -434,20 +408,18 @@
         "id": "BulkDataExport-status",
         "url": "https://medplum.com/fhir/SearchParameter/BulkDataExport-status",
         "version": "4.0.1",
-        "name": "name",
+        "name": "status",
         "status": "draft",
         "publisher": "Medplum",
         "description": "The name of the access policy",
         "code": "status",
         "base": ["BulkDataExport"],
         "type": "token",
-        "expression": "BulkDataExport.status",
-        "xpath": "f:BulkDataExport/f:status",
-        "xpathUsage": "normal"
+        "expression": "BulkDataExport.status"
       }
     },
     {
-      "fullUrl": "http://hl7.org/fhir/SearchParameter/ObservationDefinition-code",
+      "fullUrl": "https://medplum.com/fhir/SearchParameter/ObservationDefinition-code",
       "resource": {
         "resourceType": "SearchParameter",
         "id": "OperationDefinition-code",
@@ -460,13 +432,11 @@
         "code": "code",
         "base": ["ObservationDefinition"],
         "type": "token",
-        "expression": "ObservationDefinition.code",
-        "xpath": "f:ObservationDefinition/f:code",
-        "xpathUsage": "normal"
+        "expression": "ObservationDefinition.code"
       }
     },
     {
-      "fullUrl": "http://hl7.org/fhir/SearchParameter/ObservationDefinition-publisher",
+      "fullUrl": "https://medplum.com/fhir/SearchParameter/ObservationDefinition-publisher",
       "resource": {
         "resourceType": "SearchParameter",
         "id": "OperationDefinition-publisher",
@@ -480,38 +450,34 @@
         "base": ["ObservationDefinition"],
         "type": "reference",
         "expression": "ObservationDefinition.publisher",
-        "xpath": "f:ObservationDefinition/f:publisher",
-        "xpathUsage": "normal",
         "target": ["Practitioner", "PractitionerRole", "Organization"]
       }
     },
     {
-      "fullUrl": "http://hl7.org/fhir/SearchParameter/DomainConfiguration-domain",
+      "fullUrl": "https://medplum.com/fhir/SearchParameter/DomainConfiguration-domain",
       "resource": {
         "resourceType": "SearchParameter",
         "id": "DomainConfiguration-domain",
         "url": "https://medplum.com/fhir/SearchParameter/DomainConfiguration-domain",
         "version": "4.0.1",
-        "name": "publisher",
+        "name": "domain",
         "status": "draft",
         "publisher": "Medplum",
         "description": "The publisher of the observation definition.",
         "code": "domain",
         "base": ["DomainConfiguration"],
         "type": "token",
-        "expression": "DomainConfiguration.domain",
-        "xpath": "f:DomainConfiguration/f:domain",
-        "xpathUsage": "normal"
+        "expression": "DomainConfiguration.domain"
       }
     },
     {
-      "fullUrl": "http://hl7.org/fhir/SearchParameter/PasswordChangeRequest-user",
+      "fullUrl": "https://medplum.com/fhir/SearchParameter/PasswordChangeRequest-user",
       "resource": {
         "resourceType": "SearchParameter",
         "id": "PasswordChangeRequest-user",
         "url": "https://medplum.com/fhir/SearchParameter/PasswordChangeRequest-user",
         "version": "4.0.1",
-        "name": "publisher",
+        "name": "user",
         "status": "draft",
         "publisher": "Medplum",
         "description": "The user for the password change request.",
@@ -519,17 +485,15 @@
         "base": ["PasswordChangeRequest"],
         "type": "reference",
         "expression": "PasswordChangeRequest.user",
-        "xpath": "f:PasswordChangeRequest/f:user",
-        "xpathUsage": "normal",
         "target": ["User"]
       }
     },
     {
-      "fullUrl": "http://hl7.org/fhir/SearchParameter/Task-due-date",
+      "fullUrl": "https://medplum.com/fhir/SearchParameter/Task-due-date",
       "resource": {
         "resourceType": "SearchParameter",
         "id": "Task-due-date",
-        "url": "http://hl7.org/fhir/SearchParameter/Task-due-date",
+        "url": "https://medplum.com/fhir/SearchParameter/Task-due-date",
         "version": "4.0.1",
         "name": "due-date",
         "status": "draft",
@@ -539,9 +503,75 @@
         "base": ["Task"],
         "type": "date",
         "expression": "Task.restriction.period",
-        "xpath": "f:Task/f:restriction/f:period",
-        "xpathUsage": "normal",
         "comparator": ["eq", "ne", "gt", "ge", "lt", "le", "sa", "eb", "ap"]
+      }
+    },
+    {
+      "fullUrl": "https://medplum.com/fhir/SearchParameter/Agent-identifier",
+      "resource": {
+        "resourceType": "SearchParameter",
+        "id": "Agent-identifier",
+        "url": "https://medplum.com/fhir/SearchParameter/Agent-identifier",
+        "version": "4.0.1",
+        "name": "identifier",
+        "status": "draft",
+        "publisher": "Medplum",
+        "description": "The identifier of the agent",
+        "code": "identifier",
+        "base": ["Agent"],
+        "type": "token",
+        "expression": "Agent.identifier"
+      }
+    },
+    {
+      "fullUrl": "https://medplum.com/fhir/SearchParameter/Agent-name",
+      "resource": {
+        "resourceType": "SearchParameter",
+        "id": "Agent-name",
+        "url": "https://medplum.com/fhir/SearchParameter/Agent-name",
+        "version": "4.0.1",
+        "name": "name",
+        "status": "draft",
+        "publisher": "Medplum",
+        "description": "Search for Agent by name",
+        "code": "name",
+        "base": ["Agent"],
+        "type": "string",
+        "expression": "Agent.name"
+      }
+    },
+    {
+      "fullUrl": "https://medplum.com/fhir/SearchParameter/Agent-status",
+      "resource": {
+        "resourceType": "SearchParameter",
+        "id": "Agent-status",
+        "url": "https://medplum.com/fhir/SearchParameter/Agent-status",
+        "version": "4.0.1",
+        "name": "status",
+        "status": "draft",
+        "publisher": "Medplum",
+        "description": "Search for Agent by status",
+        "code": "status",
+        "base": ["Agent"],
+        "type": "token",
+        "expression": "Agent.status"
+      }
+    },
+    {
+      "fullUrl": "https://medplum.com/fhir/SearchParameter/priority-order",
+      "resource": {
+        "resourceType": "SearchParameter",
+        "id": "priority-order",
+        "url": "https://medplum.com/fhir/SearchParameter/priority-order",
+        "version": "4.0.1",
+        "name": "priority-order",
+        "status": "draft",
+        "publisher": "Medplum",
+        "description": "Numeric priority order for resource types using http://hl7.org/fhir/ValueSet/request-priority",
+        "code": "priority-order",
+        "base": ["CommunicationRequest", "MedicationRequest", "RequestGroup", "ServiceRequest", "Task"],
+        "type": "number",
+        "expression": "iif(priority = 'stat', 50, iif(priority = 'asap', 40, iif(priority = 'urgent', 30, iif(priority = 'routine', 20, 10))))"
       }
     }
   ]

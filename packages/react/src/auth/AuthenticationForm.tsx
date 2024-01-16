@@ -7,19 +7,21 @@ import {
   normalizeOperationOutcome,
 } from '@medplum/core';
 import { OperationOutcome } from '@medplum/fhirtypes';
-import React, { useCallback, useState } from 'react';
+import { useMedplum } from '@medplum/react-hooks';
+import { ReactNode, useCallback, useState } from 'react';
 import { Form } from '../Form/Form';
-import { getGoogleClientId, GoogleButton } from '../GoogleButton/GoogleButton';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
+import { GoogleButton } from '../GoogleButton/GoogleButton';
+import { getGoogleClientId } from '../GoogleButton/GoogleButton.utils';
 import { OperationOutcomeAlert } from '../OperationOutcomeAlert/OperationOutcomeAlert';
 import { getErrorsForInput, getIssuesForExpression } from '../utils/outcomes';
 
 export interface AuthenticationFormProps extends BaseLoginRequest {
+  readonly disableEmailAuth?: boolean;
   readonly disableGoogleAuth?: boolean;
   readonly onForgotPassword?: () => void;
   readonly onRegister?: () => void;
   readonly handleAuthResponse: (response: LoginAuthenticationResponse) => void;
-  readonly children?: React.ReactNode;
+  readonly children?: ReactNode;
 }
 
 export function AuthenticationForm(props: AuthenticationFormProps): JSX.Element {
@@ -33,15 +35,16 @@ export function AuthenticationForm(props: AuthenticationFormProps): JSX.Element 
 }
 
 export interface EmailFormProps extends BaseLoginRequest {
+  readonly disableEmailAuth?: boolean;
   readonly disableGoogleAuth?: boolean;
   readonly onRegister?: () => void;
   readonly handleAuthResponse: (response: LoginAuthenticationResponse) => void;
   readonly setEmail: (email: string) => void;
-  readonly children?: React.ReactNode;
+  readonly children?: ReactNode;
 }
 
 export function EmailForm(props: EmailFormProps): JSX.Element {
-  const { setEmail, onRegister, handleAuthResponse, children, ...baseLoginRequest } = props;
+  const { setEmail, onRegister, handleAuthResponse, children, disableEmailAuth, ...baseLoginRequest } = props;
   const medplum = useMedplum();
   const googleClientId = !props.disableGoogleAuth && getGoogleClientId(props.googleClientId);
 
@@ -94,17 +97,19 @@ export function EmailForm(props: EmailFormProps): JSX.Element {
           <Group position="center" p="xl" style={{ height: 70 }}>
             <GoogleButton googleClientId={googleClientId} handleGoogleCredential={handleGoogleCredential} />
           </Group>
-          <Divider label="or" labelPosition="center" my="lg" />
+          {!disableEmailAuth && <Divider label="or" labelPosition="center" my="lg" />}
         </>
       )}
-      <TextInput
-        name="email"
-        type="email"
-        label="Email"
-        placeholder="name@domain.com"
-        required={true}
-        autoFocus={true}
-      />
+      {!disableEmailAuth && (
+        <TextInput
+          name="email"
+          type="email"
+          label="Email"
+          placeholder="name@domain.com"
+          required={true}
+          autoFocus={true}
+        />
+      )}
       <Group position="apart" mt="xl" spacing={0} noWrap>
         <div>
           {onRegister && (
@@ -113,7 +118,7 @@ export function EmailForm(props: EmailFormProps): JSX.Element {
             </Anchor>
           )}
         </div>
-        <Button type="submit">Next</Button>
+        {!disableEmailAuth && <Button type="submit">Next</Button>}
       </Group>
     </Form>
   );
@@ -123,7 +128,7 @@ export interface PasswordFormProps extends BaseLoginRequest {
   readonly email: string;
   readonly onForgotPassword?: () => void;
   readonly handleAuthResponse: (response: LoginAuthenticationResponse) => void;
-  readonly children?: React.ReactNode;
+  readonly children?: ReactNode;
 }
 
 export function PasswordForm(props: PasswordFormProps): JSX.Element {

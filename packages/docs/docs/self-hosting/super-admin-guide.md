@@ -18,7 +18,7 @@ Medplum uses custom FHIR resource types to manage user accounts and project admi
 
 The most important custom resource types are:
 
-- `User` - represents a user account capabale of logging into the system
+- `User` - represents a user account capable of logging into the system
 - `Project` - represents a project which contains other resources
 - `ProjectMembership` - link between a `User` and a `Project` which also defines `AccessPolicy` and `UserConfiguration`
 - `Login` - an authentication event and session state
@@ -38,7 +38,7 @@ In the future, we hope that most of this maintenance will be 100% automatic and 
 In the "Super Admin" page, there are buttons and sections for:
 
 - Rebuild Structure Definitions
-- Rebuild Search Paramters
+- Rebuild Search Parameters
 - Rebuild Value Sets
 
 From time to time, Medplum will make changes to custom resources. The server runtime uses `StructureDefinition` and `SearchParameter` files directly from disk. However, the client requests `StructureDefinition` resources to dynamically generate client-side UI elements such as search filters, the "Details" page, and the "Edit" page. If a Medplum changes these resources, you may need to rebuild the index before you see the changes in the client.
@@ -59,6 +59,8 @@ Some system generated resources can accumulate and lead to degraded performance.
 
 User accounts are global, and can be members of multiple projects. Therefore, normal project administrators do not have access to "Set Password" functionality. Use the "Force Set Password" button to forcefully override a user's password.
 
+[Video Tutorial](https://youtu.be/jw1NZbk5WmA)
+
 ### Inviting Users to Projects
 
-When logged in as super admin you can invite users to any project.  To do so navigate to the `admin/invite` page.  The first field on the page will allow you to specify which project you want to invite a user to as well as whether you want them to be an admin.  This functionality is also available via the [API](/docs/auth/user-management-guide#invite-via-api).
+When logged in as super admin you can invite users to any project. To do so navigate to the `admin/invite` page. The first field on the page will allow you to specify which project you want to invite a user to as well as whether you want them to be an admin. This functionality is also available via the [API](/docs/auth/user-management-guide#invite-via-api).

@@ -1,26 +1,21 @@
 import { allOk, badRequest } from '@medplum/core';
 import { PasswordChangeRequest, Reference, User } from '@medplum/fhirtypes';
 import { Request, Response } from 'express';
-import { body, validationResult } from 'express-validator';
+import { body } from 'express-validator';
 import { pwnedPassword } from 'hibp';
-import { invalidRequest, sendOutcome } from '../fhir/outcomes';
+import { sendOutcome } from '../fhir/outcomes';
 import { systemRepo } from '../fhir/repo';
 import { timingSafeEqualStr } from '../oauth/utils';
+import { makeValidationMiddleware } from '../util/validator';
 import { bcryptHashPassword } from './utils';
 
-export const setPasswordValidators = [
+export const setPasswordValidator = makeValidationMiddleware([
   body('id').isUUID().withMessage('Invalid request ID'),
   body('secret').notEmpty().withMessage('Missing secret'),
   body('password').isLength({ min: 8 }).withMessage('Invalid password, must be at least 8 characters'),
-];
+]);
 
 export async function setPasswordHandler(req: Request, res: Response): Promise<void> {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    sendOutcome(res, invalidRequest(errors));
-    return;
-  }
-
   const pcr = await systemRepo.readResource<PasswordChangeRequest>('PasswordChangeRequest', req.body.id);
 
   if (pcr.used) {
@@ -41,7 +36,7 @@ export async function setPasswordHandler(req: Request, res: Response): Promise<v
     return;
   }
 
-  await setPassword(user, req.body.password);
+  await setPassword({ ...user, emailVerified: true }, req.body.password);
   await systemRepo.updateResource<PasswordChangeRequest>({ ...pcr, used: true });
   sendOutcome(res, allOk);
 }

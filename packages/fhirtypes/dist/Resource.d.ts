@@ -7,6 +7,7 @@ import { AccessPolicy } from './AccessPolicy';
 import { Account } from './Account';
 import { ActivityDefinition } from './ActivityDefinition';
 import { AdverseEvent } from './AdverseEvent';
+import { Agent } from './Agent';
 import { AllergyIntolerance } from './AllergyIntolerance';
 import { Appointment } from './Appointment';
 import { AppointmentResponse } from './AppointmentResponse';
@@ -145,6 +146,7 @@ import { SpecimenDefinition } from './SpecimenDefinition';
 import { StructureDefinition } from './StructureDefinition';
 import { StructureMap } from './StructureMap';
 import { Subscription } from './Subscription';
+import { SubscriptionStatus } from './SubscriptionStatus';
 import { Substance } from './Substance';
 import { SubstanceNucleicAcid } from './SubstanceNucleicAcid';
 import { SubstancePolymer } from './SubstancePolymer';
@@ -168,6 +170,7 @@ export type Resource = AccessPolicy
   | Account
   | ActivityDefinition
   | AdverseEvent
+  | Agent
   | AllergyIntolerance
   | Appointment
   | AppointmentResponse
@@ -306,6 +309,7 @@ export type Resource = AccessPolicy
   | StructureDefinition
   | StructureMap
   | Subscription
+  | SubscriptionStatus
   | Substance
   | SubstanceNucleicAcid
   | SubstancePolymer

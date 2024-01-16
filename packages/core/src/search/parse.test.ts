@@ -1,7 +1,8 @@
 import { readJson } from '@medplum/definitions';
 import { Bundle, SearchParameter } from '@medplum/fhirtypes';
-import { indexSearchParameterBundle, indexStructureDefinitionBundle } from '../types';
-import { Operator, SearchRequest, parseSearchRequest, parseSearchUrl } from './search';
+import { indexSearchParameterBundle } from '../types';
+import { indexStructureDefinitionBundle } from '../typeschema/types';
+import { Operator, parseSearchRequest, parseSearchUrl, SearchRequest } from './search';
 
 describe('Search parser', () => {
   beforeAll(() => {
@@ -97,11 +98,18 @@ describe('Search parser', () => {
     });
   });
 
-  test('Parse summary', () => {
-    expect(parseSearchRequest('Patient', { _summary: 'true' })).toMatchObject<SearchRequest>({
-      resourceType: 'Patient',
-      total: 'accurate',
-      count: 0,
+  test.each<[string, Partial<SearchRequest>]>([
+    ['count', { total: 'accurate', count: 0 }],
+    ['true', { summary: 'true' }],
+    ['data', { summary: 'data' }],
+    ['text', { summary: 'text' }],
+    ['false', {}],
+    ['notarealvalue', {}],
+  ])('Parse _summary=%s', (value, expected) => {
+    const resourceType = 'Patient';
+    expect(parseSearchRequest(resourceType, { _summary: value })).toMatchObject<SearchRequest>({
+      resourceType,
+      ...expected,
     });
   });
 
@@ -450,9 +458,7 @@ describe('Search parser', () => {
         {
           code: 'value-quantity',
           operator: Operator.EQUALS,
-          value: '5.4',
-          unitSystem: 'https://unitsofmeasure.org',
-          unitCode: 'mg',
+          value: '5.4|https://unitsofmeasure.org|mg',
         },
       ],
     });

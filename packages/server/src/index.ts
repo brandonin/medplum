@@ -1,26 +1,42 @@
 import express from 'express';
-import { initApp } from './app';
+import { initApp, shutdownApp } from './app';
 import { loadConfig } from './config';
-import { logger } from './logger';
+import { globalLogger, parseLogLevel } from './logger';
+import gracefulShutdown from 'http-graceful-shutdown';
 
 export async function main(configName: string): Promise<void> {
-  process.on('unhandledRejection', (err) => {
-    logger.error('Unhandled promise rejection', err);
+  process.on('unhandledRejection', (err: any) => {
+    globalLogger.error('Unhandled promise rejection', err);
   });
   process.on('uncaughtException', (err) => {
-    logger.error(err, 'Uncaught Exception thrown');
+    globalLogger.error('Uncaught exception thrown', err);
     process.exit(1);
   });
 
-  logger.info('Starting Medplum Server...');
-  logger.info('configName: ' + configName);
-
+  globalLogger.info('Starting Medplum Server...', { configName });
   const config = await loadConfig(configName);
+  if (config.logLevel) {
+    globalLogger.level = parseLogLevel(config.logLevel);
+  }
 
   const app = await initApp(express(), config);
   const server = app.listen(config.port);
   server.keepAliveTimeout = config.keepAliveTimeout ?? 90000;
-  logger.info('Server started on port', config.port);
+  globalLogger.info('Server started', { port: config.port });
+  gracefulShutdown(server, {
+    timeout: config.shutdownTimeoutMilliseconds,
+    development: process.env.NODE_ENV !== 'production',
+    preShutdown: async (signal) => {
+      globalLogger.info(
+        `Shutdown signal received... allowing graceful shutdown for up to ${config.shutdownTimeoutMilliseconds} milliseconds`,
+        { signal }
+      );
+    },
+    onShutdown: () => shutdownApp(),
+    finally: () => {
+      globalLogger.info('Shutdown complete');
+    },
+  });
 }
 
 if (require.main === module) {

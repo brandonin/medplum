@@ -1,10 +1,27 @@
 import { OperationOutcomeIssue, Resource, StructureDefinition } from '@medplum/fhirtypes';
-import { ElementValidator, getDataType, parseStructureDefinition, InternalTypeSchema } from './types';
-import { OperationOutcomeError, validationError } from '../outcomes';
+import { UCUM } from '../constants';
+import { evalFhirPathTyped } from '../fhirpath/parse';
+import { getTypedPropertyValue, toTypedValue } from '../fhirpath/utils';
+import {
+  OperationOutcomeError,
+  createConstraintIssue,
+  createProcessingIssue,
+  createStructureIssue,
+  validationError,
+} from '../outcomes';
 import { PropertyType, TypedValue } from '../types';
-import { getTypedPropertyValue } from '../fhirpath';
-import { createStructureIssue } from '../schema';
-import { deepEquals, deepIncludes, isEmpty, isLowerCase } from '../utils';
+import { arrayify, deepEquals, deepIncludes, isEmpty, isLowerCase } from '../utils';
+import { ResourceVisitor, crawlResource, getNestedProperty } from './crawler';
+import {
+  Constraint,
+  InternalSchemaElement,
+  InternalTypeSchema,
+  SliceDefinition,
+  SliceDiscriminator,
+  SlicingRules,
+  getDataType,
+  parseStructureDefinition,
+} from './types';
 
 /*
  * This file provides schema validation utilities for FHIR JSON objects.
@@ -12,7 +29,7 @@ import { deepEquals, deepIncludes, isEmpty, isLowerCase } from '../utils';
  * See: [JSON Representation of Resources](https://hl7.org/fhir/json.html)
  * See: [FHIR Data Types](https://www.hl7.org/fhir/datatypes.html)
  */
-const fhirTypeToJsType: Record<string, string> = {
+export const fhirTypeToJsType = {
   base64Binary: 'string',
   boolean: 'boolean',
   canonical: 'string',
@@ -34,7 +51,7 @@ const fhirTypeToJsType: Record<string, string> = {
   uuid: 'string',
   xhtml: 'string',
   'http://hl7.org/fhirpath/System.String': 'string', // Not actually a FHIR type, but included in some StructureDefinition resources
-};
+} as const satisfies Record<string, 'string' | 'boolean' | 'number'>;
 
 /*
  * This file provides schema validation utilities for FHIR JSON objects.
@@ -60,18 +77,27 @@ const validationRegexes: Record<string, RegExp> = {
   url: /^\S*$/,
   uuid: /^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
   xhtml: /.*/,
-};
+} as const;
+
+/**
+ * List of constraint keys that aren't to be checked in an expression.
+ */
+const skippedConstraintKeys: Record<string, boolean> = { 'ele-1': true };
 
 export function validateResource(resource: Resource, profile?: StructureDefinition): void {
-  return new ResourceValidator(resource.resourceType, profile).validate(resource);
+  new ResourceValidator(resource.resourceType, resource, profile).validate();
 }
 
-class ResourceValidator {
+class ResourceValidator implements ResourceVisitor {
   private issues: OperationOutcomeIssue[];
+  private rootResource: Resource;
+  private currentResource: Resource[];
   private readonly schema: InternalTypeSchema;
 
-  constructor(resourceType: string, profile?: StructureDefinition) {
+  constructor(resourceType: string, rootResource: Resource, profile?: StructureDefinition) {
     this.issues = [];
+    this.rootResource = rootResource;
+    this.currentResource = [];
     if (!profile) {
       this.schema = getDataType(resourceType);
     } else {
@@ -79,18 +105,15 @@ class ResourceValidator {
     }
   }
 
-  validate(resource: Resource): void {
-    if (!resource) {
-      throw new OperationOutcomeError(validationError('Resource is null'));
-    }
-    const resourceType = resource.resourceType;
+  validate(): void {
+    const resourceType = this.rootResource.resourceType;
     if (!resourceType) {
       throw new OperationOutcomeError(validationError('Missing resource type'));
     }
 
-    checkObjectForNull(resource as unknown as Record<string, unknown>, resource.resourceType, this.issues);
+    checkObjectForNull(this.rootResource as unknown as Record<string, unknown>, resourceType, this.issues);
 
-    this.validateObject({ type: resourceType, value: resource }, this.schema, resourceType);
+    crawlResource(this.rootResource, this, this.schema);
 
     const issues = this.issues;
     this.issues = []; // Reset issues to allow re-using the validator for other resources
@@ -102,19 +125,28 @@ class ResourceValidator {
     }
   }
 
-  private validateObject(obj: TypedValue, schema: InternalTypeSchema, path: string): void {
-    for (const [key, _propSchema] of Object.entries(schema.fields)) {
-      this.checkProperty(obj, key, schema, `${path}.${key}`);
-    }
-
+  onExitObject(path: string, obj: TypedValue, schema: InternalTypeSchema): void {
     //@TODO(mattwiller 2023-06-05): Detect extraneous properties in a single pass by keeping track of all keys that
     // were correctly matched to resource properties as elements are validated above
-    this.checkAdditionalProperties(obj, schema.fields, path);
+    this.checkAdditionalProperties(obj, schema.elements, path);
   }
 
-  private checkProperty(parent: TypedValue, key: string, schema: InternalTypeSchema, path: string): void {
-    const propertyValues = getNestedProperty(parent, key);
-    const element = schema.fields[key];
+  onEnterResource(_path: string, obj: TypedValue): void {
+    this.currentResource.push(obj.value);
+  }
+
+  onExitResource(): void {
+    this.currentResource.pop();
+  }
+
+  visitProperty(
+    _parent: TypedValue,
+    key: string,
+    path: string,
+    propertyValues: (TypedValue | TypedValue[] | undefined)[],
+    schema: InternalTypeSchema
+  ): void {
+    const element = schema.elements[key];
     if (!element) {
       throw new Error(`Missing element validation schema for ${key}`);
     }
@@ -122,7 +154,6 @@ class ResourceValidator {
       if (!this.checkPresence(value, element, path)) {
         return;
       }
-
       // Check cardinality
       let values: TypedValue[];
       if (element.isArray) {
@@ -138,6 +169,7 @@ class ResourceValidator {
         }
         values = [value];
       }
+
       if (values.length < element.min || values.length > element.max) {
         this.issues.push(
           createStructureIssue(
@@ -149,61 +181,87 @@ class ResourceValidator {
         );
       }
 
-      this.checkSpecifiedValue(value, element, path);
-      for (const value of values) {
-        this.checkPropertyValue(value, path);
+      if (!matchesSpecifiedValue(value, element)) {
+        this.issues.push(createStructureIssue(path, 'Value did not match expected pattern'));
       }
+      const sliceCounts: Record<string, number> | undefined = element.slicing
+        ? Object.fromEntries(element.slicing.slices.map((s) => [s.name, 0]))
+        : undefined;
+      for (const value of values) {
+        this.constraintsCheck(value, element, path);
+        this.checkPropertyValue(value, path);
+        const sliceName = checkSliceElement(value, element.slicing);
+        if (sliceName && sliceCounts) {
+          sliceCounts[sliceName] += 1;
+        }
+      }
+      this.validateSlices(element.slicing?.slices, sliceCounts, path);
     }
   }
 
   private checkPresence(
     value: TypedValue | TypedValue[] | undefined,
-    element: ElementValidator,
+    field: InternalSchemaElement,
     path: string
   ): value is TypedValue | TypedValue[] {
     if (value === undefined) {
-      if (element.min > 0) {
+      if (field.min > 0) {
         this.issues.push(createStructureIssue(path, 'Missing required property'));
       }
       return false;
-    } else if (isEmpty(value)) {
+    }
+    if (isEmpty(value)) {
       this.issues.push(createStructureIssue(path, 'Invalid empty value'));
       return false;
     }
     return true;
   }
 
-  private checkSpecifiedValue(value: TypedValue | TypedValue[], element: ElementValidator, path: string): void {
-    if (element.pattern && !deepIncludes(value, element.pattern)) {
-      this.issues.push(createStructureIssue(path, 'Pattern fields need to be included in element definition'));
-    } else if (element.fixed && !deepEquals(value, element.fixed)) {
-      this.issues.push(createStructureIssue(path, 'Fixed needs exact match to element definition'));
-    }
-  }
-
   private checkPropertyValue(value: TypedValue, path: string): void {
     if (isLowerCase(value.type.charAt(0))) {
       this.validatePrimitiveType(value, path);
-    } else {
-      // Recursively validate as the expected data type
-      const type = getDataType(value.type);
-      this.validateObject(value, type, path);
+    }
+  }
+
+  private validateSlices(
+    slices: SliceDefinition[] | undefined,
+    counts: Record<string, number> | undefined,
+    path: string
+  ): void {
+    if (!slices || !counts) {
+      return;
+    }
+    for (const slice of slices) {
+      const sliceCardinality = counts[slice.name];
+      if (sliceCardinality < slice.min || sliceCardinality > slice.max) {
+        this.issues.push(
+          createStructureIssue(
+            path,
+            `Incorrect number of values provided for slice '${slice.name}': expected ${slice.min}..${
+              Number.isFinite(slice.max) ? slice.max : '*'
+            }, but found ${sliceCardinality}`
+          )
+        );
+      }
     }
   }
 
   private checkAdditionalProperties(
     parent: TypedValue,
-    properties: Record<string, ElementValidator>,
+    properties: Record<string, InternalSchemaElement>,
     path: string
   ): void {
-    const object = parent.value as Record<string, unknown>;
-    for (const key of Object.keys(object ?? {})) {
+    const object = parent.value as Record<string, unknown> | undefined;
+    if (!object) {
+      return;
+    }
+    for (const key of Object.keys(object)) {
       if (key === 'resourceType') {
         continue; // Skip special resource type discriminator property in JSON
       }
       if (
         !(key in properties) &&
-        !(key.slice(1) in properties && this.isPrimitiveExtension(parent, key, path)) &&
+        !(key.startsWith('_') && key.slice(1) in properties) &&
         !isChoiceOfType(parent, key, properties)
       ) {
         this.issues.push(createStructureIssue(`${path}.${key}`, `Invalid additional property "${key}"`));
@@ -211,61 +269,72 @@ class ResourceValidator {
     }
   }
 
-  /**
-   * Checks the element for a primitive extension.
-   *
-   * FHIR elements with primitive data types are represented in two parts:
-   *   1) A JSON property with the name of the element, which has a JSON type of number, boolean, or string
-   *   2) a JSON property with _ prepended to the name of the element, which, if present, contains the value's id and/or extensions
-   *
-   * See: https://hl7.org/fhir/json.html#primitive
-   * @param parent The parent value
-   * @param key The property key to check
-   * @param path The path to the property
-   * @returns Whether the element is a primitive extension
-   */
-  private isPrimitiveExtension(parent: TypedValue, key: string, path: string): boolean {
-    // Primitive element starts with underscore
-    if (!key.startsWith('_')) {
+  private constraintsCheck(value: TypedValue, field: InternalSchemaElement, path: string): void {
+    const constraints = field.constraints;
+    if (!constraints) {
+      return;
+    }
+    for (const constraint of constraints) {
+      if (constraint.severity === 'error' && !(constraint.key in skippedConstraintKeys)) {
+        const expression = this.isExpressionTrue(constraint, value, path);
+        if (!expression) {
+          this.issues.push(createConstraintIssue(path, constraint));
+          return;
+        }
+      }
+    }
+  }
+
+  private isExpressionTrue(constraint: Constraint, value: TypedValue, path: string): boolean {
+    try {
+      const evalValues = evalFhirPathTyped(constraint.expression, [value], {
+        '%context': value,
+        '%resource': toTypedValue(this.currentResource[this.currentResource.length - 1]),
+        '%rootResource': toTypedValue(this.rootResource),
+        '%ucum': toTypedValue(UCUM),
+      });
+
+      return evalValues.length === 1 && evalValues[0].value === true;
+    } catch (e: any) {
+      this.issues.push(
+        createProcessingIssue(path, 'Error evaluating invariant expression', e, { fhirpath: constraint.expression })
+      );
       return false;
     }
-
-    // Then validate the element
-    //@TODO(mattwiller 2023-06-05): Move this to occur along with the rest of validation
-    const extensionProperty = parent.value[key];
-    if (Array.isArray(extensionProperty)) {
-      for (const ext of extensionProperty) {
-        this.validateObject({ type: 'Element', value: ext }, getDataType('Element'), path);
-      }
-    } else {
-      this.validateObject({ type: 'Element', value: extensionProperty }, getDataType('Element'), path);
-    }
-    return true;
   }
 
   private validatePrimitiveType(typedValue: TypedValue, path: string): void {
-    const { type, value } = typedValue;
-
-    // First, make sure the value is the correct JS type
-    const expectedType = fhirTypeToJsType[type];
-    if (typeof value !== expectedType) {
-      if (value !== null) {
-        this.issues.push(
-          createStructureIssue(path, `Invalid JSON type: expected ${expectedType}, but got ${typeof value}`)
-        );
+    const [primitiveValue, extensionElement] = unpackPrimitiveElement(typedValue);
+    if (primitiveValue) {
+      const { type, value } = primitiveValue;
+      // First, make sure the value is the correct JS type
+      if (!(type in fhirTypeToJsType)) {
+        this.issues.push(createStructureIssue(path, `Invalid JSON type: ${type} is not a valid FHIR type`));
+        return;
       }
-      return;
+      const expectedType = fhirTypeToJsType[type as keyof typeof fhirTypeToJsType];
+      // biome-ignore lint/suspicious/useValidTypeof: expected value ensured to be one of: 'string' | 'boolean' | 'number'
+      if (typeof value !== expectedType) {
+        if (value !== null) {
+          this.issues.push(
+            createStructureIssue(path, `Invalid JSON type: expected ${expectedType}, but got ${typeof value}`)
+          );
+        }
+        return;
+      }
+      // Then, perform additional checks for specialty types
+      if (expectedType === 'string') {
+        this.validateString(value as string, type, path);
+      } else if (expectedType === 'number') {
+        this.validateNumber(value as number, type, path);
+      }
     }
-
-    // Then, perform additional checks for specialty types
-    if (expectedType === 'string') {
-      this.validateString(value as string, type as PropertyType, path);
-    } else if (expectedType === 'number') {
-      this.validateNumber(value as number, type as PropertyType, path);
+    if (extensionElement) {
+      crawlResource(extensionElement.value, this, getDataType('Element'), path);
     }
   }
 
-  private validateString(str: string, type: PropertyType, path: string): void {
+  private validateString(str: string, type: string, path: string): void {
     if (!str.trim()) {
       this.issues.push(createStructureIssue(path, 'String must contain non-whitespace content'));
       return;
@@ -277,8 +346,8 @@ class ResourceValidator {
     }
   }
 
-  private validateNumber(n: number, type: PropertyType, path: string): void {
-    if (isNaN(n) || !isFinite(n)) {
+  private validateNumber(n: number, type: string, path: string): void {
+    if (Number.isNaN(n) || !Number.isFinite(n)) {
       this.issues.push(createStructureIssue(path, 'Invalid numeric value'));
     } else if (isIntegerType(type) && !Number.isInteger(n)) {
       this.issues.push(createStructureIssue(path, 'Expected number to be an integer'));
@@ -290,7 +359,7 @@ class ResourceValidator {
   }
 }
 
-function isIntegerType(propertyType: PropertyType): boolean {
+function isIntegerType(propertyType: string): boolean {
   return (
     propertyType === PropertyType.integer ||
     propertyType === PropertyType.positiveInt ||
@@ -301,40 +370,21 @@ function isIntegerType(propertyType: PropertyType): boolean {
 function isChoiceOfType(
   typedValue: TypedValue,
   key: string,
-  propertyDefinitions: Record<string, ElementValidator>
+  propertyDefinitions: Record<string, InternalSchemaElement>
 ): boolean {
+  if (key.startsWith('_')) {
+    key = key.slice(1);
+  }
   const parts = key.split(/(?=[A-Z])/g); // Split before capital letters
   let testProperty = '';
   for (const part of parts) {
     testProperty += part;
-    if (!propertyDefinitions[testProperty + '[x]']) {
-      continue;
+    if (propertyDefinitions[testProperty + '[x]']) {
+      const typedPropertyValue = getTypedPropertyValue(typedValue, testProperty);
+      return !!typedPropertyValue;
     }
-    const typedPropertyValue = getTypedPropertyValue(typedValue, testProperty);
-    return !!typedPropertyValue;
   }
   return false;
-}
-
-function getNestedProperty(value: TypedValue, key: string): (TypedValue | TypedValue[] | undefined)[] {
-  const [firstProp, ...nestedProps] = key.split('.');
-  let propertyValues = [getTypedPropertyValue(value, firstProp)];
-  for (const prop of nestedProps) {
-    const next = [];
-    for (const current of propertyValues) {
-      if (current === undefined) {
-        continue;
-      } else if (Array.isArray(current)) {
-        for (const element of current) {
-          next.push(getTypedPropertyValue(element, prop));
-        }
-      } else {
-        next.push(getTypedPropertyValue(current, prop));
-      }
-    }
-    propertyValues = next;
-  }
-  return propertyValues;
 }
 
 function checkObjectForNull(obj: Record<string, unknown>, path: string, issues: OperationOutcomeIssue[]): void {
@@ -359,4 +409,85 @@ function checkObjectForNull(obj: Record<string, unknown>, path: string, issues: 
       checkObjectForNull(value as Record<string, unknown>, propertyPath, issues);
     }
   }
+}
+
+function matchesSpecifiedValue(value: TypedValue | TypedValue[], element: InternalSchemaElement): boolean {
+  if (element.pattern && !deepIncludes(value, element.pattern)) {
+    return false;
+  }
+  if (element.fixed && !deepEquals(value, element.fixed)) {
+    return false;
+  }
+  return true;
+}
+
+export function matchDiscriminant(
+  value: TypedValue | TypedValue[] | undefined,
+  discriminator: SliceDiscriminator,
+  slice: SliceDefinition,
+  elements?: Record<string, InternalSchemaElement>
+): boolean {
+  if (Array.isArray(value)) {
+    // Only single values can match
+    return false;
+  }
+
+  const sliceElement: InternalSchemaElement = (elements ?? slice.elements)[discriminator.path];
+
+  const sliceType = slice.type;
+  switch (discriminator.type) {
+    case 'value':
+    case 'pattern':
+      if (!value || !sliceElement) {
+        return false;
+      }
+      if (matchesSpecifiedValue(value, sliceElement)) {
+        return true;
+      }
+      break;
+    case 'type':
+      if (!value || !sliceType?.length) {
+        return false;
+      }
+      return sliceType.some((t) => t.code === value.type);
+    // Other discriminator types are not yet supported, see http://hl7.org/fhir/R4/profiling.html#discriminator
+  }
+  // Default to no match
+  return false;
+}
+
+function checkSliceElement(value: TypedValue, slicingRules: SlicingRules | undefined): string | undefined {
+  if (!slicingRules) {
+    return undefined;
+  }
+  for (const slice of slicingRules.slices) {
+    if (
+      slicingRules.discriminator.every(
+        (discriminator) =>
+          arrayify(getNestedProperty(value, discriminator.path))?.some((v) =>
+            matchDiscriminant(v, discriminator, slice)
+          )
+      )
+    ) {
+      return slice.name;
+    }
+  }
+  return undefined;
+}
+
+function unpackPrimitiveElement(v: TypedValue): [TypedValue | undefined, TypedValue | undefined] {
+  if (typeof v.value !== 'object' || !v.value) {
+    return [v, undefined];
+  }
+  const primitiveValue = v.value.valueOf();
+  if (primitiveValue === v.value) {
+    return [undefined, { type: 'Element', value: v.value }];
+  }
+  const primitiveKeys = new Set(Object.keys(primitiveValue));
+  const extensionEntries = Object.entries(v.value).filter(([k, _]) => !primitiveKeys.has(k));
+  const extensionElement = extensionEntries.length > 0 ? Object.fromEntries(extensionEntries) : undefined;
+  return [
+    { type: v.type, value: primitiveValue },
+    { type: 'Element', value: extensionElement },
+  ];
 }

@@ -1,6 +1,5 @@
 import { ContactDetail } from '@medplum/fhirtypes';
 import { Meta } from '@storybook/react';
-import React from 'react';
 import { Document } from '../Document/Document';
 import { ContactDetailInput } from './ContactDetailInput';
 
@@ -26,6 +25,8 @@ export const Basic = (): JSX.Element => (
       }
       onChange={console.log}
       name="contact"
+      path="Patient.contact"
+      outcome={undefined}
     />
   </Document>
 );

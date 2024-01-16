@@ -9,7 +9,8 @@ import request from 'supertest';
 import { initApp, shutdownApp } from '../app';
 import { loadTestConfig } from '../config';
 import { generateSecret } from '../oauth/keys';
-import { setupPwnedPasswordMock, setupRecaptchaMock } from '../test.setup';
+import { setupPwnedPasswordMock, setupRecaptchaMock, withTestContext } from '../test.setup';
+import { registerNew } from './register';
 
 jest.mock('@aws-sdk/client-sesv2');
 jest.mock('hibp');
@@ -39,14 +40,17 @@ describe('Set Password', () => {
   test('Success', async () => {
     const email = `george${randomUUID()}@example.com`;
 
-    const res = await request(app).post('/auth/newuser').type('json').send({
-      firstName: 'George',
-      lastName: 'Washington',
-      email,
-      password: 'password!@#',
-      recaptchaToken: 'xyz',
-    });
-    expect(res.status).toBe(200);
+    const res = await withTestContext(() =>
+      registerNew({
+        projectName: 'Set Password Project',
+        firstName: 'George',
+        lastName: 'Washington',
+        email,
+        password: 'password!@#',
+        scope: 'openid profile email',
+      })
+    );
+    expect(res).toBeDefined();
 
     const res2 = await request(app).post('/auth/resetpassword').type('json').send({
       email,
@@ -55,6 +59,13 @@ describe('Set Password', () => {
     expect(res2.status).toBe(200);
     expect(SESv2Client).toHaveBeenCalledTimes(1);
     expect(SendEmailCommand).toHaveBeenCalledTimes(1);
+
+    const userInfoRes1 = await request(app).get('/oauth2/userinfo').set('Authorization', `Bearer ${res.accessToken}`);
+    expect(userInfoRes1.status).toBe(200);
+    expect(userInfoRes1.body).toMatchObject({
+      email,
+      email_verified: false,
+    });
 
     const args = (SendEmailCommand as unknown as jest.Mock).mock.calls[0][0];
     const parsed = await simpleParser(args.Content.Raw.Data);
@@ -86,6 +97,13 @@ describe('Set Password', () => {
       password: 'bad-guys-trying-to-reuse-code',
     });
     expect(res5.status).toBe(400);
+
+    const userInfoRes2 = await request(app).get('/oauth2/userinfo').set('Authorization', `Bearer ${res.accessToken}`);
+    expect(userInfoRes2.status).toBe(200);
+    expect(userInfoRes2.body).toMatchObject({
+      email,
+      email_verified: true,
+    });
   });
 
   test('Wrong secret', async () => {

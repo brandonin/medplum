@@ -1,26 +1,24 @@
 import { createReference } from '@medplum/core';
 import { Practitioner, Project, ProjectMembership, User } from '@medplum/fhirtypes';
+import { NIL as nullUuid, v5 } from 'uuid';
 import { bcryptHashPassword } from './auth/utils';
 import { systemRepo } from './fhir/repo';
-import { logger } from './logger';
-import { createSearchParameters } from './seeds/searchparameters';
-import { createStructureDefinitions } from './seeds/structuredefinitions';
-import { createValueSets } from './seeds/valuesets';
+import { globalLogger } from './logger';
+import { rebuildR4SearchParameters } from './seeds/searchparameters';
+import { rebuildR4StructureDefinitions } from './seeds/structuredefinitions';
+import { rebuildR4ValueSets } from './seeds/valuesets';
+
+export const r4ProjectId = v5('R4', nullUuid);
 
 export async function seedDatabase(): Promise<void> {
   if (await isSeeded()) {
-    logger.info('Already seeded');
+    globalLogger.info('Already seeded');
     return;
   }
 
-  const firstName = 'Medplum';
-  const lastName = 'Admin';
-  const projectName = 'Super Admin';
-  const email = 'admin@example.com';
-  const password = 'medplum_admin';
-
-  const passwordHash = await bcryptHashPassword(password);
-  const user = await systemRepo.createResource<User>({
+  const [firstName, lastName, email] = ['Medplum', 'Admin', 'admin@example.com'];
+  const passwordHash = await bcryptHashPassword('medplum_admin');
+  const superAdmin = await systemRepo.createResource<User>({
     resourceType: 'User',
     firstName,
     lastName,
@@ -28,17 +26,24 @@ export async function seedDatabase(): Promise<void> {
     passwordHash,
   });
 
-  const project = await systemRepo.createResource<Project>({
+  const superAdminProject = await systemRepo.createResource<Project>({
     resourceType: 'Project',
-    name: projectName,
-    owner: createReference(user),
+    name: 'Super Admin',
+    owner: createReference(superAdmin),
     superAdmin: true,
+    strictMode: true,
+  });
+
+  await systemRepo.updateResource<Project>({
+    resourceType: 'Project',
+    id: r4ProjectId,
+    name: 'FHIR R4',
   });
 
   const practitioner = await systemRepo.createResource<Practitioner>({
     resourceType: 'Practitioner',
     meta: {
-      project: project.id,
+      project: superAdminProject.id,
     },
     name: [
       {
@@ -57,25 +62,21 @@ export async function seedDatabase(): Promise<void> {
 
   await systemRepo.createResource<ProjectMembership>({
     resourceType: 'ProjectMembership',
-    project: createReference(project),
-    user: createReference(user),
+    project: createReference(superAdminProject),
+    user: createReference(superAdmin),
     profile: createReference(practitioner),
     admin: true,
   });
 
-  await createValueSets();
-  await createSearchParameters();
-  await createStructureDefinitions();
+  await rebuildR4StructureDefinitions();
+  await rebuildR4ValueSets();
+  await rebuildR4SearchParameters();
 }
 
 /**
  * Returns true if the database is already seeded.
  * @returns True if already seeded.
  */
-async function isSeeded(): Promise<boolean> {
-  const bundle = await systemRepo.search({
-    resourceType: 'User',
-    count: 1,
-  });
-  return !!bundle.entry && bundle.entry.length > 0;
+function isSeeded(): Promise<User | undefined> {
+  return systemRepo.searchOne({ resourceType: 'User' });
 }

@@ -3,7 +3,6 @@ import { showNotification } from '@mantine/notifications';
 import { normalizeErrorString } from '@medplum/core';
 import { ResourceType } from '@medplum/fhirtypes';
 import { Document, useMedplum } from '@medplum/react';
-import React from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 export function DeletePage(): JSX.Element {
@@ -18,9 +17,9 @@ export function DeletePage(): JSX.Element {
         color="red"
         onClick={() => {
           medplum
-            .deleteResource(resourceType, id as string)
+            .deleteResource(resourceType, id)
             .then(() => navigate(`/${resourceType}`))
-            .catch((err) => showNotification({ color: 'red', message: normalizeErrorString(err) }));
+            .catch((err) => showNotification({ color: 'red', message: normalizeErrorString(err), autoClose: false }));
         }}
       >
         Delete

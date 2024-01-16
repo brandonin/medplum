@@ -2,8 +2,8 @@ import { Resource } from '@medplum/fhirtypes';
 
 /**
  * Sorts an array of resources in place by meta.lastUpdated ascending.
- * @param resources Array of resources.
- * @param timelineResource Optional primary resource of a timeline view. If specified, the primary resource will be sorted by meta.lastUpdated descending.
+ * @param resources - Array of resources.
+ * @param timelineResource - Optional primary resource of a timeline view. If specified, the primary resource will be sorted by meta.lastUpdated descending.
  */
 export function sortByDateAndPriority(resources: Resource[], timelineResource?: Resource): void {
   resources.sort((a: Resource, b: Resource): number => {
@@ -25,7 +25,7 @@ function getPriorityScore(resource: Resource, timelineResource: Resource | undef
 
     const priority = (resource as any).priority;
     if (typeof priority === 'string') {
-      return { stat: 4, asap: 3, urgent: 2 }[priority] || 0;
+      return { stat: 4, asap: 3, urgent: 2 }[priority] ?? 0;
     }
   }
   return 0;

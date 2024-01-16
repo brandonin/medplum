@@ -1,6 +1,6 @@
 import { Title } from '@mantine/core';
+import { CodeChallengeMethod } from '@medplum/core';
 import { Logo, SignInForm } from '@medplum/react';
-import React from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { getConfig } from './config';
 
@@ -37,7 +37,7 @@ export function OAuthPage(): JSX.Element | null {
       nonce={params.get('nonce') || undefined}
       launch={params.get('launch') || undefined}
       codeChallenge={params.get('code_challenge') || undefined}
-      codeChallengeMethod={params.get('code_challenge_method') || undefined}
+      codeChallengeMethod={(params.get('code_challenge_method') as CodeChallengeMethod) || undefined}
       chooseScopes={scope !== 'openid'}
     >
       <Logo size={32} />

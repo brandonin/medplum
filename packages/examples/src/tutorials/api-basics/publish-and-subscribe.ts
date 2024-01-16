@@ -1,5 +1,7 @@
+/* eslint-disable no-duplicate-imports */
+
 // start-block core-imports
-import { createReference, getReferenceString, MedplumClient } from '@medplum/core';
+import { createReference, getReferenceString, MedplumClient, UCUM } from '@medplum/core';
 import fetch from 'node-fetch';
 
 // end-block core-imports
@@ -10,7 +12,7 @@ import { Specimen } from '@medplum/fhirtypes';
 // end-block specimen-imports
 
 // start-block report-imports
-import { Observation, DiagnosticReport } from '@medplum/fhirtypes';
+import { DiagnosticReport, Observation } from '@medplum/fhirtypes';
 
 // end-block report-imports
 
@@ -34,7 +36,7 @@ await medplum.startClientLogin(MY_CLIENT_ID, MY_CLIENT_SECRET);
  * We will use this in the "conditional create".
  * When creating an order, and if you don't know if the patient exists,
  * you can use this MRN to check.
- * @param patientMrn The patient medical record number (MRN).
+ * @param patientMrn - The patient medical record number (MRN).
  */
 async function createServiceRequest(patientMrn: string): Promise<void> {
   // First, create the patient if they don't exist.
@@ -81,7 +83,7 @@ await createServiceRequest('MRN1234');
 // start-block create-specimen
 /**
  * Creates a Specimen for a given ServiceRequest
- * @param serviceRequestId The ServiceRequest ID.
+ * @param serviceRequestId - The ServiceRequest ID.
  */
 async function createSpecimenForServiceRequest(serviceRequestId: string): Promise<void> {
   // First, create the specimen resource
@@ -146,7 +148,7 @@ async function createReport(patientId: string, serviceRequestId: string): Promis
     valueQuantity: {
       value: 5.7,
       unit: 'mg/dL',
-      system: 'http://unitsofmeasure.org',
+      system: UCUM,
       code: 'mg/dL',
     },
   });

@@ -1,10 +1,10 @@
 import { Button, createStyles, Navbar as MantineNavbar, ScrollArea, Space, Text } from '@mantine/core';
+import { useMedplumNavigate } from '@medplum/react-hooks';
 import { IconPlus } from '@tabler/icons-react';
-import React, { useState } from 'react';
+import { Fragment, MouseEventHandler, ReactNode, SyntheticEvent, useState } from 'react';
 import { BookmarkDialog } from '../BookmarkDialog/BookmarkDialog';
-import { CodeInput } from '../CodeInput/CodeInput';
 import { MedplumLink } from '../MedplumLink/MedplumLink';
-import { useMedplumNavigate } from '../MedplumProvider/MedplumProvider';
+import { ResourceTypeInput } from '../ResourceTypeInput/ResourceTypeInput';
 
 const useStyles = createStyles((theme) => {
   return {
@@ -75,6 +75,7 @@ export interface NavbarProps {
   menus?: NavbarMenu[];
   closeNavbar: () => void;
   displayAddBookmark?: boolean;
+  resourceTypeSearchDisabled?: boolean;
 }
 
 export function Navbar(props: NavbarProps): JSX.Element {
@@ -83,7 +84,7 @@ export function Navbar(props: NavbarProps): JSX.Element {
   const activeLink = getActiveLink(props.pathname, props.searchParams, props.menus);
   const [bookmarkDialogVisible, setBookmarkDialogVisible] = useState(false);
 
-  function onLinkClick(e: React.SyntheticEvent, to: string): void {
+  function onLinkClick(e: SyntheticEvent, to: string): void {
     e.stopPropagation();
     e.preventDefault();
     navigate(to);
@@ -102,26 +103,19 @@ export function Navbar(props: NavbarProps): JSX.Element {
     <>
       <MantineNavbar width={{ sm: 250 }} p="xs">
         <ScrollArea>
-          <MantineNavbar.Section mb="sm">
-            <CodeInput
-              key={window.location.pathname}
-              name="resourceType"
-              placeholder="Resource Type"
-              property={{
-                binding: {
-                  valueSet: 'http://hl7.org/fhir/ValueSet/resource-types',
-                },
-              }}
-              onChange={(newValue) => navigateResourceType(newValue)}
-              creatable={false}
-              maxSelectedValues={0}
-              clearSearchOnChange={true}
-              clearable={false}
-            />
-          </MantineNavbar.Section>
+          {!props.resourceTypeSearchDisabled && (
+            <MantineNavbar.Section mb="sm">
+              <ResourceTypeInput
+                key={window.location.pathname}
+                name="resourceType"
+                placeholder="Resource Type"
+                onChange={(newValue) => navigateResourceType(newValue)}
+              />
+            </MantineNavbar.Section>
+          )}
           <MantineNavbar.Section grow>
             {props.menus?.map((menu) => (
-              <React.Fragment key={`menu-${menu.title}`}>
+              <Fragment key={`menu-${menu.title}`}>
                 <Text className={classes.menuTitle}>{menu.title}</Text>
                 {menu.links?.map((link) => (
                   <NavbarLink
@@ -134,7 +128,7 @@ export function Navbar(props: NavbarProps): JSX.Element {
                     <span>{link.label}</span>
                   </NavbarLink>
                 ))}
-              </React.Fragment>
+              </Fragment>
             ))}
             {props.displayAddBookmark && (
               <Button
@@ -166,8 +160,8 @@ export function Navbar(props: NavbarProps): JSX.Element {
 interface NavbarLinkProps {
   to: string;
   active: boolean;
-  onClick: React.MouseEventHandler;
-  children: React.ReactNode;
+  onClick: MouseEventHandler;
+  children: ReactNode;
 }
 
 function NavbarLink(props: NavbarLinkProps): JSX.Element {
@@ -201,9 +195,9 @@ function NavLinkIcon(props: NavLinkIconProps): JSX.Element {
  * However, we ignore some search parameters to support pagination.
  * But we cannot ignore all search parameters, to support separate links based on search filters.
  * So in the end, we use a simple scoring system based on the number of matching query search params.
- * @param currentPathname The web browser current pathname.
- * @param currentSearchParams The web browser current search parameters.
- * @param menus Collection of navbar menus and links.
+ * @param currentPathname - The web browser current pathname.
+ * @param currentSearchParams - The web browser current search parameters.
+ * @param menus - Collection of navbar menus and links.
  * @returns The active link if one is found.
  */
 function getActiveLink(
@@ -239,9 +233,9 @@ function getActiveLink(
  * One means "matches the pathname only".
  * Additional increases for each matching search parameter.
  * Ignores pagination parameters "_count" and "_offset".
- * @param currentPathname The web browser current pathname.
- * @param currentSearchParams The web browser current search parameters.
- * @param linkHref A candidate link href.
+ * @param currentPathname - The web browser current pathname.
+ * @param currentSearchParams - The web browser current search parameters.
+ * @param linkHref - A candidate link href.
  * @returns The link score.
  */
 function getLinkScore(currentPathname: string, currentSearchParams: URLSearchParams, linkHref: string): number {

@@ -1,24 +1,22 @@
+import { createReference, evalFhirPathTyped, getExtension, isResource, Operator, toTypedValue } from '@medplum/core';
 import {
   AuditEvent,
+  AuditEventEntity,
   Bot,
+  Coding,
   Practitioner,
   ProjectMembership,
   Reference,
   Resource,
   Subscription,
 } from '@medplum/fhirtypes';
+import { getRequestContext } from '../context';
 import { systemRepo } from '../fhir/repo';
-import { createReference, evalFhirPathTyped, getExtension, Operator, toTypedValue } from '@medplum/core';
 import { AuditEventOutcome } from '../util/auditevent';
-import { logger } from '../logger';
 
-export async function findProjectMembership(
-  project: string,
-  profile: Reference
-): Promise<ProjectMembership | undefined> {
-  const bundle = await systemRepo.search<ProjectMembership>({
+export function findProjectMembership(project: string, profile: Reference): Promise<ProjectMembership | undefined> {
+  return systemRepo.searchOne<ProjectMembership>({
     resourceType: 'ProjectMembership',
-    count: 1,
     filters: [
       {
         code: 'project',
@@ -32,17 +30,16 @@ export async function findProjectMembership(
       },
     ],
   });
-  return bundle.entry?.[0]?.resource;
 }
 
 /**
  * Creates an AuditEvent for a subscription attempt.
- * @param resource The resource that triggered the subscription.
- * @param startTime The time the subscription attempt started.
- * @param outcome The outcome code.
- * @param outcomeDesc The outcome description text.
- * @param subscription Optional rest-hook subscription.
- * @param bot Optional bot that was executed.
+ * @param resource - The resource that triggered the subscription.
+ * @param startTime - The time the subscription attempt started.
+ * @param outcome - The outcome code.
+ * @param outcomeDesc - The outcome description text.
+ * @param subscription - Optional rest-hook subscription.
+ * @param bot - Optional bot that was executed.
  */
 export async function createAuditEvent(
   resource: Resource,
@@ -52,28 +49,7 @@ export async function createAuditEvent(
   subscription?: Subscription,
   bot?: Bot
 ): Promise<void> {
-  const entity = [
-    {
-      what: createReference(resource),
-      role: { code: '4', display: 'Domain' },
-    },
-  ];
-
-  if (subscription) {
-    entity.push({
-      what: createReference(subscription),
-      role: { code: '9', display: 'Subscriber' },
-    });
-  }
-
-  if (bot) {
-    entity.push({
-      what: createReference(bot),
-      role: { code: '9', display: 'Subscriber' },
-    });
-  }
-
-  const auditedEvent = subscription ? subscription : resource;
+  const auditedEvent = subscription ?? resource;
 
   await systemRepo.createResource<AuditEvent>({
     resourceType: 'AuditEvent',
@@ -102,18 +78,32 @@ export async function createAuditEvent(
       // observer: createReference(auditedEvent)
       observer: createReference(auditedEvent) as Reference as Reference<Practitioner>,
     },
-    entity,
+    entity: createAuditEventEntities(resource, subscription, bot),
     outcome,
     outcomeDesc,
   });
 }
 
-export function isDeleteInteraction(subscription: Subscription): boolean {
-  const supportedInteractionExtension = getExtension(
-    subscription,
-    'https://medplum.com/fhir/StructureDefinition/subscription-supported-interaction'
-  );
-  return supportedInteractionExtension?.valueCode === 'delete';
+export function createAuditEventEntities(...resources: unknown[]): AuditEventEntity[] {
+  return resources.filter(isResource).map(createAuditEventEntity);
+}
+
+export function createAuditEventEntity(resource: Resource): AuditEventEntity {
+  return {
+    what: createReference(resource),
+    role: getAuditEventEntityRole(resource),
+  };
+}
+
+export function getAuditEventEntityRole(resource: Resource): Coding {
+  switch (resource.resourceType) {
+    case 'Patient':
+      return { code: '1', display: 'Patient' };
+    case 'Subscription':
+      return { code: '9', display: 'Subscriber' };
+    default:
+      return { code: '4', display: 'Domain' };
+  }
 }
 
 export async function isFhirCriteriaMet(subscription: Subscription, currentResource: Resource): Promise<boolean> {
@@ -125,10 +115,13 @@ export async function isFhirCriteriaMet(subscription: Subscription, currentResou
     return true;
   }
   const history = await systemRepo.readHistory(currentResource.resourceType, currentResource?.id as string);
-  const evalInput = { current: toTypedValue(currentResource), previous: toTypedValue({}) };
+  const evalInput = {
+    '%current': toTypedValue(currentResource),
+    '%previous': toTypedValue({}),
+  };
   const previousResource = history.entry?.[1]?.resource as Resource;
   if (previousResource) {
-    evalInput.previous = toTypedValue(previousResource);
+    evalInput['%previous'] = toTypedValue(previousResource);
   }
   const evalValue = evalFhirPathTyped(criteria.valueString, [toTypedValue(currentResource)], evalInput);
   if (evalValue?.[0]?.value === true) {
@@ -157,7 +150,7 @@ export function isJobSuccessful(subscription: Subscription, status: number): boo
       const lowerBound = Number(codeRange[0]);
       const upperBound = Number(codeRange[1]);
       if (!(Number.isInteger(lowerBound) && Number.isInteger(upperBound))) {
-        logger.debug(
+        getRequestContext().logger.debug(
           `${lowerBound} and ${upperBound} aren't an integer, configured status codes need to be changed. Resorting to default codes`
         );
         return defaultStatusCheck(status);
@@ -168,7 +161,7 @@ export function isJobSuccessful(subscription: Subscription, status: number): boo
     } else {
       const codeValue = Number(code);
       if (!Number.isInteger(codeValue)) {
-        logger.debug(
+        getRequestContext().logger.debug(
           `${code} isn't an integer, configured status codes need to be changed. Resorting to default codes`
         );
         return defaultStatusCheck(status);

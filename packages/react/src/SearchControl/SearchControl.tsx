@@ -1,4 +1,5 @@
 import {
+  ActionIcon,
   Button,
   Center,
   createStyles,
@@ -10,7 +11,7 @@ import {
   Text,
   UnstyledButton,
 } from '@mantine/core';
-import { DEFAULT_SEARCH_COUNT, Filter, formatSearchQuery, globalSchema, SearchRequest } from '@medplum/core';
+import { DEFAULT_SEARCH_COUNT, Filter, formatSearchQuery, SearchRequest } from '@medplum/core';
 import {
   Bundle,
   OperationOutcome,
@@ -19,18 +20,19 @@ import {
   SearchParameter,
   UserConfiguration,
 } from '@medplum/fhirtypes';
+import { useMedplum } from '@medplum/react-hooks';
 import {
   IconAdjustmentsHorizontal,
   IconBoxMultiple,
   IconColumns,
   IconFilePlus,
   IconFilter,
+  IconRefresh,
   IconTableExport,
   IconTrash,
 } from '@tabler/icons-react';
-import React, { useEffect, useRef, useState } from 'react';
+import { ChangeEvent, memo, MouseEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Container } from '../Container/Container';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
 import { SearchExportDialog } from '../SearchExportDialog/SearchExportDialog';
 import { SearchFieldEditor } from '../SearchFieldEditor/SearchFieldEditor';
 import { SearchFilterEditor } from '../SearchFilterEditor/SearchFilterEditor';
@@ -61,9 +63,9 @@ export class SearchLoadEvent extends Event {
 
 export class SearchClickEvent extends Event {
   readonly resource: Resource;
-  readonly browserEvent: React.MouseEvent;
+  readonly browserEvent: MouseEvent;
 
-  constructor(resource: Resource, browserEvent: React.MouseEvent) {
+  constructor(resource: Resource, browserEvent: MouseEvent) {
     super('click');
     this.resource = resource;
     this.browserEvent = browserEvent;
@@ -142,13 +144,13 @@ const useStyles = createStyles((theme) => ({
  * The SearchControl component represents the embeddable search table control.
  * It includes the table, rows, headers, sorting, etc.
  * It does not include the field editor, filter editor, pagination buttons.
- * @param props The SearchControl React props.
+ * @param props - The SearchControl React props.
  * @returns The SearchControl React node.
  */
 export function SearchControl(props: SearchControlProps): JSX.Element {
   const { classes } = useStyles();
   const medplum = useMedplum();
-  const [schemaLoaded, setSchemaLoaded] = useState<boolean>(false);
+  const [schemaLoaded, setSchemaLoaded] = useState(false);
   const [outcome, setOutcome] = useState<OperationOutcome | undefined>();
   const { search, onLoad } = props;
 
@@ -163,26 +165,42 @@ export function SearchControl(props: SearchControlProps): JSX.Element {
   const stateRef = useRef<SearchControlState>(state);
   stateRef.current = state;
 
-  useEffect(() => {
-    setOutcome(undefined);
-    medplum
-      .search(
-        search.resourceType as ResourceType,
-        formatSearchQuery({ ...search, total: search.total ?? 'estimate', fields: undefined })
-      )
-      .then((response) => {
-        setState({ ...stateRef.current, searchResponse: response });
-        if (onLoad) {
-          onLoad(new SearchLoadEvent(response));
-        }
-      })
-      .catch((reason) => {
-        setState({ ...stateRef.current, searchResponse: undefined });
-        setOutcome(reason);
-      });
-  }, [medplum, search, onLoad]);
+  const totalType = search.total ?? 'accurate';
 
-  function handleSingleCheckboxClick(e: React.ChangeEvent, id: string): void {
+  const loadResults = useCallback(
+    (options?: RequestInit) => {
+      setOutcome(undefined);
+
+      medplum
+        .search(
+          search.resourceType as ResourceType,
+          formatSearchQuery({ ...search, total: totalType, fields: undefined }),
+          options
+        )
+        .then((response) => {
+          setState({ ...stateRef.current, searchResponse: response });
+          if (onLoad) {
+            onLoad(new SearchLoadEvent(response));
+          }
+        })
+        .catch((reason) => {
+          setState({ ...stateRef.current, searchResponse: undefined });
+          setOutcome(reason);
+        });
+    },
+    [medplum, search, totalType, onLoad]
+  );
+
+  const refreshResults = useCallback(() => {
+    setState({ ...stateRef.current, searchResponse: undefined });
+    loadResults({ cache: 'reload' });
+  }, [loadResults]);
+
+  useEffect(() => {
+    loadResults();
+  }, [loadResults]);
+
+  function handleSingleCheckboxClick(e: ChangeEvent, id: string): void {
     e.stopPropagation();
 
     const el = e.target as HTMLInputElement;
@@ -196,7 +214,7 @@ export function SearchControl(props: SearchControlProps): JSX.Element {
     setState({ ...stateRef.current, selected: newSelected });
   }
 
-  function handleAllCheckboxClick(e: React.ChangeEvent): void {
+  function handleAllCheckboxClick(e: ChangeEvent): void {
     e.stopPropagation();
 
     const el = e.target as HTMLInputElement;
@@ -228,7 +246,7 @@ export function SearchControl(props: SearchControlProps): JSX.Element {
 
   /**
    * Emits a change event to the optional change listener.
-   * @param newSearch The new search definition.
+   * @param newSearch - The new search definition.
    */
   function emitSearchChange(newSearch: SearchRequest): void {
     if (props.onChange) {
@@ -238,10 +256,10 @@ export function SearchControl(props: SearchControlProps): JSX.Element {
 
   /**
    * Handles a click on a order row.
-   * @param e The click event.
-   * @param resource The FHIR resource.
+   * @param e - The click event.
+   * @param resource - The FHIR resource.
    */
-  function handleRowClick(e: React.MouseEvent, resource: Resource): void {
+  function handleRowClick(e: MouseEvent, resource: Resource): void {
     if (isCheckboxCell(e.target as Element)) {
       // Ignore clicks on checkboxes
       return;
@@ -254,17 +272,19 @@ export function SearchControl(props: SearchControlProps): JSX.Element {
 
     killEvent(e);
 
-    if (e.button !== 1 && props.onClick) {
+    const isAux = e.button === 1 || e.ctrlKey || e.metaKey;
+
+    if (!isAux && props.onClick) {
       props.onClick(new SearchClickEvent(resource, e));
     }
 
-    if (e.button === 1 && props.onAuxClick) {
+    if (isAux && props.onAuxClick) {
       props.onAuxClick(new SearchClickEvent(resource, e));
     }
   }
 
   function isExportPassed(): boolean {
-    return !!(props.onExport || props.onExportCsv || props.onExportTransactionBundle);
+    return !!(props.onExport ?? props.onExportCsv ?? props.onExportTransactionBundle);
   }
 
   useEffect(() => {
@@ -275,8 +295,7 @@ export function SearchControl(props: SearchControlProps): JSX.Element {
       .catch(console.log);
   }, [medplum, props.search.resourceType]);
 
-  const typeSchema = schemaLoaded && globalSchema.types[props.search.resourceType];
-  if (!typeSchema) {
+  if (!schemaLoaded) {
     return (
       <Center style={{ width: '100%', height: '100%' }}>
         <Loader />
@@ -366,12 +385,17 @@ export function SearchControl(props: SearchControlProps): JSX.Element {
               </Button>
             )}
           </Group>
-          {lastResult && (
-            <Text size="xs" color="dimmed">
-              {getStart(search, lastResult.total as number)}-{getEnd(search, lastResult.total as number)} of{' '}
-              {lastResult.total?.toLocaleString()}
-            </Text>
-          )}
+          <Group spacing={2}>
+            {lastResult && (
+              <Text size="xs" color="dimmed">
+                {getStart(search, lastResult.total as number)}-{getEnd(search, lastResult.total as number)} of{' '}
+                {`${totalType === 'estimate' ? '~' : ''}${lastResult.total?.toLocaleString()}`}
+              </Text>
+            )}
+            <ActionIcon title="Refresh" onClick={refreshResults}>
+              <IconRefresh size="1.125rem" />
+            </ActionIcon>
+          </Group>
         </Group>
       )}
       <Table className={classes.table}>
@@ -552,11 +576,11 @@ export function SearchControl(props: SearchControlProps): JSX.Element {
       <SearchFilterValueDialog
         key={state.filterDialogSearchParam?.code}
         visible={stateRef.current.filterDialogVisible}
-        title={'Input'}
+        title={state.filterDialogSearchParam?.code ? buildFieldNameString(state.filterDialogSearchParam.code) : ''}
         resourceType={resourceType}
         searchParam={state.filterDialogSearchParam}
         filter={state.filterDialogFilter}
-        defaultValue={''}
+        defaultValue=""
         onOk={(filter) => {
           emitSearchChange(addFilter(props.search, filter.code, filter.operator, filter.value));
           setState({
@@ -575,7 +599,7 @@ export function SearchControl(props: SearchControlProps): JSX.Element {
   );
 }
 
-export const MemoizedSearchControl = React.memo(SearchControl);
+export const MemoizedSearchControl = memo(SearchControl);
 
 interface FilterDescriptionProps {
   readonly resourceType: string;
@@ -591,8 +615,8 @@ function FilterDescription(props: FilterDescriptionProps): JSX.Element {
 
   return (
     <>
-      {filters.map((filter: Filter, index: number) => (
-        <div key={`filter-${index}-${filters.length}`}>
+      {filters.map((filter: Filter) => (
+        <div key={`filter-${filter.code}-${filter.operator}-${filter.value}`}>
           {getOpString(filter.operator)}
           &nbsp;
           <SearchFilterValueDisplay resourceType={props.resourceType} filter={filter} />
@@ -603,11 +627,11 @@ function FilterDescription(props: FilterDescriptionProps): JSX.Element {
 }
 
 function getPage(search: SearchRequest): number {
-  return Math.floor((search.offset || 0) / (search.count || DEFAULT_SEARCH_COUNT)) + 1;
+  return Math.floor((search.offset ?? 0) / (search.count ?? DEFAULT_SEARCH_COUNT)) + 1;
 }
 
 function getTotalPages(search: SearchRequest, total: number): number {
-  const pageSize = search.count || DEFAULT_SEARCH_COUNT;
+  const pageSize = search.count ?? DEFAULT_SEARCH_COUNT;
   return Math.ceil(total / pageSize);
 }
 

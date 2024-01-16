@@ -1,12 +1,16 @@
+import { readJson } from '@medplum/definitions';
 import {
   Account,
   Appointment,
   Binary,
   Bundle,
+  CodeSystem,
   Condition,
+  Extension,
   HumanName,
   ImplementationGuide,
   Media,
+  MedicationRequest,
   Observation,
   Patient,
   Questionnaire,
@@ -14,37 +18,36 @@ import {
   Resource,
   StructureDefinition,
   SubstanceProtein,
+  ValueSet,
 } from '@medplum/fhirtypes';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { validateResource } from './validation';
-import { indexStructureDefinitionBundle } from '../types';
-import { readJson } from '@medplum/definitions';
-import { loadDataTypes } from './types';
+import { LOINC, RXNORM, SNOMED, UCUM } from '../constants';
+import { ContentType } from '../contenttype';
 import { OperationOutcomeError } from '../outcomes';
+import { createReference } from '../utils';
+import { indexStructureDefinitionBundle } from './types';
+import { validateResource } from './validation';
 
 describe('FHIR resource validation', () => {
   let observationProfile: StructureDefinition;
+  let patientProfile: StructureDefinition;
 
   beforeAll(() => {
+    console.log = jest.fn();
     indexStructureDefinitionBundle(readJson('fhir/r4/profiles-types.json') as Bundle);
     indexStructureDefinitionBundle(readJson('fhir/r4/profiles-resources.json') as Bundle);
     indexStructureDefinitionBundle(readJson('fhir/r4/profiles-medplum.json') as Bundle);
-    loadDataTypes(readJson('fhir/r4/profiles-types.json') as Bundle<StructureDefinition>);
-    loadDataTypes(readJson('fhir/r4/profiles-resources.json') as Bundle<StructureDefinition>);
 
     observationProfile = JSON.parse(
       readFileSync(resolve(__dirname, '__test__', 'us-core-blood-pressure.json'), 'utf8')
     );
+    patientProfile = JSON.parse(readFileSync(resolve(__dirname, '__test__', 'us-core-patient.json'), 'utf8'));
   });
 
   test('Invalid resource', () => {
-    expect(() => {
-      validateResource(undefined as unknown as Patient);
-    }).toThrow();
-    expect(() => {
-      validateResource({} as unknown as Patient);
-    }).toThrow();
+    expect(() => validateResource(undefined as unknown as Patient)).toThrow();
+    expect(() => validateResource({} as unknown as Patient)).toThrow();
   });
 
   test('Valid base resource', () => {
@@ -53,9 +56,7 @@ describe('FHIR resource validation', () => {
       gender: 'unknown',
       birthDate: '1949-08-14',
     };
-    expect(() => {
-      validateResource(patient);
-    }).not.toThrow();
+    expect(() => validateResource(patient)).not.toThrow();
   });
 
   test('Invalid cardinality', () => {
@@ -71,12 +72,8 @@ describe('FHIR resource validation', () => {
         value: 'I12345',
       },
     } as unknown as Patient;
-    expect(() => {
-      validateResource(invalidMultiple);
-    }).toThrow();
-    expect(() => {
-      validateResource(invalidSingle);
-    }).toThrow();
+    expect(() => validateResource(invalidMultiple)).toThrow();
+    expect(() => validateResource(invalidSingle)).toThrow();
   });
 
   test('Invalid value type', () => {
@@ -84,9 +81,7 @@ describe('FHIR resource validation', () => {
       resourceType: 'Patient',
       birthDate: Date.parse('1949-08-14'),
     } as unknown as Patient;
-    expect(() => {
-      validateResource(invalidType);
-    }).toThrow();
+    expect(() => validateResource(invalidType)).toThrow();
   });
 
   test('Invalid string format', () => {
@@ -94,9 +89,7 @@ describe('FHIR resource validation', () => {
       resourceType: 'Patient',
       birthDate: 'Aug 14, 1949',
     };
-    expect(() => {
-      validateResource(invalidFormat);
-    }).toThrow();
+    expect(() => validateResource(invalidFormat)).toThrow();
   });
 
   test('Invalid numeric value', () => {
@@ -104,9 +97,7 @@ describe('FHIR resource validation', () => {
       resourceType: 'Patient',
       multipleBirthInteger: 4.2,
     };
-    expect(() => {
-      validateResource(patientExtension);
-    }).toThrow();
+    expect(() => validateResource(patientExtension)).toThrow();
   });
 
   test('Invalid extraneous property', () => {
@@ -114,9 +105,7 @@ describe('FHIR resource validation', () => {
       resourceType: 'Patient',
       foo: 'bar',
     } as unknown as Patient;
-    expect(() => {
-      validateResource(invalidFormat);
-    }).toThrow();
+    expect(() => validateResource(invalidFormat)).toThrow();
   });
 
   test('Valid property name special cases', () => {
@@ -135,12 +124,16 @@ describe('FHIR resource validation', () => {
       resourceType: 'Patient',
       deceasedBoolean: false,
     };
-    expect(() => {
-      validateResource(primitiveExtension);
-    }).not.toThrow();
-    expect(() => {
-      validateResource(choiceType);
-    }).not.toThrow();
+    const choiceTypeExtension: Patient = {
+      resourceType: 'Patient',
+      deceasedBoolean: false,
+      _deceasedBoolean: {
+        id: '1',
+      },
+    } as unknown as Patient;
+    expect(() => validateResource(primitiveExtension)).not.toThrow();
+    expect(() => validateResource(choiceType)).not.toThrow();
+    expect(() => validateResource(choiceTypeExtension)).not.toThrow();
   });
 
   test('Valid resource with extension', () => {
@@ -176,7 +169,7 @@ describe('FHIR resource validation', () => {
         coding: [
           {
             code: '85354-9',
-            system: 'http://loinc.org',
+            system: LOINC,
           },
         ],
       },
@@ -186,21 +179,37 @@ describe('FHIR resource validation', () => {
       effectiveDateTime: '2023-05-31T17:03:45-07:00',
       component: [
         {
+          dataAbsentReason: {
+            coding: [
+              {
+                code: '8480-6',
+                system: LOINC,
+              },
+            ],
+          },
           code: {
             coding: [
               {
                 code: '8480-6',
-                system: 'http://loinc.org',
+                system: LOINC,
               },
             ],
           },
         },
         {
+          dataAbsentReason: {
+            coding: [
+              {
+                code: '8480-6',
+                system: LOINC,
+              },
+            ],
+          },
           code: {
             coding: [
               {
                 code: '8462-4',
-                system: 'http://loinc.org',
+                system: LOINC,
               },
             ],
           },
@@ -208,9 +217,77 @@ describe('FHIR resource validation', () => {
       ],
     };
 
-    expect(() => {
-      validateResource(observation, observationProfile);
-    }).not.toThrow();
+    expect(() => validateResource(observation, observationProfile)).not.toThrow();
+  });
+
+  test('Valid resource under constraining profile with additional non-constrained fields', () => {
+    const observation: Observation = {
+      resourceType: 'Observation',
+      status: 'final',
+      category: [
+        {
+          coding: [
+            {
+              code: 'vital-signs',
+              system: 'http://terminology.hl7.org/CodeSystem/observation-category',
+            },
+          ],
+        },
+      ],
+      code: {
+        coding: [
+          {
+            code: '85354-9',
+            system: LOINC,
+          },
+        ],
+      },
+      subject: {
+        reference: 'Patient/example',
+      },
+      effectiveDateTime: '2023-05-31T17:03:45-07:00',
+      component: [
+        {
+          dataAbsentReason: {
+            coding: [
+              {
+                code: '8480-6',
+                system: LOINC,
+              },
+            ],
+          },
+          code: {
+            coding: [
+              {
+                code: '8480-6',
+                system: LOINC,
+                display: 'Systolic blood pressure', // This is the extra content
+              },
+            ],
+          },
+        },
+        {
+          dataAbsentReason: {
+            coding: [
+              {
+                code: '8480-6',
+                system: LOINC,
+              },
+            ],
+          },
+          code: {
+            coding: [
+              {
+                code: '8462-4',
+                system: LOINC,
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    expect(() => validateResource(observation, observationProfile)).not.toThrow();
   });
 
   test('Invalid cardinality', () => {
@@ -231,7 +308,7 @@ describe('FHIR resource validation', () => {
         coding: [
           {
             code: '85354-9',
-            system: 'http://loinc.org',
+            system: LOINC,
           },
         ],
       },
@@ -246,7 +323,7 @@ describe('FHIR resource validation', () => {
             coding: [
               {
                 code: '8480-6',
-                system: 'http://loinc.org',
+                system: LOINC,
               },
             ],
           },
@@ -254,9 +331,9 @@ describe('FHIR resource validation', () => {
       ],
     };
 
-    expect(() => {
-      validateResource(observation, observationProfile);
-    }).toThrow('Invalid number of values: expected 2..*, but found 1 (Observation.component)');
+    expect(() => validateResource(observation, observationProfile)).toThrow(
+      'Invalid number of values: expected 2..*, but found 1 (Observation.component)'
+    );
   });
 
   test('Invalid resource under pattern fields profile', () => {
@@ -291,7 +368,7 @@ describe('FHIR resource validation', () => {
             coding: [
               {
                 code: '8480-6',
-                system: 'http://loinc.org',
+                system: LOINC,
               },
             ],
           },
@@ -301,7 +378,60 @@ describe('FHIR resource validation', () => {
             coding: [
               {
                 code: '8462-4',
-                system: 'http://loinc.org',
+                system: LOINC,
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    expect(() => validateResource(observation, observationProfile)).toThrow();
+  });
+
+  test('Invalid slice contents', () => {
+    const observation: Observation = {
+      resourceType: 'Observation',
+      status: 'final',
+      category: [
+        {
+          coding: [
+            {
+              code: 'vital-signs',
+              system: 'http://terminology.hl7.org/CodeSystem/observation-category',
+            },
+          ],
+        },
+      ],
+      code: {
+        coding: [
+          {
+            code: '85354-9',
+            system: LOINC,
+          },
+        ],
+      },
+      subject: {
+        reference: 'Patient/example',
+      },
+      effectiveDateTime: '2023-05-31T17:03:45-07:00',
+      component: [
+        {
+          code: {
+            coding: [
+              {
+                code: '8480-6',
+                system: LOINC,
+              },
+            ],
+          },
+        },
+        {
+          code: {
+            coding: [
+              {
+                code: 'wrong code',
+                system: LOINC,
               },
             ],
           },
@@ -311,14 +441,48 @@ describe('FHIR resource validation', () => {
 
     expect(() => {
       validateResource(observation, observationProfile);
-    }).toThrow();
+    }).toThrow(
+      `Incorrect number of values provided for slice 'diastolic': expected 1..1, but found 0 (Observation.component)`
+    );
   });
 
   test('StructureDefinition', () => {
-    const structureDefinition = readJson('fhir/r4/profiles-resources.json') as Bundle;
     expect(() => {
+      const structureDefinition = readJson('fhir/r4/profiles-resources.json') as Bundle;
       validateResource(structureDefinition);
     }).not.toThrow();
+    expect(() => {
+      const structureDefinition = readJson('fhir/r4/profiles-medplum.json') as Bundle;
+      validateResource(structureDefinition);
+    }).not.toThrow();
+  });
+
+  test('Profile with restriction on base type field', () => {
+    const patient: Patient = {
+      resourceType: 'Patient',
+      identifier: [
+        {
+          system: 'http://example.com',
+          value: 'foo',
+        },
+      ],
+      telecom: [
+        {
+          // Missing system property
+          value: '555-555-5555',
+        },
+      ],
+      gender: 'unknown',
+      name: [
+        {
+          given: ['Test'],
+          family: 'Patient',
+        },
+      ],
+    };
+    expect(() => validateResource(patient, patientProfile)).toThrow(
+      new Error('Missing required property (Patient.telecom.system)')
+    );
   });
 
   test('Valid resource with nulls in primitive extension', () => {
@@ -333,6 +497,247 @@ describe('FHIR resource validation', () => {
         ],
       } as unknown as Patient);
     }).not.toThrow();
+  });
+
+  test('Valid ValueSet (content reference with altered cardinality', () => {
+    const valueSet: ValueSet = {
+      resourceType: 'ValueSet',
+      id: 'observation-status',
+      meta: {
+        lastUpdated: '2019-11-01T09:29:23.356+11:00',
+        profile: ['http://hl7.org/fhir/StructureDefinition/shareablevalueset'],
+      },
+      url: 'http://hl7.org/fhir/ValueSet/observation-status',
+      identifier: [
+        {
+          system: 'urn:ietf:rfc:3986',
+          value: 'urn:oid:2.16.840.1.113883.4.642.3.400',
+        },
+      ],
+      version: '4.0.1',
+      name: 'ObservationStatus',
+      title: 'ObservationStatus',
+      status: 'active',
+      experimental: false,
+      date: '2019-11-01T09:29:23+11:00',
+      publisher: 'HL7 (FHIR Project)',
+      contact: [
+        {
+          telecom: [
+            {
+              system: 'url',
+              value: 'http://hl7.org/fhir',
+            },
+            {
+              system: 'email',
+              value: 'fhir@lists.hl7.org',
+            },
+          ],
+        },
+      ],
+      description: 'Codes providing the status of an observation.',
+      immutable: true,
+      compose: {
+        include: [
+          {
+            system: 'http://hl7.org/fhir/observation-status',
+          },
+        ],
+      },
+    };
+    expect(() => validateResource(valueSet)).not.toThrow();
+  });
+
+  test('ValueSet compose invariant', () => {
+    const vs: ValueSet = {
+      resourceType: 'ValueSet',
+      url: 'http://terminology.hl7.org/ValueSet/v3-ProvenanceEventCurrentState',
+      identifier: [
+        {
+          system: 'urn:ietf:rfc:3986',
+          value: 'urn:oid:2.16.840.1.113883.1.11.20547',
+        },
+      ],
+      version: '2014-08-07',
+      name: 'v3.ProvenanceEventCurrentState',
+      title: 'V3 Value SetProvenanceEventCurrentState',
+      status: 'active',
+      experimental: false,
+      publisher: 'HL7 v3',
+      contact: [
+        {
+          telecom: [
+            {
+              system: 'url',
+              value: 'http://www.hl7.org',
+            },
+          ],
+        },
+      ],
+      immutable: false,
+      compose: {
+        include: [
+          {
+            valueSet: ['http://terminology.hl7.org/ValueSet/v3-ProvenanceEventCurrentState-AS'],
+          },
+          {
+            valueSet: ['http://terminology.hl7.org/ValueSet/v3-ProvenanceEventCurrentState-DC'],
+          },
+        ],
+      },
+    };
+
+    expect(() => validateResource(vs)).not.toThrow();
+  });
+
+  test('Timing invariant', () => {
+    const prescription: MedicationRequest = {
+      resourceType: 'MedicationRequest',
+      status: 'stopped',
+      intent: 'order',
+      medicationCodeableConcept: {
+        coding: [
+          {
+            system: RXNORM,
+            code: '105078',
+            display: 'Penicillin G 375 MG/ML Injectable Solution',
+          },
+        ],
+        text: 'Penicillin G 375 MG/ML Injectable Solution',
+      },
+      subject: {
+        reference: 'Patient/1c9f7759-dcc2-4aed-9beb-d7f8a2bfb4f6',
+      },
+      encounter: {
+        reference: 'Encounter/82bec000-a6e4-4352-bea4-b7f0af7c246b',
+      },
+      authoredOn: '1947-11-01T00:11:45-05:00',
+      requester: {
+        reference: 'Practitioner/4b823444-df09-40a9-8de8-cf1e6f044b9a',
+        display: 'Dr. Willena258 Oberbrunner298',
+      },
+      dosageInstruction: [
+        {
+          sequence: 1,
+          text: 'Take at regular intervals. Complete the prescribed course unless otherwise directed.\n',
+          additionalInstruction: [
+            {
+              coding: [
+                {
+                  system: SNOMED,
+                  code: '418577003',
+                  display: 'Take at regular intervals. Complete the prescribed course unless otherwise directed.',
+                },
+              ],
+              text: 'Take at regular intervals. Complete the prescribed course unless otherwise directed.',
+            },
+          ],
+          timing: {
+            repeat: {
+              frequency: 4,
+              period: 1,
+              periodUnit: 'd',
+            },
+          },
+          asNeededBoolean: false,
+          doseAndRate: [
+            {
+              type: {
+                coding: [
+                  {
+                    system: 'http://terminology.hl7.org/CodeSystem/dose-rate-type',
+                    code: 'ordered',
+                    display: 'Ordered',
+                  },
+                ],
+              },
+              doseQuantity: {
+                value: 1,
+              },
+            },
+          ],
+        },
+      ],
+    };
+    expect(() => validateResource(prescription)).not.toThrow();
+  });
+
+  test('Primitive extension for required property', () => {
+    const observation: Observation = {
+      resourceType: 'Observation',
+      _status: {
+        extension: [
+          {
+            url: 'http://example.com/data-absent',
+            valueBoolean: true,
+          },
+        ],
+      },
+      code: {
+        coding: [
+          {
+            system: 'http://example.com/',
+            code: '1',
+          },
+        ],
+      },
+      valueBoolean: true,
+    } as unknown as Observation;
+
+    expect(() => validateResource(observation)).not.toThrow();
+  });
+
+  test('Protects against prototype pollution', () => {
+    const patient = JSON.parse(`{
+      "resourceType": "Patient",
+      "birthDate": "1988-11-18",
+      "_birthDate": {
+        "id": "foo",
+        "__proto__": { "valueOf": "bad", "trim": "news" },
+        "constructor": {
+          "prototype": { "valueOf": "bad", "trim": "news" }
+        }
+      }
+    }`) as Patient;
+    expect(() => validateResource(patient)).not.toThrow();
+    expect('hi'.trim()).toEqual('hi');
+  });
+
+  test('Slice on value type', () => {
+    const bodyWeightProfile = JSON.parse(readFileSync(resolve(__dirname, '__test__/body-weight-profile.json'), 'utf8'));
+    const observation: Observation = {
+      resourceType: 'Observation',
+      status: 'final',
+      code: {
+        coding: [
+          {
+            system: LOINC,
+            code: '29463-7',
+          },
+        ],
+      },
+      category: [
+        {
+          coding: [
+            {
+              system: 'http://terminology.hl7.org/CodeSystem/observation-category',
+              code: 'vital-signs',
+            },
+          ],
+        },
+      ],
+      subject: {
+        reference: 'Patient/example',
+      },
+      effectiveDateTime: '2023-08-04T12:34:56Z',
+      valueQuantity: {
+        system: UCUM,
+        code: '[lb_av]',
+        unit: 'pounds',
+        value: 130,
+      },
+    };
+    expect(() => validateResource(observation, bodyWeightProfile as StructureDefinition)).not.toThrow();
   });
 });
 
@@ -365,15 +770,9 @@ describe('Legacy tests for parity checking', () => {
 
   test('Additional properties', () => {
     expect(() => validateResource({ resourceType: 'Patient', name: [{ given: ['Homer'] }], meta: {} })).not.toThrow();
-
-    try {
-      validateResource({ resourceType: 'Patient', fakeProperty: 'test' } as unknown as Resource);
-      fail('Expected error');
-    } catch (err) {
-      const outcome = (err as OperationOutcomeError).outcome;
-      expect(outcome.issue?.[0]?.severity).toEqual('error');
-      expect(outcome.issue?.[0]?.expression?.[0]).toEqual('Patient.fakeProperty');
-    }
+    expect(() => validateResource({ resourceType: 'Patient', fakeProperty: 'test' } as unknown as Resource)).toThrow(
+      new Error('Invalid additional property "fakeProperty" (Patient.fakeProperty)')
+    );
   });
 
   test('Required properties', () => {
@@ -488,10 +887,12 @@ describe('Legacy tests for parity checking', () => {
       fail('Expected error');
     } catch (err) {
       const outcome = (err as OperationOutcomeError).outcome;
-      expect(outcome.issue?.length).toEqual(1);
+      expect(outcome.issue?.length).toEqual(2);
       expect(outcome.issue?.[0]?.severity).toEqual('error');
       expect(outcome.issue?.[0]?.details?.text).toEqual('Invalid null value');
       expect(outcome.issue?.[0]?.expression?.[0]).toEqual('Questionnaire.item[0].item[0].item[0].item[0].item');
+      expect(outcome.issue?.[1]?.severity).toEqual('error');
+      expect(outcome.issue?.[1]?.code).toEqual('invariant');
     }
   });
 
@@ -516,7 +917,7 @@ describe('Legacy tests for parity checking', () => {
   });
 
   test('base64Binary', () => {
-    const binary: Binary = { resourceType: 'Binary', contentType: 'text/plain' };
+    const binary: Binary = { resourceType: 'Binary', contentType: ContentType.TEXT };
 
     binary.data = 123 as unknown as string;
     expect(() => validateResource(binary)).toThrowError(
@@ -680,7 +1081,13 @@ describe('Legacy tests for parity checking', () => {
   });
 
   test('positiveInt', () => {
-    const appt: Appointment = { resourceType: 'Appointment', status: 'booked', participant: [{ status: 'accepted' }] };
+    const patient: Patient = { resourceType: 'Patient' };
+    const patientReference = createReference(patient);
+    const appt: Appointment = {
+      resourceType: 'Appointment',
+      status: 'booked',
+      participant: [{ status: 'accepted', actor: patientReference }],
+    };
 
     appt.minutesDuration = 'x' as unknown as number;
     expect(() => validateResource(appt)).toThrowError(
@@ -707,7 +1114,13 @@ describe('Legacy tests for parity checking', () => {
   });
 
   test('unsignedInt', () => {
-    const appt: Appointment = { resourceType: 'Appointment', status: 'booked', participant: [{ status: 'accepted' }] };
+    const patient: Patient = { resourceType: 'Patient' };
+    const patientReference = createReference(patient);
+    const appt: Appointment = {
+      resourceType: 'Appointment',
+      status: 'booked',
+      participant: [{ status: 'accepted', actor: patientReference }],
+    };
 
     appt.priority = 'x' as unknown as number;
     expect(() => validateResource(appt)).toThrowError(
@@ -829,6 +1242,54 @@ describe('Legacy tests for parity checking', () => {
     expect(() =>
       validateResource({ resourceType: 'Patient', name: { family: 'foo' } as unknown as HumanName[] })
     ).toThrow('Expected array of values for property (Patient.name)');
+  });
+
+  test('Primitive and extension', () => {
+    const resource: CodeSystem = {
+      resourceType: 'CodeSystem',
+      status: 'active',
+      content: 'complete',
+      concept: [
+        {
+          extension: [
+            {
+              url: 'http://hl7.org/fhir/StructureDefinition/codesystem-concept-comments',
+              _valueString: {
+                extension: [
+                  {
+                    extension: [
+                      {
+                        url: 'lang',
+                        valueCode: 'nl',
+                      },
+                      {
+                        url: 'content',
+                        valueString: 'Zo spoedig mogelijk',
+                      },
+                    ],
+                    url: 'http://hl7.org/fhir/StructureDefinition/translation',
+                  },
+                ],
+              },
+            } as unknown as Extension,
+          ],
+          code: 'A',
+          display: 'ASAP',
+          designation: [
+            {
+              language: 'nl',
+              use: {
+                system: 'http://terminology.hl7.org/CodeSystem/designation-usage',
+                code: 'display',
+              },
+              value: 'ZSM',
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(() => validateResource(resource)).not.toThrow();
   });
 });
 

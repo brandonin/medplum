@@ -40,12 +40,14 @@ export const typeCache: Record<string, GraphQLScalarType | undefined> = {
   integer: GraphQLFloat,
   markdown: GraphQLString,
   number: GraphQLFloat,
+  oid: GraphQLString,
   positiveInt: GraphQLFloat,
   string: GraphQLString,
   time: GraphQLString,
   unsignedInt: GraphQLFloat,
   uri: GraphQLString,
   url: GraphQLString,
+  uuid: GraphQLString,
   xhtml: GraphQLString,
   'http://hl7.org/fhirpath/System.Boolean': GraphQLBoolean,
   'http://hl7.org/fhirpath/System.Date': GraphQLString,
@@ -98,10 +100,10 @@ export function fhirParamToGraphQLField(code: string): string {
  * GraphQL data loader for search requests.
  * The field name should always end with "List" (i.e., "Patient" search uses "PatientList").
  * The search args should be FHIR search parameters.
- * @param source The source/root.  This should always be null for our top level readers.
- * @param args The GraphQL search arguments.
- * @param ctx The GraphQL context.
- * @param info The GraphQL resolve info.  This includes the schema, and additional field details.
+ * @param source - The source/root.  This should always be null for our top level readers.
+ * @param args - The GraphQL search arguments.
+ * @param ctx - The GraphQL context.
+ * @param info - The GraphQL resolve info.  This includes the schema, and additional field details.
  * @returns Promise to read the resoures for the query.
  */
 export async function resolveBySearch(
@@ -139,6 +141,11 @@ export function buildSearchArgs(resourceType: string): GraphQLFieldConfigArgumen
       type: GraphQLString,
       description: 'Select resources based on the last time they were changed.',
     },
+    _filter: {
+      type: GraphQLString,
+      description:
+        ' The _filter parameter provides a syntax for expressing a set of query expressions on the underlying resources.',
+    },
   };
   const searchParams = getSearchParameters(resourceType);
   if (searchParams) {
@@ -158,7 +165,7 @@ export function buildSearchArgs(resourceType: string): GraphQLFieldConfigArgumen
  * Returns the depth of the GraphQL node in a query.
  * We use "selections" as the representation of depth.
  * As a rough approximation, it's the number of indentations in a well formatted query.
- * @param path The GraphQL node path.
+ * @param path - The GraphQL node path.
  * @returns The "depth" of the node.
  */
 export function getDepth(path: readonly (string | number)[]): number {
@@ -167,21 +174,22 @@ export function getDepth(path: readonly (string | number)[]): number {
 
 /**
  * Returns true if the field is requested in the GraphQL query.
- * @param info The GraphQL resolve info.  This includes the field name.
- * @param fieldName The field name to check.
+ * @param info - The GraphQL resolve info.  This includes the field name.
+ * @param fieldName - The field name to check.
  * @returns True if the field is requested in the GraphQL query.
  */
 export function isFieldRequested(info: GraphQLResolveInfo, fieldName: string): boolean {
-  return info.fieldNodes.some((fieldNode) =>
-    fieldNode.selectionSet?.selections.some((selection) => {
-      return selection.kind === Kind.FIELD && selection.name.value === fieldName;
-    })
+  return info.fieldNodes.some(
+    (fieldNode) =>
+      fieldNode.selectionSet?.selections.some((selection) => {
+        return selection.kind === Kind.FIELD && selection.name.value === fieldName;
+      })
   );
 }
 
 /**
  * Returns an OperationOutcome for GraphQL errors.
- * @param errors Array of GraphQL errors.
+ * @param errors - Array of GraphQL errors.
  * @returns OperationOutcome with the GraphQL errors as OperationOutcome issues.
  */
 export function invalidRequest(errors: readonly GraphQLError[]): OperationOutcome {

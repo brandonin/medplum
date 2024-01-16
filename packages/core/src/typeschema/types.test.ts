@@ -1,9 +1,28 @@
+import { readJson } from '@medplum/definitions';
+import { Bundle, Observation, StructureDefinition } from '@medplum/fhirtypes';
 import { readFileSync } from 'fs';
-import { ElementValidator, InternalTypeSchema, SlicingRules, parseStructureDefinition } from './types';
 import { resolve } from 'path';
 import { TypedValue } from '../types';
+import {
+  InternalSchemaElement,
+  InternalTypeSchema,
+  SlicingRules,
+  getDataType,
+  indexStructureDefinitionBundle,
+  isProfileLoaded,
+  parseStructureDefinition,
+  subsetResource,
+  tryGetDataType,
+  tryGetProfile,
+} from './types';
+import { LOINC } from '../constants';
 
 describe('FHIR resource and data type representations', () => {
+  beforeAll(() => {
+    indexStructureDefinitionBundle(readJson('fhir/r4/profiles-types.json') as Bundle);
+    indexStructureDefinitionBundle(readJson('fhir/r4/profiles-resources.json') as Bundle);
+  });
+
   test('Base resource parsing', () => {
     const sd = JSON.parse(readFileSync(resolve(__dirname, '__test__', 'base-patient.json'), 'utf8'));
     const profile = parseStructureDefinition(sd);
@@ -20,8 +39,8 @@ describe('FHIR resource and data type representations', () => {
     const sd = JSON.parse(readFileSync(resolve(__dirname, '__test__', 'us-core-blood-pressure.json'), 'utf8'));
     const profile = parseStructureDefinition(sd);
 
-    expect(profile.name).toBe('Observation');
-    expect(profile.constraints.map((c) => c.key).sort()).toEqual([
+    expect(profile.name).toBe('USCoreBloodPressureProfile');
+    expect(profile.constraints?.map((c) => c.key).sort()).toEqual([
       'dom-2',
       'dom-3',
       'dom-4',
@@ -31,19 +50,21 @@ describe('FHIR resource and data type representations', () => {
       'obs-7',
       'vs-2',
     ]);
-    expect(profile.fields['status'].binding).toEqual('http://hl7.org/fhir/ValueSet/observation-status|4.0.1');
-    expect(profile.fields['code'].pattern).toMatchObject<TypedValue>({
+    expect(profile.elements['status'].binding?.valueSet).toEqual(
+      'http://hl7.org/fhir/ValueSet/observation-status|4.0.1'
+    );
+    expect(profile.elements['code'].pattern).toMatchObject<TypedValue>({
       type: 'CodeableConcept',
       value: {
         coding: [
           {
             code: '85354-9',
-            system: 'http://loinc.org',
+            system: LOINC,
           },
         ],
       },
     });
-    expect(profile.fields['category'].slicing).toMatchObject<SlicingRules>({
+    expect(profile.elements['category'].slicing).toMatchObject<SlicingRules>({
       discriminator: [
         { type: 'value', path: 'coding.code' },
         { type: 'value', path: 'coding.system' },
@@ -51,7 +72,8 @@ describe('FHIR resource and data type representations', () => {
       slices: [
         {
           name: 'VSCat',
-          fields: {
+          path: 'Observation.category',
+          elements: {
             'coding.code': expect.objectContaining({
               fixed: {
                 type: 'code',
@@ -71,17 +93,18 @@ describe('FHIR resource and data type representations', () => {
       ],
       ordered: false,
     });
-    expect(profile.fields['component']).toMatchObject<Partial<ElementValidator>>({
+    expect(profile.elements['component']).toMatchObject<Partial<InternalSchemaElement>>({
       min: 2,
       max: Number.POSITIVE_INFINITY,
     });
-    expect(profile.fields['component'].constraints.map((c) => c.key).sort()).toEqual(['ele-1', 'vs-3']);
-    expect(profile.fields['component'].slicing).toMatchObject<SlicingRules>({
+    expect(profile.elements['component'].constraints?.map((c) => c.key).sort()).toEqual(['ele-1', 'vs-3']);
+    expect(profile.elements['component'].slicing).toMatchObject<SlicingRules>({
       discriminator: [{ type: 'pattern', path: 'code' }],
       slices: [
         {
           name: 'systolic',
-          fields: {
+          path: 'Observation.component',
+          elements: {
             code: expect.objectContaining({
               pattern: {
                 type: 'CodeableConcept',
@@ -89,7 +112,7 @@ describe('FHIR resource and data type representations', () => {
                   coding: [
                     {
                       code: '8480-6',
-                      system: 'http://loinc.org',
+                      system: LOINC,
                     },
                   ],
                 },
@@ -101,7 +124,8 @@ describe('FHIR resource and data type representations', () => {
         },
         {
           name: 'diastolic',
-          fields: {
+          path: 'Observation.component',
+          elements: {
             code: expect.objectContaining({
               pattern: {
                 type: 'CodeableConcept',
@@ -109,7 +133,7 @@ describe('FHIR resource and data type representations', () => {
                   coding: [
                     {
                       code: '8462-4',
-                      system: 'http://loinc.org',
+                      system: LOINC,
                     },
                   ],
                 },
@@ -126,7 +150,7 @@ describe('FHIR resource and data type representations', () => {
     const [refRange, component] = profile.innerTypes;
     expect(refRange).toMatchObject<Partial<InternalTypeSchema>>({
       name: 'ObservationReferenceRange',
-      fields: {
+      elements: {
         id: expect.objectContaining({}),
         low: expect.objectContaining({}),
         high: expect.objectContaining({}),
@@ -134,12 +158,36 @@ describe('FHIR resource and data type representations', () => {
     });
     expect(component).toMatchObject<Partial<InternalTypeSchema>>({
       name: 'ObservationComponent',
-      fields: {
+      elements: {
         id: expect.objectContaining({}),
         code: expect.objectContaining({}),
         'value[x]': expect.objectContaining({}),
       },
     });
+    expect([...(profile.summaryProperties as Set<string>)].sort()).toEqual([
+      'basedOn',
+      'code',
+      'component',
+      'derivedFrom',
+      'effective',
+      'encounter',
+      'focus',
+      'hasMember',
+      'id',
+      'identifier',
+      'implicitRules',
+      'issued',
+      'meta',
+      'partOf',
+      'performer',
+      'status',
+      'subject',
+      'value',
+    ]);
+
+    // http://hl7.org/fhir/StructureDefinition/structuredefinition-fhir-type
+    // 'http://hl7.org/fhirpath/System.String' transformed into 'id'
+    expect(profile.elements['id'].type[0].code).toEqual('id');
   });
 
   test('Nested BackboneElement parsing', () => {
@@ -163,7 +211,7 @@ describe('FHIR resource and data type representations', () => {
     ]);
 
     const rest = profile.innerTypes.find((t) => t.name === 'CapabilityStatementRest');
-    const restProperties = Object.keys(rest?.fields ?? {});
+    const restProperties = Object.keys(rest?.elements ?? {});
     expect(restProperties.sort()).toEqual([
       'compartment',
       'documentation',
@@ -177,14 +225,143 @@ describe('FHIR resource and data type representations', () => {
       'searchParam',
       'security',
     ]);
-    expect(rest?.fields['interaction']).toMatchObject<Partial<ElementValidator>>({
-      type: [{ code: 'CapabilityStatementRestInteraction', targetProfile: [] }],
+    expect(rest?.elements['interaction']).toMatchObject<Partial<InternalSchemaElement>>({
+      type: [{ code: 'CapabilityStatementRestInteraction' }],
     });
-    expect(rest?.fields['searchParam']).toMatchObject<Partial<ElementValidator>>({
-      type: [{ code: 'CapabilityStatementRestResourceSearchParam', targetProfile: [] }],
+    expect(rest?.elements['searchParam']).toMatchObject<Partial<InternalSchemaElement>>({
+      type: [{ code: 'CapabilityStatementRestResourceSearchParam' }],
     });
-    expect(rest?.fields['operation']).toMatchObject<Partial<ElementValidator>>({
-      type: [{ code: 'CapabilityStatementRestResourceOperation', targetProfile: [] }],
+    expect(rest?.elements['operation']).toMatchObject<Partial<InternalSchemaElement>>({
+      type: [{ code: 'CapabilityStatementRestResourceOperation' }],
     });
+  });
+
+  test('Base spec profiles', () => {
+    const bodyWeightProfile = readFileSync(resolve(__dirname, '__test__/body-weight-profile.json'), 'utf8');
+    expect(parseStructureDefinition(JSON.parse(bodyWeightProfile) as StructureDefinition)).toBeDefined();
+  });
+
+  test('subsetResource', () => {
+    const observation: Observation = {
+      resourceType: 'Observation',
+      id: 'example',
+      meta: {
+        profile: ['http://hl7.org/fhir/us/core/StructureDefinition/us-core-blood-pressure'],
+        tag: [{ system: 'http://example.com/foo', code: 'bar' }],
+      },
+      status: 'final',
+      category: [
+        {
+          coding: [
+            {
+              code: 'vital-signs',
+              system: 'http://terminology.hl7.org/CodeSystem/observation-category',
+            },
+          ],
+        },
+      ],
+      code: {
+        coding: [
+          {
+            code: '85354-9',
+            system: LOINC,
+          },
+        ],
+      },
+      subject: {
+        reference: 'Patient/example',
+      },
+      effectiveDateTime: '2023-05-31T17:03:45-07:00',
+      component: [
+        {
+          dataAbsentReason: {
+            coding: [
+              {
+                code: '8480-6',
+                system: LOINC,
+              },
+            ],
+          },
+          code: {
+            coding: [
+              {
+                code: '8480-6',
+                system: LOINC,
+              },
+            ],
+          },
+        },
+        {
+          dataAbsentReason: {
+            coding: [
+              {
+                code: '8480-6',
+                system: LOINC,
+              },
+            ],
+          },
+          code: {
+            coding: [
+              {
+                code: '8462-4',
+                system: LOINC,
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    expect(subsetResource(observation, ['subject', 'category'])).toEqual<Partial<Observation>>({
+      resourceType: 'Observation',
+      id: 'example',
+      meta: {
+        profile: ['http://hl7.org/fhir/us/core/StructureDefinition/us-core-blood-pressure'],
+        tag: [
+          { system: 'http://example.com/foo', code: 'bar' },
+          { system: 'http://hl7.org/fhir/v3/ObservationValue', code: 'SUBSETTED' },
+        ],
+      },
+      category: [
+        {
+          coding: [
+            {
+              code: 'vital-signs',
+              system: 'http://terminology.hl7.org/CodeSystem/observation-category',
+            },
+          ],
+        },
+      ],
+      subject: {
+        reference: 'Patient/example',
+      },
+    });
+  });
+
+  test('Deeply nested content reference', () => {
+    // Make sure we can handle contentReference more than 2 layers down
+    const structureMapGroupRuleType = getDataType('StructureMapGroupRule');
+    expect(structureMapGroupRuleType).toBeDefined();
+    expect(structureMapGroupRuleType.elements['rule']).toBeDefined();
+  });
+
+  test('Indexing structure definitions related to a profile', () => {
+    const profileUrl = 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-blood-pressure';
+    const profileName = 'USCoreBloodPressureProfile';
+
+    expect(isProfileLoaded(profileUrl)).toBe(false);
+    expect(tryGetProfile(profileUrl)).toBeUndefined();
+    expect(tryGetDataType(profileName)).toBeUndefined();
+    expect(tryGetDataType(profileName, profileUrl)).toBeUndefined();
+
+    const sd = JSON.parse(readFileSync(resolve(__dirname, '__test__', 'us-core-blood-pressure.json'), 'utf8'));
+    expect(sd.url).toEqual(profileUrl);
+    expect(sd.name).toEqual(profileName);
+    indexStructureDefinitionBundle([sd], profileUrl);
+
+    expect(isProfileLoaded(profileUrl)).toBe(true);
+    expect(tryGetProfile(profileUrl)).toBeDefined();
+    expect(tryGetDataType(profileName)).toBeUndefined(); // expect undefined since profileUrl argument not provided
+    expect(tryGetDataType(profileName, profileUrl)).toBeDefined();
   });
 });

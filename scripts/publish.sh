@@ -1,6 +1,24 @@
 #!/usr/bin/env bash
 
-PACKAGES=("app" "bot-layer" "cdk" "cli" "core" "definitions" "fhir-router" "fhirtypes" "mock" "react")
+PACKAGES=(
+  "agent"
+  "app"
+  "bot-layer"
+  "cdk"
+  "cli"
+  "core"
+  "definitions"
+  "eslint-config"
+  "expo-polyfills"
+  "fhir-router"
+  "fhirtypes"
+  "health-gorilla"
+  "hl7"
+  "mock"
+  "react"
+  "react-hooks"
+)
+
 for package in ${PACKAGES[@]}; do
   echo "Publish $package"
   pushd packages/$package

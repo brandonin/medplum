@@ -18,7 +18,7 @@ export type FhirResponse = [OperationOutcome] | [OperationOutcome, Resource];
 
 export type FhirRouteHandler = (req: FhirRequest, repo: FhirRepository, router: FhirRouter) => Promise<FhirResponse>;
 
-interface FhirOptions {
+export interface FhirOptions {
   introspectionEnabled?: boolean;
 }
 
@@ -51,9 +51,11 @@ async function searchByPost(req: FhirRequest, repo: FhirRepository): Promise<Fhi
 // Create resource
 async function createResource(req: FhirRequest, repo: FhirRepository): Promise<FhirResponse> {
   const { resourceType } = req.params;
-  const resource = req.body;
+  const resource = req.body as Resource;
   if (resource.resourceType !== resourceType) {
-    return [badRequest('Incorrect resource type')];
+    return [
+      badRequest(`Incorrect resource type: expected ${resourceType}, but found ${resource.resourceType || '<EMPTY>'}`),
+    ];
   }
   const result = await repo.createResource(resource);
   return [created, result];

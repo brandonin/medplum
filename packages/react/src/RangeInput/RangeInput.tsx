@@ -1,6 +1,6 @@
 import { Group } from '@mantine/core';
 import { Range } from '@medplum/fhirtypes';
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { QuantityInput } from '../QuantityInput/QuantityInput';
 
 export interface RangeInputProps {
@@ -12,7 +12,7 @@ export interface RangeInputProps {
 /**
  * Renders a Range input.
  * See: https://www.hl7.org/fhir/datatypes.html#Range
- * @param props Range input properties.
+ * @param props - Range input properties.
  * @returns Range input element.
  */
 export function RangeInput(props: RangeInputProps): JSX.Element {

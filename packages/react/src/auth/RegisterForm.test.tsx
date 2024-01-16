@@ -2,10 +2,9 @@ import { Title } from '@mantine/core';
 import { allOk, GoogleCredentialResponse, MedplumClient } from '@medplum/core';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { randomUUID, webcrypto } from 'crypto';
-import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { TextEncoder } from 'util';
-import { MedplumProvider } from '../MedplumProvider/MedplumProvider';
+import { MedplumProvider } from '@medplum/react-hooks';
 import { RegisterForm, RegisterFormProps } from './RegisterForm';
 
 const recaptchaSiteKey = 'abc';
@@ -70,7 +69,8 @@ function mockFetch(url: string, options: any): Promise<any> {
   } else if (options.method === 'POST' && url.endsWith('/oauth2/token')) {
     status = 200;
     result = {
-      access_token: 'header.' + window.btoa(JSON.stringify({ client_id: 'my-client-id' })) + '.signature',
+      access_token:
+        'header.' + window.btoa(JSON.stringify({ client_id: 'my-client-id', login_id: '123' })) + '.signature',
       refresh_token: 'header.' + window.btoa(JSON.stringify({ client_id: 'my-client-id' })) + '.signature',
       expires_in: 1,
       token_type: 'Bearer',

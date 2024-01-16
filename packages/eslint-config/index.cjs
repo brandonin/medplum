@@ -1,12 +1,11 @@
 module.exports = {
   parser: '@typescript-eslint/parser',
-  plugins: ['@typescript-eslint'],
+  plugins: ['@typescript-eslint', 'react-refresh'],
   extends: [
     'eslint:recommended',
     'plugin:@typescript-eslint/recommended',
     'plugin:@typescript-eslint/strict',
     'plugin:jsdoc/recommended-typescript-error',
-    'plugin:prettier/recommended',
     'plugin:react-hooks/recommended',
   ],
   reportUnusedDisableDirectives: true,
@@ -121,6 +120,9 @@ module.exports = {
       },
     ],
 
+    // React Refresh
+    'react-refresh/only-export-components': 'warn',
+
     // Disable warnings from typescript-eslint:strict
     '@typescript-eslint/non-nullable-type-assertion-style': 'off',
     '@typescript-eslint/dot-notation': 'off',
@@ -137,7 +139,9 @@ module.exports = {
         definedTags: ['category', 'experimental', 'ts-ignore'],
       },
     ],
+    'jsdoc/require-hyphen-before-param-description': ['error', 'always'],
     'jsdoc/require-jsdoc': 'off',
+    'jsdoc/tag-lines': 'off',
   },
   ignorePatterns: [
     'coverage',
@@ -145,9 +149,13 @@ module.exports = {
     'node_modules',
     'packages/**/dist/',
     'packages/docs/build/',
+    'packages/docs/markdown-to-mdx.cjs',
     'packages/docs/docusaurus.config.js',
     'packages/docs/sidebars.js',
+    'packages/eslint-config/index.cjs',
+    'packages/expo-medplum-polyfills/build',
     'babel.config.js',
+    'babel.config.cjs',
     'jest.sequencer.js',
     'package-lock.json',
     'rollup.config.mjs',

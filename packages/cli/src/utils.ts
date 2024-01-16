@@ -1,17 +1,20 @@
-import { MedplumClient } from '@medplum/core';
+import { ContentType, encodeBase64, MedplumClient } from '@medplum/core';
 import { Bot, Extension, OperationOutcome } from '@medplum/fhirtypes';
-import { existsSync, readFileSync, writeFile } from 'fs';
-import { resolve } from 'path';
+import { createHmac, createPrivateKey, randomBytes } from 'crypto';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { SignJWT } from 'jose';
+import { basename, extname, resolve } from 'path';
 import internal from 'stream';
 import tar from 'tar';
+import { FileSystemStorage } from './storage';
 
 interface MedplumConfig {
-  readonly baseUrl?: string;
-  readonly clientId?: string;
-  readonly googleClientId?: string;
-  readonly recaptchaSiteKey?: string;
-  readonly registerEnabled?: boolean;
-  readonly bots?: MedplumBotConfig[];
+  baseUrl?: string;
+  clientId?: string;
+  googleClientId?: string;
+  recaptchaSiteKey?: string;
+  registerEnabled?: boolean;
+  bots?: MedplumBotConfig[];
 }
 
 interface MedplumBotConfig {
@@ -21,34 +24,53 @@ interface MedplumBotConfig {
   readonly dist?: string;
 }
 
+export interface Profile {
+  readonly name?: string;
+  readonly authType?: string;
+  readonly baseUrl?: string;
+  readonly clientId?: string;
+  readonly clientSecret?: string;
+  readonly tokenUrl?: string;
+  readonly authorizeUrl?: string;
+  readonly fhirUrlPath?: string;
+  readonly scope?: string;
+  readonly accessToken?: string;
+  readonly callbackUrl?: string;
+  readonly subject?: string;
+  readonly audience?: string;
+  readonly issuer?: string;
+  readonly privateKeyPath?: string;
+}
+
 export function prettyPrint(input: unknown): void {
   console.log(JSON.stringify(input, null, 2));
 }
 
 export async function saveBot(medplum: MedplumClient, botConfig: MedplumBotConfig, bot: Bot): Promise<void> {
-  const code = readFileContents(botConfig.source);
+  const codePath = botConfig.source;
+  const code = readFileContents(codePath);
   if (!code) {
     return;
   }
 
   try {
-    console.log('Update bot code.....');
+    console.log('Saving source code...');
+    const sourceCode = await medplum.createAttachment(code, basename(codePath), getCodeContentType(codePath));
+
+    console.log('Updating bot.....');
     const updateResult = await medplum.updateResource({
       ...bot,
-      code,
+      sourceCode,
     });
-    if (!updateResult) {
-      console.log('Bot not modified');
-    } else {
-      console.log('Success! New bot version: ' + updateResult.meta?.versionId);
-    }
+    console.log('Success! New bot version: ' + updateResult.meta?.versionId);
   } catch (err) {
     console.log('Update error: ', err);
   }
 }
 
 export async function deployBot(medplum: MedplumClient, botConfig: MedplumBotConfig, bot: Bot): Promise<void> {
-  const code = readFileContents(botConfig.dist ?? botConfig.source);
+  const codePath = botConfig.dist ?? botConfig.source;
+  const code = readFileContents(codePath);
   if (!code) {
     return;
   }
@@ -57,6 +79,7 @@ export async function deployBot(medplum: MedplumClient, botConfig: MedplumBotCon
     console.log('Deploying bot...');
     const deployResult = (await medplum.post(medplum.fhirUrl('Bot', bot.id as string, '$deploy'), {
       code,
+      filename: basename(codePath),
     })) as OperationOutcome;
     console.log('Deploy result: ' + deployResult.issue?.[0]?.details?.text);
   } catch (err) {
@@ -64,20 +87,20 @@ export async function deployBot(medplum: MedplumClient, botConfig: MedplumBotCon
   }
 }
 
-export async function createBot(medplum: MedplumClient, argv: string[]): Promise<void> {
-  if (argv.length < 4) {
-    console.log(`Error: command needs to be npx medplum <new-bot-name> <project-id> <source-file> <dist-file>`);
-    return;
-  }
-  const botName = argv[0];
-  const projectId = argv[1];
-  const sourceFile = argv[2];
-  const distFile = argv[3];
-
+export async function createBot(
+  medplum: MedplumClient,
+  botName: string,
+  projectId: string,
+  sourceFile: string,
+  distFile: string,
+  runtimeVersion?: string,
+  writeConfig?: boolean
+): Promise<void> {
   try {
     const body = {
       name: botName,
       description: '',
+      runtimeVersion,
     };
     const newBot = await medplum.post('admin/projects/' + projectId + '/bot', body);
     const bot = await medplum.readResource('Bot', newBot.id);
@@ -89,9 +112,12 @@ export async function createBot(medplum: MedplumClient, argv: string[]): Promise
       dist: distFile,
     };
     await saveBot(medplum, botConfig as MedplumBotConfig, bot);
+    await deployBot(medplum, botConfig as MedplumBotConfig, bot);
     console.log(`Success! Bot created: ${bot.id}`);
 
-    addBotToConfig(botConfig);
+    if (writeConfig) {
+      addBotToConfig(botConfig);
+    }
   } catch (err) {
     console.log('Error while creating new bot: ' + err);
   }
@@ -106,30 +132,58 @@ export function readBotConfigs(botName: string): MedplumBotConfig[] {
   return botConfigs;
 }
 
-export function readConfig(tagName?: string): MedplumConfig | undefined {
-  const fileName = tagName ? `medplum.${tagName}.config.json` : 'medplum.config.json';
-  const content = readFileContents(fileName);
+/**
+ * Returns the config file name.
+ * @param tagName - Optional environment tag name.
+ * @param server - Optional server flag.
+ * @returns The config file name.
+ */
+export function getConfigFileName(tagName?: string, server = false): string {
+  const parts = ['medplum'];
+  if (tagName) {
+    parts.push(tagName);
+  }
+  parts.push('config');
+  if (server) {
+    parts.push('server');
+  }
+  parts.push('json');
+  return parts.join('.');
+}
+
+/**
+ * Writes a config file to disk.
+ * @param configFileName - The config file name.
+ * @param config - The config file contents.
+ */
+export function writeConfig(configFileName: string, config: Record<string, any>): void {
+  writeFileSync(resolve(configFileName), JSON.stringify(config, undefined, 2), 'utf-8');
+}
+
+export function readConfig(tagName?: string, server = false): MedplumConfig | undefined {
+  const content = readFileContents(getConfigFileName(tagName, server));
   if (!content) {
     return undefined;
   }
   return JSON.parse(content);
 }
 
-function readFileContents(fileName: string): string | undefined {
+function readFileContents(fileName: string): string {
   const path = resolve(process.cwd(), fileName);
   if (!existsSync(path)) {
-    console.log('Error: File does not exist: ' + path);
     return '';
   }
   return readFileSync(path, 'utf8');
 }
 
 function addBotToConfig(botConfig: MedplumBotConfig): void {
-  const config = readConfig();
-  config?.bots?.push(botConfig);
-  writeFile('medplum.config.json', JSON.stringify(config), () => {
-    console.log(`Bot added to config: ${botConfig.id}`);
-  });
+  const config = readConfig() ?? {};
+  if (!config.bots) {
+    config.bots = [];
+  }
+  config.bots.push(botConfig);
+  writeFileSync('medplum.config.json', JSON.stringify(config, null, 2), 'utf8');
+  console.log(`Bot added to config: ${botConfig.id}`);
 }
 
 function escapeRegex(str: string): string {
@@ -142,7 +196,7 @@ function escapeRegex(str: string): string {
  * Expanding archive files without controlling resource consumption is security-sensitive
  *
  * See: https://sonarcloud.io/organizations/medplum/rules?open=typescript%3AS5042&rule_key=typescript%3AS5042
- * @param destinationDir The destination directory where all files will be extracted.
+ * @param destinationDir - The destination directory where all files will be extracted.
  * @returns A tar file extractor.
  */
 export function safeTarExtractor(destinationDir: string): internal.Writable {
@@ -179,4 +233,78 @@ export function getUnsupportedExtension(): Extension {
       },
     ],
   };
+}
+
+export function getCodeContentType(filename: string): string {
+  const ext = extname(filename).toLowerCase();
+  if (['.cjs', '.mjs', '.js'].includes(ext)) {
+    return ContentType.JAVASCRIPT;
+  }
+  if (['.cts', '.mts', '.ts'].includes(ext)) {
+    return ContentType.TYPESCRIPT;
+  }
+  return ContentType.TEXT;
+}
+
+export function saveProfile(profileName: string, options: Profile): Profile {
+  const storage = new FileSystemStorage(profileName);
+  const optionsObject = { name: profileName, ...options };
+  storage.setObject('options', optionsObject);
+  console.log(`${profileName} profile created`);
+  return optionsObject;
+}
+
+export function loadProfile(profileName: string): Profile {
+  const storage = new FileSystemStorage(profileName);
+  return storage.getObject('options') as Profile;
+}
+
+export function profileExists(storage: FileSystemStorage, profile: string): boolean {
+  if (profile === 'default') {
+    return true;
+  }
+  const optionsObject = storage.getObject('options');
+  if (!optionsObject) {
+    return false;
+  }
+  return true;
+}
+
+export async function jwtBearerLogin(medplum: MedplumClient, profile: Profile): Promise<void> {
+  const header = {
+    typ: 'JWT',
+    alg: 'HS256',
+  };
+
+  const currentTimestamp = Math.floor(Date.now() / 1000);
+  const data = {
+    aud: `${profile.baseUrl}${profile.audience}`,
+    iss: profile.issuer,
+    sub: profile.subject,
+    nbf: currentTimestamp,
+    iat: currentTimestamp,
+    exp: currentTimestamp + 604800, // expiry time is 7 days from time of creation
+  };
+  const encodedHeader = encodeBase64(JSON.stringify(header));
+  const encodedData = encodeBase64(JSON.stringify(data));
+  const token = `${encodedHeader}.${encodedData}`;
+  const signature = createHmac('sha256', profile.clientSecret as string)
+    .update(token)
+    .digest('base64url');
+  const signedToken = `${token}.${signature}`;
+  await medplum.startJwtBearerLogin(profile.clientId as string, signedToken, profile.scope ?? '');
+}
+
+export async function jwtAssertionLogin(medplum: MedplumClient, profile: Profile): Promise<void> {
+  const privateKey = createPrivateKey(readFileSync(resolve(profile.privateKeyPath as string)));
+  const jwt = await new SignJWT({})
+    .setProtectedHeader({ alg: 'RS384', typ: 'JWT' })
+    .setIssuer(profile.clientId as string)
+    .setSubject(profile.clientId as string)
+    .setAudience(`${profile.baseUrl}${profile.audience}`)
+    .setJti(randomBytes(16).toString('hex'))
+    .setIssuedAt()
+    .setExpirationTime('5m')
+    .sign(privateKey);
+  await medplum.startJwtAssertionLogin(jwt);
 }

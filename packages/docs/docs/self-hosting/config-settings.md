@@ -25,7 +25,7 @@ Here is a full example. See the table below for details on each setting.
 | `stackName`                  | The long name of your environment. This will be included in many of the AWS resource names created by CDK. For example, `MyMedplumStack` or `MedplumStagingStack`.                                                                                                                                |
 | `accountNumber`              | Your AWS account number. A 12-digit number, such as 123456789012, that uniquely identifies an AWS account. Account IDs are not considered sensitive information.                                                                                                                                  |
 | `region`                     | The AWS region where you want to deploy.                                                                                                                                                                                                                                                          |
-| `domainName`                 | The domain name that represents your Route 53 Hosted Zone. For example, `medplum.com` or `my-med-app.io`.                                                                                                                                                                                         |
+| `domainName`                 | The domain name that represents the common root for all subdomains. For example, `medplum.com`, `staging.medplum.com`, or `my-med-app.io`.                                                                                                                                                        |
 | `vpcId`                      | Optional preexisting VPC ID. Use this to import an existing VPC. If this setting is not present or empty, a new VPC will be created.                                                                                                                                                              |
 | `apiDomainName`              | The domain name of the API server. This should be a subdomain of `domainName`. For example, `api.medplum.com` or `api.staging.medplum.com`.                                                                                                                                                       |
 | `apiPort`                    | The port number that the API server binds to inside the Docker image. By default, you should use `8103`. In some cases, you may need to use `5000`.                                                                                                                                               |
@@ -54,6 +54,7 @@ Here is a full example. See the table below for details on each setting.
 | `clamscanLoggingBucket`      | The logging bucket that you created before.                                                                                                                                                                                                                                                       |
 | `clamscanLoggingPrefix`      | A directory prefix to use for the S3 logs. For example, `clamscan`.                                                                                                                                                                                                                               |
 | `skipDns`                    | Optional flag to skip all DNS entries. Use this option if you do not use Route 53, or if the Route 53 hosted zone is in a different AWS account.                                                                                                                                                  |
+| `hostedZoneName`             | Optional Route 53 Hosted Zone name for DNS entries. By default, the CDK will use root domain name of the `domainName` setting (for example, if `domainName` is `staging.example.com`, the default hosted zone name is `example.com`).                                                             |
 
 Here is the server configuration for the Medplum staging environment:
 
@@ -116,6 +117,7 @@ You will also be prompted for a parameter "Type". The default option is "String"
 | `tokenUrl`             | The OAuth token URL. By default, Medplum server uses built in OAuth, so `tokenUrl` should be `baseUrl` + `oauth2/token`.                                                                              |          |            | `baseUrl` + `oauth2/token`          |
 | `userInfoUrl`          | The OAuth userinfo URL. By default, Medplum server uses built in OAuth, so `userInfoUrl` should be `baseUrl` + `oauth2/userinfo`.                                                                     |          |            | `baseUrl` + `oauth2/userinfo`       |
 | `appBaseUrl`           | The fully qualified URL of the user-facing app. This is used for CORS and system generated emails. For example, `https://app.example.com/`.                                                           | yes      | `init`     |                                     |
+| `logLevel`             | Verbosity of logging: `'NONE'`, `'ERROR'`, `'WARN'`, `'INFO'`, `'DEBUG'`                                                                                                                              |          |            | `'INFO'`                            |
 | `binaryStorage`        | Where to store binary contents. This should be the CDK config `storageBucketName` with `s3:` prefix. For example, `s3:medplum-storage`.                                                               | yes      | `init`     |                                     |
 | `storageBaseUrl`       | The fully qualified base URL of the binary storage. This should be the CDK config `storageDomainName` with `https://` prefix. For example, `https://storage.medplum.com/binary/`.                     | yes      | `init`     |                                     |
 | `signingKeyId`         | The AWS key ID of the CloudFront signing key that you created before.                                                                                                                                 | yes      | `cdk`      |                                     |
@@ -129,10 +131,102 @@ You will also be prompted for a parameter "Type". The default option is "String"
 | `recaptchaSecretKey`   | If using reCAPTCHA, this is the reCAPTCHA secret key.                                                                                                                                                 |          |            |                                     |
 | `botLambdaRoleArn`     | If using Medplum Bots, this is the ARN of the [Lambda execution role](https://docs.aws.amazon.com/lambda/latest/dg/lambda-intro-execution-role.html).                                                 |          | `cdk`      |                                     |
 | `botLambdaLayerName`   | If using Medplum Bots, this is the name of the [Lambda layer](https://docs.aws.amazon.com/lambda/latest/dg/invocation-layers.html). For example, `medplum-bot-layer`.                                 |          |            | `medplum-bot-layer`                 |
-| `database`             | The database connection details (created automatically).                                                                                                                                              |          | `cdk`      |                                     |
-| `redis`                | The redis connection details (created automatically).                                                                                                                                                 |          | `cdk`      |                                     |
-| `logAuditEvents`       | Optional flag to log `AuditEvent` resources for all auth and RESTful operations.                                                                                                                      |          |            | `false`                             |
+| `database`             | The database connection details as a JSON object. Only available when using JSON config file. See [AWS Secrets](#aws-secrets).                                                                        |          |            |                                     |
+| `DatabaseSecrets`      | The AWS Secret ID containing database connection details (created automatically by CDK). Only available when using AWS Parameter Store config. See [AWS Secrets](#aws-secrets).                       |          | `cdk`      |                                     |
+| `redis`                | The redis connection details as a JSON object. Only available when using JSON config file. See [AWS Secrets](#aws-secrets).                                                                           |          |            |                                     |
+| `RedisSecrets`         | The AWS Secret ID containing Redis connection details (created automatically by CDK). Only available when using AWS Parameter Store config. See [AWS Secrets](#aws-secrets).                          |          | `cdk`      |                                     |
+| `logRequests`          | Optional flag to log individual HTTP requests.                                                                                                                                                        |          |            | `false`                             |
+| `saveAuditEvents`      | Optional flag to save `AuditEvent` resources for all auth and RESTful operations in the database.                                                                                                     |          |            | `false`                             |
+| `logAuditEvents`       | Optional flag to log `AuditEvent` resources for all auth and RESTful operations to the logger.                                                                                                        |          |            | `false`                             |
 | `auditEventLogGroup`   | Optional AWS CloudWatch Log Group name for `AuditEvent` logs. If not specified, `AuditEvent` logs use the default logger.                                                                             |          |            |                                     |
 | `auditEventLogStream`  | Optional AWS CloudWatch Log Stream name for `AuditEvent` logs. Only applies if `auditEventLogGroup` is set. Uses `os.hostname()` as the default.                                                      |          |            | `os.hostname()`                     |
 | `registerEnabled`      | Optional flag whether new user registration is enabled.                                                                                                                                               |          |            | `true`                              |
 | `maxJsonSize`          | Maximum JSON size for API calls. String is parsed with the [bytes](https://www.npmjs.com/package/bytes) library. Default is `1mb`.                                                                    |          |            | `1mb`                               |
+| `smtp`                 | Optional SMTP email settings to use SMTP for email. See [Sending SMTP Emails](/docs/self-hosting/sendgrid) for more details.                                                                          |          |            |                                     |
+| `awsRegion`            | The AWS Region identifier.                                                                                                                                                                            |          | `cdk`      | `us-east-1`                         |
+| `otlpMetricsEndpoint`  | Optional OTLP metrics endpoint for OpenTelemetry. For example, `http://localhost:4318/v1/metrics`. See [OpenTelemetry](/docs/self-hosting/opentelemetry) for more details.                            |          |            |                                     |
+| `otlpTraceEndpoint`    | Optional OTLP trace endpoint for OpenTelemetry. For example, `http://localhost:4318/v1/traces`. See [OpenTelemetry](/docs/self-hosting/opentelemetry) for more details.                               |          |            |                                     |
+
+:::tip Local Config
+To make changes to the server config after your first deploy, you must the edit parameter values _directly in AWS parameter store_
+
+To make changes to settings that affect your deployed Medplum App, you must _also_ make this change to your local configuration json file.
+:::
+
+### AWS Secrets
+
+Postgres and Redis connection details have special cases due the way CDK exposes them.
+
+When using a JSON config file, use JSON objects for `database` and `redis`. For example:
+
+```json
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "dbname": "medplum",
+    "username": "medplum",
+    "password": "medplum"
+  },
+  "redis": {
+    "host": "localhost",
+    "port": 6379,
+    "password": "medplum"
+  }
+```
+
+When using AWS Parameter Store config, instead use `DatabaseSecrets` and `RedisSecrets`. The value of these properties is the Secret ID in AWS Secrets Manager. This design is for CDK. When CDK creates an RDS cluster or Elasticache cluster, the connection details are published in AWS Secrets Manager.
+
+If you choose to "bring your own database" or "bring your own redis", you can specify your own Secret ID in those settings. The secret in AWS Secrets Manager must have the expected layout.
+
+Example `DatabaseSecrets` value:
+
+```json
+{
+  "dbClusterIdentifier": "my-cluster",
+  "password": "password",
+  "dbname": "medplum",
+  "engine": "postgres",
+  "port": 5432,
+  "host": "my-cluster.us-east-1.rds.amazonaws.com",
+  "username": "clusteradmin"
+}
+```
+
+Example `RedisSecrets` value:
+
+```json
+{
+  "password": "password",
+  "port": "6379",
+  "host": "my-cluster.cache.amazonaws.com",
+  "tls": {}
+}
+```
+
+### External Secrets
+
+Some users may want to load their config parameters from an external provider, such as the `AWS Parameter Store`.
+Medplum allows all CDK config settings (minus `region`) to be configured as `external secrets` by replacing the value with a JSON object with the following schema:
+
+```js
+{
+  "system": "<system_name>", // can be one of: ["aws_ssm_parameter_store"]
+  "key": "<key_to_access_secret>", // the key to access the secret at
+  "type": "<string | number | boolean>" // the primitive data type for the secret, used for coercing strings to native primitive types
+}
+```
+
+Example config with `external secrets`:
+
+```js
+{
+  "region": "us-east-1",
+  "apiPort": {
+    "system": "aws_ssm_parameter_store",
+    "key": "apiPort",
+    "type": "number"
+  }
+}
+```
+
+Any parameter specified in the `external secrets` format will automatically be fetched at deployment time, right before the `CloudFormation` stack is created. This both keeps your secrets safe and also reduces the amount of manual maintenance you must perform on your Medplum configuration over the lifetime of your application.

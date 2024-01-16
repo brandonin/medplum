@@ -1,11 +1,18 @@
-import { ACMClient, CertificateSummary, ListCertificatesCommand, RequestCertificateCommand } from '@aws-sdk/client-acm';
-import { PutParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
+import {
+  ACMClient,
+  CertificateSummary,
+  ListCertificatesCommand,
+  RequestCertificateCommand,
+  ValidationMethod,
+} from '@aws-sdk/client-acm';
+import { CloudFrontClient, CreatePublicKeyCommand } from '@aws-sdk/client-cloudfront';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
-import { MedplumInfraConfig } from '@medplum/core';
+import { MedplumInfraConfig, normalizeErrorString } from '@medplum/core';
 import { generateKeyPairSync, randomUUID } from 'crypto';
-import { existsSync, writeFileSync } from 'fs';
-import { resolve } from 'path';
-import readline from 'readline';
+import { existsSync } from 'fs';
+import { getConfigFileName, writeConfig } from '../utils';
+import { ask, checkOk, choose, chooseInt, closeTerminal, header, initTerminal, print, yesOrNo } from './terminal';
+import { getServerVersions, writeParameters } from './utils';
 
 type MedplumDomainType = 'api' | 'app' | 'storage';
 type MedplumDomainSetting = `${MedplumDomainType}DomainName`;
@@ -14,11 +21,9 @@ type MedplumDomainCertSetting = `${MedplumDomainType}SslCertArn`;
 const getDomainSetting = (domain: MedplumDomainType): MedplumDomainSetting => `${domain}DomainName`;
 const getDomainCertSetting = (domain: MedplumDomainType): MedplumDomainCertSetting => `${domain}SslCertArn`;
 
-let terminal: readline.Interface;
-
 export async function initStackCommand(): Promise<void> {
   const config = { apiPort: 8103, region: 'us-east-1' } as MedplumInfraConfig;
-  terminal = readline.createInterface({ input: process.stdin, output: process.stdout });
+  initTerminal();
   header('MEDPLUM');
   print('This tool prepares the necessary prerequisites for deploying Medplum in your AWS account.');
   print('');
@@ -39,6 +44,14 @@ export async function initStackCommand(): Promise<void> {
   print('Some questions have predefined options in [square brackets].');
   print('Some questions have default values in (parentheses), which you can accept by pressing Enter.');
   print('Press Ctrl+C at any time to exit.');
+
+  const currentAccountId = await getAccountId(config.region);
+  if (!currentAccountId) {
+    print('It appears that you do not have AWS credentials configured.');
+    print('AWS credentials are not strictly required, but will enable some additional features.');
+    print('If you intend to use AWS credentials, please configure them now.');
+    await checkOk('Do you want to continue without AWS credentials?');
+  }
 
   header('ENVIRONMENT NAME');
   print('Medplum deployments have a short environment name such as "prod", "staging", "alice", or "demo".');
@@ -66,18 +79,22 @@ export async function initStackCommand(): Promise<void> {
 
   header('AWS ACCOUNT NUMBER');
   print('Medplum Infrastructure will use your AWS account number to create AWS resources.');
-  const currentAccountId = await getAccountId(config.region);
-  print('Using the AWS CLI, your current account ID is: ' + currentAccountId);
+  if (currentAccountId) {
+    print('Using the AWS CLI, your current account ID is: ' + currentAccountId);
+  }
   config.accountNumber = await ask('What is your AWS account number?', currentAccountId);
   writeConfig(configFileName, config);
 
   header('STACK NAME');
   print('Medplum will create a CloudFormation stack to manage AWS resources.');
+  print('AWS CloudFormation stack names ');
   const defaultStackName = 'Medplum' + config.name.charAt(0).toUpperCase() + config.name.slice(1);
   config.stackName = await ask('Enter your CloudFormation stack name?', defaultStackName);
   writeConfig(configFileName, config);
 
   header('BASE DOMAIN NAME');
+  print('Please enter the base domain name for your Medplum deployment.');
+  print('');
   print('Medplum deploys multiple subdomains for various services.');
   print('');
   print('For example, "api." for the REST API and "app." for the web application.');
@@ -86,8 +103,9 @@ export async function initStackCommand(): Promise<void> {
   print('For example, if your base domain name is "example.com",');
   print('then the REST API will be "api.example.com".');
   print('');
+  print('The base domain should include the TLD (i.e., ".com", ".org", ".net").');
+  print('');
   print('Note that you must own the base domain, and it must use Route53 DNS.');
-  print('Medplum will create subdomains for you, but you must configure the base domain.');
   while (!config.domainName) {
     config.domainName = await ask('Enter your base domain name:');
   }
@@ -103,6 +121,7 @@ export async function initStackCommand(): Promise<void> {
   header('API DOMAIN NAME');
   print('Medplum deploys a REST API for the backend services.');
   config.apiDomainName = await ask('Enter your REST API domain name:', 'api.' + config.domainName);
+  config.baseUrl = `https://${config.apiDomainName}/`;
   writeConfig(configFileName, config);
 
   header('APP DOMAIN NAME');
@@ -118,7 +137,7 @@ export async function initStackCommand(): Promise<void> {
   header('STORAGE BUCKET');
   print('Medplum uses an S3 bucket to store binary content such as file uploads.');
   print('Medplum will create a the S3 bucket as part of the CloudFormation stack.');
-  config.storageBucketName = await ask('Enter your storage bucket name:', 'medplum-' + config.name + '-storage');
+  config.storageBucketName = await ask('Enter your storage bucket name:', config.storageDomainName);
   writeConfig(configFileName, config);
 
   header('MAX AVAILABILITY ZONES');
@@ -127,8 +146,8 @@ export async function initStackCommand(): Promise<void> {
   print('However, it also increases the cost of the deployment.');
   print('If you want to use all availability zones, choose a large number such as 99.');
   print('If you want to restrict the number, for example to manage EIP limits,');
-  print('then choose a small number such as 1 or 2.');
-  config.maxAzs = await chooseInt('Enter the maximum number of availability zones:', [1, 2, 3, 99], 2);
+  print('then choose a small number such as 2 or 3.');
+  config.maxAzs = await chooseInt('Enter the maximum number of availability zones:', [2, 3, 99], 2);
 
   header('DATABASE INSTANCES');
   print('Medplum uses a relational database to store data.');
@@ -178,14 +197,22 @@ export async function initStackCommand(): Promise<void> {
   print('You can choose the image to use for the servers.');
   print('Docker images can be loaded from either Docker Hub or AWS ECR.');
   print('The default is the latest Medplum release.');
-  config.serverImage = await ask('Enter the server image:', 'medplum/medplum-server:latest');
+  const latestVersion = (await getServerVersions())[0] ?? 'latest';
+  config.serverImage = await ask('Enter the server image:', `medplum/medplum-server:${latestVersion}`);
   writeConfig(configFileName, config);
 
   header('SIGNING KEY');
   print('Medplum uses AWS CloudFront Presigned URLs for binary content such as file uploads.');
-  const { privateKey, publicKey, passphrase } = generateSigningKey();
-  config.storagePublicKey = publicKey;
-  writeConfig(configFileName, config);
+  const signingKey = await generateSigningKey(config.stackName + 'SigningKey');
+  if (signingKey) {
+    config.signingKeyId = signingKey.keyId;
+    config.storagePublicKey = signingKey.publicKey;
+    writeConfig(configFileName, config);
+  } else {
+    print('Unable to generate signing key.');
+    print('Please manually create a signing key and enter the key ID and public key in the config file.');
+    print('You must set the "signingKeyId", "signingKey", and "signingKeyPassphrase" settings.');
+  }
 
   header('SSL CERTIFICATES');
   print(`Medplum will now check for existing SSL certificates for the subdomains.`);
@@ -211,16 +238,20 @@ export async function initStackCommand(): Promise<void> {
   print('These values will be encrypted at rest.');
   print(`The values will be stored in the "/medplum/${config.name}" path.`);
 
-  const serverParams = {
+  const serverParams: Record<string, string | number> = {
     port: config.apiPort,
-    baseUrl: `https://${config.apiDomainName}/`,
+    baseUrl: config.baseUrl,
     appBaseUrl: `https://${config.appDomainName}/`,
     storageBaseUrl: `https://${config.storageDomainName}/binary/`,
     binaryStorage: `s3:${config.storageBucketName}`,
-    signingKey: privateKey,
-    signingKeyPassphrase: passphrase,
     supportEmail: supportEmail,
   };
+
+  if (signingKey) {
+    serverParams.signingKeyId = signingKey.keyId;
+    serverParams.signingKey = signingKey.privateKey;
+    serverParams.signingKeyPassphrase = signingKey.passphrase;
+  }
 
   print(
     JSON.stringify(
@@ -234,8 +265,15 @@ export async function initStackCommand(): Promise<void> {
     )
   );
 
-  await checkOk('Do you want to store these values in AWS Parameter Store?');
-  await writeParameters(config.region, `/medplum/${config.name}/`, serverParams);
+  if (await yesOrNo('Do you want to store these values in AWS Parameter Store?')) {
+    await writeParameters(config.region, `/medplum/${config.name}/`, serverParams);
+  } else {
+    const serverConfigFileName = getConfigFileName(config.name, true);
+    writeConfig(serverConfigFileName, serverParams);
+    print('Skipping AWS Parameter Store.');
+    print(`Writing values to local config file: ${serverConfigFileName}`);
+    print('Please add these values to AWS Parameter Store manually.');
+  }
 
   header('DONE!');
   print('Medplum configuration complete.');
@@ -254,108 +292,13 @@ export async function initStackCommand(): Promise<void> {
   print('');
   print('    https://www.medplum.com/docs/self-hosting/install-on-aws');
   print('');
-}
-
-/**
- * Prints to stdout.
- * @param text The text to print.
- */
-function print(text: string): void {
-  terminal.write(text + '\n');
-}
-
-/**
- * Prints a header with extra line spacing.
- * @param text The text to print.
- */
-function header(text: string): void {
-  print('\n' + text + '\n');
-}
-
-/**
- * Prints a question and waits for user input.
- * @param text The question text to print.
- * @param defaultValue Optional default value.
- * @returns The selected value, or default value on empty selection.
- */
-function ask(text: string, defaultValue: string | number = ''): Promise<string> {
-  return new Promise((resolve) => {
-    terminal.question(text + (defaultValue ? ' (' + defaultValue + ')' : '') + ' ', (answer: string) => {
-      resolve(answer || defaultValue.toString());
-    });
-  });
-}
-
-/**
- * Prints a question and waits for user to choose one of the provided options.
- * @param text The prompt text to print.
- * @param options The list of options that the user can select.
- * @param defaultValue Optional default value.
- * @returns The selected value, or default value on empty selection.
- */
-async function choose(text: string, options: (string | number)[], defaultValue = ''): Promise<string> {
-  const str = text + ' [' + options.map((o) => (o === defaultValue ? '(' + o + ')' : o)).join('|') + ']';
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const answer = (await ask(str)) || defaultValue;
-    if (options.includes(answer)) {
-      return answer;
-    }
-    print('Please choose one of the following options: ' + options.join(', '));
-  }
-}
-
-/**
- * Prints a question and waits for the user to choose a valid integer option.
- * @param text The prompt text to print.
- * @param options The list of options that the user can select.
- * @param defaultValue Optional default value.
- * @returns The selected value, or default value on empty selection.
- */
-async function chooseInt(text: string, options: number[], defaultValue = 0): Promise<number> {
-  return parseInt(
-    await choose(
-      text,
-      options.map((o) => o.toString()),
-      defaultValue.toString()
-    ),
-    10
-  );
-}
-
-/**
- * Prints a question and waits for the user to choose yes or no.
- * @param text The question to print.
- * @returns true on accept or false on reject.
- */
-async function yesOrNo(text: string): Promise<boolean> {
-  return (await choose(text, ['y', 'n'])).toLowerCase() === 'y';
-}
-
-/**
- * Prints a question and waits for the user to confirm yes. Throws error on no, and exits the program.
- * @param text The prompt text to print.
- */
-async function checkOk(text: string): Promise<void> {
-  if (!(await yesOrNo(text))) {
-    print('Exiting...');
-    throw new Error('User cancelled');
-  }
-}
-
-/**
- * Writes a config file to disk.
- * @param configFileName The config file name.
- * @param config The config file contents.
- */
-function writeConfig(configFileName: string, config: MedplumInfraConfig): void {
-  writeFileSync(resolve(configFileName), JSON.stringify(config, undefined, 2), 'utf-8');
+  closeTerminal();
 }
 
 /**
  * Returns the current AWS account ID.
  * This is used as the default value for the "accountNumber" config setting.
- * @param region The AWS region.
+ * @param region - The AWS region.
  * @returns The AWS account ID.
  */
 async function getAccountId(region: string): Promise<string | undefined> {
@@ -374,7 +317,7 @@ async function getAccountId(region: string): Promise<string | undefined> {
  * Returns a list of all AWS certificates.
  * This is used to find existing certificates for the subdomains.
  * If the primary region is not us-east-1, then certificates in us-east-1 will also be returned.
- * @param region The AWS region.
+ * @param region - The AWS region.
  * @returns The list of AWS Certificates.
  */
 async function listAllCertificates(region: string): Promise<CertificateSummary[]> {
@@ -389,7 +332,7 @@ async function listAllCertificates(region: string): Promise<CertificateSummary[]
 /**
  * Returns a list of AWS Certificates.
  * This is used to find existing certificates for the subdomains.
- * @param region The AWS region.
+ * @param region - The AWS region.
  * @returns The list of AWS Certificates.
  */
 async function listCertificates(region: string): Promise<CertificateSummary[]> {
@@ -410,10 +353,10 @@ async function listCertificates(region: string): Promise<CertificateSummary[]> {
  * 1. If the certificate already exists, return the ARN.
  * 2. If the certificate does not exist, and the user wants to create a new certificate, create it and return the ARN.
  * 3. If the certificate does not exist, and the user does not want to create a new certificate, return a placeholder.
- * @param config In-progress config settings.
- * @param allCerts List of all existing certificates.
- * @param region The AWS region where the certificate is needed.
- * @param certName The name of the certificate (api, app, or storage).
+ * @param config - In-progress config settings.
+ * @param allCerts - List of all existing certificates.
+ * @param region - The AWS region where the certificate is needed.
+ * @param certName - The name of the certificate (api, app, or storage).
  * @returns The ARN of the certificate or placeholder if a new certificate is needed.
  */
 async function processCert(
@@ -442,8 +385,8 @@ async function processCert(
 
 /**
  * Requests an AWS Certificate.
- * @param region The AWS region.
- * @param domain The domain name.
+ * @param region - The AWS region.
+ * @param domain - The domain name.
  * @returns The AWS Certificate ARN on success, or undefined on failure.
  */
 async function requestCert(region: string, domain: string): Promise<string> {
@@ -456,7 +399,7 @@ async function requestCert(region: string, domain: string): Promise<string> {
     const client = new ACMClient({ region });
     const command = new RequestCertificateCommand({
       DomainName: domain,
-      ValidationMethod: validationMethod.toUpperCase(),
+      ValidationMethod: validationMethod.toUpperCase() as ValidationMethod,
     });
     const response = await client.send(command);
     return response.CertificateArn as string;
@@ -476,9 +419,18 @@ async function requestCert(region: string, domain: string): Promise<string> {
  *   3. It must be a 2048-bit key pair.
  *
  * See: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-trusted-signers.html#private-content-creating-cloudfront-key-pairs
+ * @param keyName - The key name.
  * @returns A new signing key.
  */
-function generateSigningKey(): { publicKey: string; privateKey: string; passphrase: string } {
+async function generateSigningKey(keyName: string): Promise<
+  | {
+      keyId: string;
+      publicKey: string;
+      privateKey: string;
+      passphrase: string;
+    }
+  | undefined
+> {
   const passphrase = randomUUID();
   const signingKey = generateKeyPairSync('rsa', {
     modulusLength: 2048,
@@ -493,41 +445,26 @@ function generateSigningKey(): { publicKey: string; privateKey: string; passphra
       passphrase,
     },
   });
-  return {
-    publicKey: signingKey.publicKey,
-    privateKey: signingKey.privateKey,
-    passphrase,
-  };
-}
 
-/**
- * Writes a parameter to AWS Parameter Store.
- * @param region The AWS region.
- * @param key The parameter key.
- * @param value The parameter value.
- */
-async function writeParameter(region: string, key: string, value: string): Promise<void> {
-  const client = new SSMClient({ region });
-  const command = new PutParameterCommand({
-    Name: key,
-    Value: value,
-    Type: 'SecureString',
-    Overwrite: true,
-  });
-  await client.send(command);
-}
+  try {
+    const response = await new CloudFrontClient({}).send(
+      new CreatePublicKeyCommand({
+        PublicKeyConfig: {
+          Name: keyName,
+          CallerReference: randomUUID(),
+          EncodedKey: signingKey.publicKey,
+        },
+      })
+    );
 
-/**
- * Writes a collection of parameters to AWS Parameter Store.
- * @param region The AWS region.
- * @param prefix The AWS Parameter Store prefix.
- * @param params The parameters to write.
- */
-async function writeParameters(region: string, prefix: string, params: Record<string, string | number>): Promise<void> {
-  for (const [key, value] of Object.entries(params)) {
-    const valueStr = value.toString();
-    if (valueStr) {
-      await writeParameter(region, prefix + key, valueStr);
-    }
+    return {
+      keyId: response.PublicKey?.Id as string,
+      publicKey: signingKey.publicKey,
+      privateKey: signingKey.privateKey,
+      passphrase,
+    };
+  } catch (err) {
+    console.log('Error: Unable to create signing key: ', normalizeErrorString(err));
+    return undefined;
   }
 }

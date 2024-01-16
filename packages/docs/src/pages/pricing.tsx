@@ -1,12 +1,12 @@
 import Layout from '@theme/Layout';
-import React from 'react';
-import styles from './index.module.css';
+import { Container } from '../components/Container';
+import styles from './pricing.module.css';
 
 export default function PricingPage(): JSX.Element {
   return (
     <Layout title="Pricing">
-      <div className={styles.pagePadding}>
-        <div className={styles.aboutTitle}>
+      <Container>
+        <div className={styles.pricing}>
           <h1>Pricing</h1>
           <p style={{ maxWidth: 600, margin: '20px auto' }}>
             For questions about pricing or to schedule a demo please reach out to us at{' '}
@@ -51,7 +51,7 @@ export default function PricingPage(): JSX.Element {
                 <th>
                   Enterprise
                   <sup>
-                    <a href="#note4">4</a>
+                    <a href="/enterprise">4</a>
                   </sup>
                 </th>
                 <th>
@@ -63,7 +63,7 @@ export default function PricingPage(): JSX.Element {
                 <th>
                   Enterprise
                   <sup>
-                    <a href="#note6">6</a>
+                    <a href="/enterprise">6</a>
                   </sup>
                 </th>
               </tr>
@@ -190,9 +190,9 @@ export default function PricingPage(): JSX.Element {
                   GitHub
                 </td>
                 <td>
-                  Slack
+                  Discord (SLA)
                   <br />
-                  Email
+                  Github (SLA)
                 </td>
                 <td>Contact us</td>
                 <td>
@@ -360,7 +360,7 @@ export default function PricingPage(): JSX.Element {
               </li>
               <li id="note4">
                 <strong>Enterprise</strong>: recommended for institutions with complex workflow, integration or data
-                requirements.
+                requirements. Read more details on our <a href="/enterprise">Enterprise</a> offering page.
               </li>
               <li id="note5">
                 <strong>Community</strong>: refers to self-hosting the{' '}
@@ -388,7 +388,7 @@ export default function PricingPage(): JSX.Element {
             </ol>
           </div>
         </div>
-      </div>
+      </Container>
     </Layout>
   );
 }

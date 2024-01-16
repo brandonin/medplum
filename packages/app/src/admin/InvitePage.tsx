@@ -1,9 +1,9 @@
 import { Button, Checkbox, Group, List, NativeSelect, Stack, Text, TextInput, Title } from '@mantine/core';
 import { showNotification } from '@mantine/notifications';
-import { InviteBody, isOperationOutcome, normalizeErrorString, normalizeOperationOutcome } from '@medplum/core';
+import { InviteRequest, isOperationOutcome, normalizeErrorString, normalizeOperationOutcome } from '@medplum/core';
 import { AccessPolicy, OperationOutcome, Project, ProjectMembership, Reference } from '@medplum/fhirtypes';
 import { Form, FormSection, MedplumLink, ResourceInput, getErrorsForInput, useMedplum } from '@medplum/react';
-import React, { useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { AccessPolicyInput } from './AccessPolicyInput';
 
 export function InvitePage(): JSX.Element {
@@ -26,7 +26,7 @@ export function InvitePage(): JSX.Element {
         admin: formData.isAdmin === 'on',
       };
       medplum
-        .invite(project?.id as string, body as InviteBody)
+        .invite(project?.id as string, body as InviteRequest)
         .then((response: ProjectMembership | OperationOutcome) => {
           medplum.invalidateSearches('Patient');
           medplum.invalidateSearches('Practitioner');
@@ -40,7 +40,7 @@ export function InvitePage(): JSX.Element {
           showNotification({ color: 'green', message: 'Invite success' });
         })
         .catch((err) => {
-          showNotification({ color: 'red', message: normalizeErrorString(err) });
+          showNotification({ color: 'red', message: normalizeErrorString(err), autoClose: false });
           setOutcome(normalizeOperationOutcome(err));
         });
     },

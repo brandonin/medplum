@@ -1,8 +1,10 @@
 import {
   allOk,
   badRequest,
+  ContentType,
   getStatus,
-  indexStructureDefinition,
+  indexSearchParameter,
+  loadDataType,
   LoginState,
   MedplumClient,
   MedplumClientOptions,
@@ -19,7 +21,7 @@ import {
   DrAliceSmith,
   DrAliceSmithPreviousVersion,
   DrAliceSmithSchedule,
-  DrAliceSmithSlots,
+  makeDrAliceSmithSlots,
   ExampleBot,
   ExampleClient,
   ExampleQuestionnaire,
@@ -63,6 +65,11 @@ import {
 
 export interface MockClientOptions extends MedplumClientOptions {
   readonly debug?: boolean;
+  /**
+   * Override currently logged in user. Specifying null results in
+   * MedplumContext.profile returning undefined as if no one were logged in.
+   */
+  readonly profile?: ReturnType<MedplumClient['getProfile']> | null;
 }
 
 export class MockClient extends MedplumClient {
@@ -71,6 +78,7 @@ export class MockClient extends MedplumClient {
   readonly client: MockFetchClient;
   readonly debug: boolean;
   activeLoginOverride?: LoginState;
+  private readonly profile: ReturnType<MedplumClient['getProfile']>;
 
   constructor(clientOptions?: MockClientOptions) {
     const router = new FhirRouter();
@@ -78,7 +86,7 @@ export class MockClient extends MedplumClient {
     const client = new MockFetchClient(router, repo, clientOptions?.debug);
 
     super({
-      baseUrl: clientOptions?.baseUrl || 'https://example.com/',
+      baseUrl: clientOptions?.baseUrl ?? 'https://example.com/',
       clientId: clientOptions?.clientId,
       storage: clientOptions?.storage,
       createPdf: (
@@ -94,6 +102,8 @@ export class MockClient extends MedplumClient {
     this.router = router;
     this.repo = repo;
     this.client = client;
+    // if null is specified, treat it as if no one is logged in
+    this.profile = clientOptions?.profile === null ? undefined : clientOptions?.profile ?? DrAliceSmith;
     this.debug = !!clientOptions?.debug;
   }
 
@@ -102,8 +112,8 @@ export class MockClient extends MedplumClient {
     this.activeLoginOverride = undefined;
   }
 
-  getProfile(): ProfileResource {
-    return DrAliceSmith;
+  getProfile(): ProfileResource | undefined {
+    return this.profile;
   }
 
   getUserConfiguration(): UserConfiguration | undefined {
@@ -171,16 +181,15 @@ export class MockClient extends MedplumClient {
   }
 }
 
-class MockFetchClient {
-  readonly router: FhirRouter;
-  readonly repo: MemoryRepository;
+export class MockFetchClient {
   initialized = false;
   initPromise?: Promise<void>;
 
-  constructor(router: FhirRouter, repo: MemoryRepository, readonly debug = false) {
-    this.router = router;
-    this.repo = new MemoryRepository();
-  }
+  constructor(
+    readonly router: FhirRouter,
+    readonly repo: MemoryRepository,
+    readonly debug = false
+  ) {}
 
   async mockFetch(url: string, options: any): Promise<Partial<Response>> {
     if (!this.initialized) {
@@ -191,7 +200,7 @@ class MockFetchClient {
       this.initialized = true;
     }
 
-    const method = options.method || 'GET';
+    const method = options.method ?? 'GET';
     const path = url.replace('https://example.com/', '');
 
     if (this.debug) {
@@ -212,10 +221,11 @@ class MockFetchClient {
       ok: true,
       status: response?.resourceType === 'OperationOutcome' ? getStatus(response) : 200,
       headers: {
-        get: () => 'application/fhir+json',
+        get: () => ContentType.FHIR_JSON,
       } as unknown as Headers,
       blob: () => Promise.resolve(response),
       json: () => Promise.resolve(response),
+      text: () => Promise.resolve(response),
     });
   }
 
@@ -248,14 +258,18 @@ class MockFetchClient {
   }
 
   private async mockAdminHandler(_method: string, path: string): Promise<any> {
-    const projectMatch = path.match(/^admin\/projects\/([\w-]+)$/);
+    if (path === 'admin/projects/setpassword' && _method.toUpperCase() === 'POST') {
+      return { ok: true };
+    }
+
+    const projectMatch = /^admin\/projects\/([\w-]+)$/.exec(path);
     if (projectMatch) {
       return {
         project: await this.repo.readResource('Project', projectMatch[1]),
       };
     }
 
-    const membershipMatch = path.match(/^admin\/projects\/([\w-]+)\/members\/([\w-]+)$/);
+    const membershipMatch = /^admin\/projects\/([\w-]+)\/members\/([\w-]+)$/.exec(path);
     if (membershipMatch) {
       return this.repo.readResource('ProjectMembership', membershipMatch[2]);
     }
@@ -442,7 +456,8 @@ class MockFetchClient {
 
   private mockOAuthHandler(_method: string, path: string, options: any): any {
     if (path.startsWith('oauth2/token')) {
-      const clientId = (options.body as URLSearchParams).get('client_id') || 'my-client-id';
+      const formBody = new URLSearchParams(options.body);
+      const clientId = formBody.get('client_id') ?? 'my-client-id';
       return {
         access_token: 'header.' + base64Encode(JSON.stringify({ client_id: clientId })) + '.signature',
       };
@@ -502,15 +517,17 @@ class MockFetchClient {
     }
 
     for (const structureDefinition of StructureDefinitionList as StructureDefinition[]) {
-      indexStructureDefinition(structureDefinition);
+      structureDefinition.kind = 'resource';
+      loadDataType(structureDefinition);
       await this.repo.createResource(structureDefinition);
     }
 
     for (const searchParameter of SearchParameterList) {
+      indexSearchParameter(searchParameter as SearchParameter);
       await this.repo.createResource(searchParameter as SearchParameter);
     }
 
-    DrAliceSmithSlots.forEach((slot) => this.repo.createResource(slot));
+    makeDrAliceSmithSlots().forEach((slot) => this.repo.createResource(slot));
   }
 
   private async mockFhirHandler(method: HttpMethod, url: string, options: any): Promise<Resource> {
@@ -527,7 +544,11 @@ class MockFetchClient {
 
     let body = undefined;
     if (options.body) {
-      body = JSON.parse(options.body);
+      try {
+        body = JSON.parse(options.body);
+      } catch (err) {
+        body = options.body;
+      }
     }
 
     const request: FhirRequest = {

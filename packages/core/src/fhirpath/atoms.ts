@@ -1,4 +1,4 @@
-import { Atom, AtomContext, InfixOperatorAtom, PrefixOperatorAtom } from '../fhirlexer';
+import { Atom, AtomContext, InfixOperatorAtom, PrefixOperatorAtom } from '../fhirlexer/parse';
 import { PropertyType, TypedValue, isResource } from '../types';
 import { functions } from './functions';
 import {
@@ -10,11 +10,15 @@ import {
   getTypedPropertyValue,
   isQuantity,
   removeDuplicates,
-  toJsBoolean,
+  singleton,
   toTypedValue,
 } from './utils';
+
 export class FhirPathAtom implements Atom {
-  constructor(public readonly original: string, public readonly child: Atom) {}
+  constructor(
+    public readonly original: string,
+    public readonly child: Atom
+  ) {}
 
   eval(context: AtomContext, input: TypedValue[]): TypedValue[] {
     try {
@@ -54,12 +58,12 @@ export class SymbolAtom implements Atom {
     if (this.name === '$this') {
       return input;
     }
+    const variableValue = context.variables[this.name];
+    if (variableValue) {
+      return [variableValue];
+    }
     if (this.name.startsWith('%')) {
-      const symbol = context.variables[this.name.slice(1)];
-      if (!symbol) {
-        throw new Error(`Undefined variable ${this.name}`);
-      }
-      return [symbol];
+      throw new Error(`Undefined variable ${this.name}`);
     }
     return input.flatMap((e) => this.evalValue(e)).filter((e) => e?.value !== undefined) as TypedValue[];
   }
@@ -93,7 +97,11 @@ export class EmptySetAtom implements Atom {
 }
 
 export class UnaryOperatorAtom extends PrefixOperatorAtom {
-  constructor(operator: string, child: Atom, public readonly impl: (x: TypedValue[]) => TypedValue[]) {
+  constructor(
+    operator: string,
+    child: Atom,
+    public readonly impl: (x: TypedValue[]) => TypedValue[]
+  ) {
     super(operator, child);
   }
 
@@ -102,7 +110,7 @@ export class UnaryOperatorAtom extends PrefixOperatorAtom {
   }
 
   toString(): string {
-    return this.child.toString();
+    return this.operator + this.child.toString();
   }
 }
 
@@ -116,7 +124,11 @@ export class AsAtom extends InfixOperatorAtom {
   }
 }
 
-export class ArithemticOperatorAtom extends InfixOperatorAtom {
+export abstract class BooleanInfixOperatorAtom extends InfixOperatorAtom {
+  abstract eval(context: AtomContext, input: TypedValue[]): TypedValue[];
+}
+
+export class ArithemticOperatorAtom extends BooleanInfixOperatorAtom {
   constructor(
     operator: string,
     left: Atom,
@@ -166,7 +178,7 @@ export class ConcatAtom extends InfixOperatorAtom {
   }
 }
 
-export class ContainsAtom extends InfixOperatorAtom {
+export class ContainsAtom extends BooleanInfixOperatorAtom {
   constructor(left: Atom, right: Atom) {
     super('contains', left, right);
   }
@@ -178,15 +190,18 @@ export class ContainsAtom extends InfixOperatorAtom {
   }
 }
 
-export class InAtom extends InfixOperatorAtom {
+export class InAtom extends BooleanInfixOperatorAtom {
   constructor(left: Atom, right: Atom) {
     super('in', left, right);
   }
 
   eval(context: AtomContext, input: TypedValue[]): TypedValue[] {
-    const leftValue = this.left.eval(context, input);
-    const rightValue = this.right.eval(context, input);
-    return booleanToTypedValue(rightValue.some((e) => e.value === leftValue[0].value));
+    const left = singleton(this.left.eval(context, input));
+    const right = this.right.eval(context, input);
+    if (!left) {
+      return [];
+    }
+    return booleanToTypedValue(right.some((e) => e.value === left.value));
   }
 }
 
@@ -216,7 +231,7 @@ export class UnionAtom extends InfixOperatorAtom {
   }
 }
 
-export class EqualsAtom extends InfixOperatorAtom {
+export class EqualsAtom extends BooleanInfixOperatorAtom {
   constructor(left: Atom, right: Atom) {
     super('=', left, right);
   }
@@ -228,7 +243,7 @@ export class EqualsAtom extends InfixOperatorAtom {
   }
 }
 
-export class NotEqualsAtom extends InfixOperatorAtom {
+export class NotEqualsAtom extends BooleanInfixOperatorAtom {
   constructor(left: Atom, right: Atom) {
     super('!=', left, right);
   }
@@ -240,7 +255,7 @@ export class NotEqualsAtom extends InfixOperatorAtom {
   }
 }
 
-export class EquivalentAtom extends InfixOperatorAtom {
+export class EquivalentAtom extends BooleanInfixOperatorAtom {
   constructor(left: Atom, right: Atom) {
     super('~', left, right);
   }
@@ -252,7 +267,7 @@ export class EquivalentAtom extends InfixOperatorAtom {
   }
 }
 
-export class NotEquivalentAtom extends InfixOperatorAtom {
+export class NotEquivalentAtom extends BooleanInfixOperatorAtom {
   constructor(left: Atom, right: Atom) {
     super('!~', left, right);
   }
@@ -264,7 +279,7 @@ export class NotEquivalentAtom extends InfixOperatorAtom {
   }
 }
 
-export class IsAtom extends InfixOperatorAtom {
+export class IsAtom extends BooleanInfixOperatorAtom {
   constructor(left: Atom, right: Atom) {
     super('is', left, right);
   }
@@ -285,41 +300,45 @@ export class IsAtom extends InfixOperatorAtom {
  * false if either operand evaluates to false,
  * and the empty collection otherwise.
  */
-export class AndAtom extends InfixOperatorAtom {
+export class AndAtom extends BooleanInfixOperatorAtom {
   constructor(left: Atom, right: Atom) {
     super('and', left, right);
   }
 
   eval(context: AtomContext, input: TypedValue[]): TypedValue[] {
-    const leftValue = this.left.eval(context, input);
-    const rightValue = this.right.eval(context, input);
-    if (leftValue[0]?.value === true && rightValue[0]?.value === true) {
+    const left = singleton(this.left.eval(context, input), 'boolean');
+    const right = singleton(this.right.eval(context, input), 'boolean');
+    if (left?.value === true && right?.value === true) {
       return booleanToTypedValue(true);
     }
-    if (leftValue[0]?.value === false || rightValue[0]?.value === false) {
+    if (left?.value === false || right?.value === false) {
       return booleanToTypedValue(false);
     }
     return [];
   }
 }
 
-export class OrAtom extends InfixOperatorAtom {
+/**
+ * 6.5.2. or
+ * Returns false if both operands evaluate to false,
+ * true if either operand evaluates to true,
+ * and empty (`{ }`) otherwise:
+ */
+export class OrAtom extends BooleanInfixOperatorAtom {
   constructor(left: Atom, right: Atom) {
     super('or', left, right);
   }
 
   eval(context: AtomContext, input: TypedValue[]): TypedValue[] {
-    const leftValue = this.left.eval(context, input);
-    if (toJsBoolean(leftValue)) {
-      return leftValue;
+    const left = singleton(this.left.eval(context, input), 'boolean');
+    const right = singleton(this.right.eval(context, input), 'boolean');
+    if (left?.value === false && right?.value === false) {
+      return booleanToTypedValue(false);
+    } else if (left?.value || right?.value) {
+      return booleanToTypedValue(true);
+    } else {
+      return [];
     }
-
-    const rightValue = this.right.eval(context, input);
-    if (toJsBoolean(rightValue)) {
-      return rightValue;
-    }
-
-    return [];
   }
 }
 
@@ -329,31 +348,49 @@ export class OrAtom extends InfixOperatorAtom {
  * false if either both operands evaluate to true or both operands evaluate to false,
  * and the empty collection otherwise.
  */
-export class XorAtom extends InfixOperatorAtom {
+export class XorAtom extends BooleanInfixOperatorAtom {
   constructor(left: Atom, right: Atom) {
     super('xor', left, right);
   }
 
   eval(context: AtomContext, input: TypedValue[]): TypedValue[] {
-    const leftResult = this.left.eval(context, input);
-    const rightResult = this.right.eval(context, input);
-    if (leftResult.length === 0 && rightResult.length === 0) {
+    const left = singleton(this.left.eval(context, input), 'boolean');
+    const right = singleton(this.right.eval(context, input), 'boolean');
+    if (!left || !right) {
       return [];
     }
-    const leftValue = leftResult.length === 0 ? null : leftResult[0].value;
-    const rightValue = rightResult.length === 0 ? null : rightResult[0].value;
-    if ((leftValue === true && rightValue !== true) || (leftValue !== true && rightValue === true)) {
+    return booleanToTypedValue(left.value !== right.value);
+  }
+}
+
+/**
+ * 6.5.5. implies
+ * Returns true if left is true and right is true,
+ * true left is false and right true, false or empty
+ * true left is empty
+ */
+export class ImpliesAtom extends BooleanInfixOperatorAtom {
+  constructor(left: Atom, right: Atom) {
+    super('implies', left, right);
+  }
+
+  eval(context: AtomContext, input: TypedValue[]): TypedValue[] {
+    const left = singleton(this.left.eval(context, input), 'boolean');
+    const right = singleton(this.right.eval(context, input), 'boolean');
+    if (right?.value === true || left?.value === false) {
       return booleanToTypedValue(true);
+    } else if (!left || !right) {
+      return [];
     }
-    if ((leftValue === true && rightValue === true) || (leftValue === false && rightValue === false)) {
-      return booleanToTypedValue(false);
-    }
-    return [];
+    return booleanToTypedValue(false);
   }
 }
 
 export class FunctionAtom implements Atom {
-  constructor(public readonly name: string, public readonly args: Atom[]) {}
+  constructor(
+    public readonly name: string,
+    public readonly args: Atom[]
+  ) {}
   eval(context: AtomContext, input: TypedValue[]): TypedValue[] {
     const impl = functions[this.name];
     if (!impl) {
@@ -368,7 +405,10 @@ export class FunctionAtom implements Atom {
 }
 
 export class IndexerAtom implements Atom {
-  constructor(public readonly left: Atom, public readonly expr: Atom) {}
+  constructor(
+    public readonly left: Atom,
+    public readonly expr: Atom
+  ) {}
   eval(context: AtomContext, input: TypedValue[]): TypedValue[] {
     const evalResult = this.expr.eval(context, input);
     if (evalResult.length !== 1) {

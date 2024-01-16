@@ -1,9 +1,9 @@
 import { Table } from '@mantine/core';
 import { formatDateTime, normalizeErrorString } from '@medplum/core';
 import { Bundle, BundleEntry, Resource, ResourceType } from '@medplum/fhirtypes';
-import React, { useEffect, useState } from 'react';
+import { useMedplum } from '@medplum/react-hooks';
+import { useEffect, useState } from 'react';
 import { MedplumLink } from '../MedplumLink/MedplumLink';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
 import { ResourceBadge } from '../ResourceBadge/ResourceBadge';
 
 export interface ResourceHistoryTableProps {
@@ -38,11 +38,7 @@ export function ResourceHistoryTable(props: ResourceHistoryTableProps): JSX.Elem
           <th>Version</th>
         </tr>
       </thead>
-      <tbody>
-        {value.entry?.map((entry, index) => (
-          <HistoryRow key={'entry-' + index} entry={entry} />
-        ))}
-      </tbody>
+      <tbody>{value.entry?.map((entry, index) => <HistoryRow key={'entry-' + index} entry={entry} />)}</tbody>
     </Table>
   );
 }

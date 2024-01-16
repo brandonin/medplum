@@ -1,9 +1,10 @@
-import React from 'react';
+import { RefObject } from 'react';
 
 export interface BotRunnerProps {
   className?: string;
-  iframeRef?: React.RefObject<HTMLIFrameElement>;
+  iframeRef?: RefObject<HTMLIFrameElement>;
   testId?: string;
+  minHeight?: string;
   onChange?: (value: string) => void;
 }
 
@@ -16,6 +17,7 @@ export function BotRunner(props: BotRunnerProps): JSX.Element {
       className={props.className}
       ref={props.iframeRef}
       data-testid={props.testId}
+      style={{ width: '100%', height: '100%', minHeight: props.minHeight }}
     ></iframe>
   );
 }

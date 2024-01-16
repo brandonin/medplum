@@ -1,13 +1,13 @@
 import { Reference, Resource, SearchParameter } from '@medplum/fhirtypes';
-import { evalFhirPath } from '../fhirpath';
+import { evalFhirPath } from '../fhirpath/parse';
 import { globalSchema } from '../types';
 import { SearchParameterType, getSearchParameterDetails } from './details';
 import { Filter, Operator, SearchRequest } from './search';
 
 /**
  * Determines if the resource matches the search request.
- * @param resource The resource that was created or updated.
- * @param searchRequest The subscription criteria as a search request.
+ * @param resource - The resource that was created or updated.
+ * @param searchRequest - The subscription criteria as a search request.
  * @returns True if the resource satisfies the search request.
  */
 export function matchesSearchRequest(resource: Resource, searchRequest: SearchRequest): boolean {
@@ -26,13 +26,17 @@ export function matchesSearchRequest(resource: Resource, searchRequest: SearchRe
 
 /**
  * Determines if the resource matches the search filter.
- * @param resource The resource that was created or updated.
- * @param searchRequest The search request.
- * @param filter One of the filters of a subscription criteria.
+ * @param resource - The resource that was created or updated.
+ * @param searchRequest - The search request.
+ * @param filter - One of the filters of a subscription criteria.
  * @returns True if the resource satisfies the search filter.
  */
 function matchesSearchFilter(resource: Resource, searchRequest: SearchRequest, filter: Filter): boolean {
-  const searchParam = globalSchema.types[searchRequest.resourceType].searchParams?.[filter.code];
+  const searchParam = globalSchema.types[searchRequest.resourceType]?.searchParams?.[filter.code];
+  if (filter.operator === Operator.MISSING && searchParam) {
+    const values = evalFhirPath(searchParam.expression as string, resource);
+    return filter.value === 'true' ? !values.length : values.length > 0;
+  }
   switch (searchParam?.type) {
     case 'reference':
       return matchesReferenceFilter(resource, filter, searchParam);

@@ -1,19 +1,21 @@
 import { Anchor, Button, Center, Checkbox, Divider, Group, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
-import { GoogleCredentialResponse, LoginAuthenticationResponse } from '@medplum/core';
+import { GoogleCredentialResponse, LoginAuthenticationResponse, normalizeOperationOutcome } from '@medplum/core';
 import { OperationOutcome } from '@medplum/fhirtypes';
-import React, { useEffect, useState } from 'react';
+import { useMedplum } from '@medplum/react-hooks';
+import { ReactNode, useEffect, useState } from 'react';
 import { Form } from '../Form/Form';
-import { getGoogleClientId, GoogleButton } from '../GoogleButton/GoogleButton';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
+import { GoogleButton } from '../GoogleButton/GoogleButton';
+import { getGoogleClientId } from '../GoogleButton/GoogleButton.utils';
 import { OperationOutcomeAlert } from '../OperationOutcomeAlert/OperationOutcomeAlert';
 import { getErrorsForInput, getIssuesForExpression } from '../utils/outcomes';
 import { getRecaptcha, initRecaptcha } from '../utils/recaptcha';
 
 export interface NewUserFormProps {
   readonly projectId: string;
+  readonly clientId?: string;
   readonly googleClientId?: string;
   readonly recaptchaSiteKey?: string;
-  readonly children?: React.ReactNode;
+  readonly children?: ReactNode;
   readonly handleAuthResponse: (response: LoginAuthenticationResponse) => void;
 }
 
@@ -42,6 +44,7 @@ export function NewUserForm(props: NewUserFormProps): JSX.Element {
           props.handleAuthResponse(
             await medplum.startNewUser({
               projectId: props.projectId,
+              clientId: props.clientId,
               firstName: formData.firstName,
               lastName: formData.lastName,
               email: formData.email,
@@ -52,7 +55,7 @@ export function NewUserForm(props: NewUserFormProps): JSX.Element {
             })
           );
         } catch (err) {
-          setOutcome(err as OperationOutcome);
+          setOutcome(normalizeOperationOutcome(err));
         }
       }}
     >
@@ -73,7 +76,7 @@ export function NewUserForm(props: NewUserFormProps): JSX.Element {
                     })
                   );
                 } catch (err) {
-                  setOutcome(err as OperationOutcome);
+                  setOutcome(normalizeOperationOutcome(err));
                 }
               }}
             />

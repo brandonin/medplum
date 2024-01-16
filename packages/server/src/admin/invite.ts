@@ -1,27 +1,30 @@
-import { badRequest, createReference, OperationOutcomeError, Operator, ProfileResource } from '@medplum/core';
 import {
-  AccessPolicy,
-  Practitioner,
-  Project,
-  ProjectMembership,
-  ProjectMembershipAccess,
-  Reference,
-  ResourceType,
-  User,
-} from '@medplum/fhirtypes';
+  allOk,
+  badRequest,
+  createReference,
+  getReferenceString,
+  InviteRequest,
+  normalizeErrorString,
+  OperationOutcomeError,
+  Operator,
+  ProfileResource,
+} from '@medplum/core';
+import { Practitioner, Project, ProjectMembership, Reference, User } from '@medplum/fhirtypes';
 import { Request, Response } from 'express';
-import { body, oneOf, validationResult } from 'express-validator';
+import { body, oneOf } from 'express-validator';
+import Mail from 'nodemailer/lib/mailer';
 import { resetPassword } from '../auth/resetpassword';
 import { bcryptHashPassword, createProfile, createProjectMembership } from '../auth/utils';
 import { getConfig } from '../config';
+import { getAuthenticatedContext } from '../context';
 import { sendEmail } from '../email/email';
-import { invalidRequest, sendOutcome } from '../fhir/outcomes';
 import { systemRepo } from '../fhir/repo';
-import { logger } from '../logger';
+import { sendResponse } from '../fhir/routes';
 import { generateSecret } from '../oauth/keys';
 import { getUserByEmailInProject, getUserByEmailWithoutProject } from '../oauth/utils';
+import { makeValidationMiddleware } from '../util/validator';
 
-export const inviteValidators = [
+export const inviteValidator = makeValidationMiddleware([
   body('resourceType').isIn(['Patient', 'Practitioner', 'RelatedPerson']).withMessage('Resource type is required'),
   body('firstName').notEmpty().withMessage('First name is required'),
   body('lastName').notEmpty().withMessage('Last name is required'),
@@ -32,50 +35,35 @@ export const inviteValidators = [
     ],
     { message: 'Either email or externalId is required' }
   ),
-];
+]);
 
 export async function inviteHandler(req: Request, res: Response): Promise<void> {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    sendOutcome(res, invalidRequest(errors));
-    return;
-  }
+  const ctx = getAuthenticatedContext();
 
-  const inviteRequest = { ...req.body } as InviteRequest;
+  const inviteRequest = { ...req.body } as ServerInviteRequest;
   const { projectId } = req.params;
-  if (res.locals.project.superAdmin) {
+  if (ctx.project.superAdmin) {
     inviteRequest.project = await systemRepo.readResource('Project', projectId as string);
   } else {
-    inviteRequest.project = res.locals.project;
+    inviteRequest.project = ctx.project;
   }
 
-  try {
-    const { membership } = await inviteUser(inviteRequest);
-    res.status(200).json(membership);
-  } catch (err: any) {
-    logger.info(err);
-    res.status(200).json({ error: err });
-  }
+  const { membership } = await inviteUser(inviteRequest);
+  return sendResponse(res, allOk, membership);
 }
 
-export interface InviteRequest {
+export interface ServerInviteRequest extends InviteRequest {
   project: Project;
-  resourceType: 'Patient' | 'Practitioner' | 'RelatedPerson';
-  firstName: string;
-  lastName: string;
-  email?: string;
-  externalId?: string;
-  accessPolicy?: Reference<AccessPolicy>;
-  access?: ProjectMembershipAccess[];
-  sendEmail?: boolean;
-  password?: string;
-  invitedBy?: Reference<User>;
-  admin?: boolean;
 }
 
-export async function inviteUser(
-  request: InviteRequest
-): Promise<{ user: User; profile: ProfileResource; membership: ProjectMembership }> {
+export interface ServerInviteResponse {
+  user: User;
+  profile: ProfileResource;
+  membership: ProjectMembership;
+}
+
+export async function inviteUser(request: ServerInviteRequest): Promise<ServerInviteResponse> {
+  const ctx = getAuthenticatedContext();
   if (request.email) {
     request.email = request.email.toLowerCase();
   }
@@ -85,7 +73,6 @@ export async function inviteUser(
   let user = undefined;
   let existingUser = true;
   let passwordResetUrl = undefined;
-  let profile = undefined;
 
   if (email) {
     if (request.resourceType === 'Patient') {
@@ -93,16 +80,23 @@ export async function inviteUser(
     } else {
       user = await getUserByEmailWithoutProject(email);
     }
-    profile = await searchForExistingProfile(project, request.resourceType, email);
   }
 
   if (!user) {
     existingUser = false;
+    ctx.logger.info('User creation request received', { email });
     user = await createUser(request);
-    passwordResetUrl = await resetPassword(user);
+    ctx.logger.info('User created', { id: user.id, email });
+    passwordResetUrl = await resetPassword(user, 'invite');
   }
 
+  let profile = await searchForExistingProfile(request);
   if (!profile) {
+    ctx.logger.info('Creating profile for invite request', {
+      project: getReferenceString(project),
+      email,
+      profileType: request.resourceType,
+    });
     profile = (await createProfile(
       project,
       request.resourceType,
@@ -110,31 +104,43 @@ export async function inviteUser(
       request.lastName,
       email
     )) as Practitioner;
+
+    ctx.logger.info('Profile  created', { profile: getReferenceString(profile) });
   }
 
-  const membership = await createProjectMembership(user, project, profile, {
-    externalId: request.externalId,
-    accessPolicy: request.accessPolicy,
-    access: request.access,
-    admin: request.admin,
-  });
+  const membershipTemplate = request.membership ?? {};
+  if (request.externalId !== undefined) {
+    membershipTemplate.externalId = request.externalId;
+  }
+  if (request.accessPolicy !== undefined) {
+    membershipTemplate.accessPolicy = request.accessPolicy;
+  }
+  if (request.access !== undefined) {
+    membershipTemplate.access = request.access;
+  }
+  if (request.admin !== undefined) {
+    membershipTemplate.admin = request.admin;
+  }
+
+  const membership = await createOrUpdateProjectMembership(
+    user,
+    project,
+    profile,
+    membershipTemplate,
+    !!request.upsert
+  );
 
   if (email && request.sendEmail !== false) {
-    try {
-      await sendInviteEmail(request, user, existingUser, passwordResetUrl);
-    } catch (err) {
-      throw new OperationOutcomeError(badRequest('Could not send email. Make sure you have AWS SES set up.'), err);
-    }
+    await sendInviteEmail(request, user, existingUser, passwordResetUrl);
   }
 
   return { user, profile, membership };
 }
 
-async function createUser(request: InviteRequest): Promise<User> {
+async function createUser(request: ServerInviteRequest): Promise<User> {
   const { firstName, lastName, externalId } = request;
   const email = request.email?.toLowerCase();
-  const password = request.password || generateSecret(16);
-  logger.info('Create user ' + email);
+  const password = request.password ?? generateSecret(16);
   const passwordHash = await bcryptHashPassword(password);
 
   let project: Reference<Project> | undefined = undefined;
@@ -146,7 +152,7 @@ async function createUser(request: InviteRequest): Promise<User> {
     project = createReference(request.project);
   }
 
-  const result = await systemRepo.createResource<User>({
+  return systemRepo.createResource<User>({
     resourceType: 'User',
     firstName,
     lastName,
@@ -154,73 +160,150 @@ async function createUser(request: InviteRequest): Promise<User> {
     passwordHash,
     project,
   });
-
-  logger.info('Created: ' + result.id);
-  return result;
 }
 
-async function searchForExistingProfile(
+async function searchForExistingProfile(request: ServerInviteRequest): Promise<ProfileResource | undefined> {
+  const { project, resourceType, membership, email } = request;
+
+  if (membership?.profile) {
+    const result = await systemRepo.readReference(membership.profile);
+    if (result.meta?.project !== project.id) {
+      throw new OperationOutcomeError(badRequest('Profile does not belong to project'));
+    }
+    if (result.resourceType !== resourceType) {
+      throw new OperationOutcomeError(badRequest('Profile resourceType does not match request'));
+    }
+    return result as ProfileResource;
+  }
+
+  if (email) {
+    return systemRepo.searchOne<ProfileResource>({
+      resourceType,
+      filters: [
+        {
+          code: '_project',
+          operator: Operator.EQUALS,
+          value: project.id as string,
+        },
+        {
+          code: 'email',
+          operator: Operator.EQUALS,
+          value: email,
+        },
+      ],
+    });
+  }
+
+  return undefined;
+}
+
+async function createOrUpdateProjectMembership(
+  user: User,
   project: Project,
-  resourceType: ResourceType,
-  email: string
-): Promise<ProfileResource | undefined> {
-  const bundle = await systemRepo.search<ProfileResource>({
-    resourceType,
+  profile: ProfileResource,
+  membershipTemplate: Partial<ProjectMembership>,
+  upsert: boolean
+): Promise<ProjectMembership> {
+  const existingMembership = await searchForExistingMembership(user, project);
+  if (existingMembership) {
+    if (!upsert) {
+      throw new OperationOutcomeError(badRequest('User is already a member of this project'));
+    }
+
+    if (existingMembership.profile?.reference !== getReferenceString(profile)) {
+      throw new OperationOutcomeError(badRequest('User is already a member of this project with a different profile'));
+    }
+
+    // Update the existing membership
+    // Be careful to preserve the critical properties: id, project, user, and profile
+    return systemRepo.updateResource<ProjectMembership>({
+      ...existingMembership,
+      ...membershipTemplate,
+      resourceType: 'ProjectMembership',
+      id: existingMembership.id,
+      project: createReference(project),
+      user: createReference(user),
+      profile: createReference(profile),
+    });
+  }
+
+  // Otherwise, create the new membership
+  return createProjectMembership(user, project, profile, membershipTemplate);
+}
+
+async function searchForExistingMembership(user: User, project: Project): Promise<ProjectMembership | undefined> {
+  return systemRepo.searchOne<ProjectMembership>({
+    resourceType: 'ProjectMembership',
     filters: [
       {
-        code: '_project',
+        code: 'user',
         operator: Operator.EQUALS,
-        value: project.id as string,
+        value: getReferenceString(user),
       },
       {
-        code: 'email',
+        code: 'project',
         operator: Operator.EQUALS,
-        value: email,
+        value: getReferenceString(project),
       },
     ],
   });
-  return bundle.entry?.[0]?.resource;
 }
 
 async function sendInviteEmail(
-  request: InviteRequest,
+  request: ServerInviteRequest,
   user: User,
   existing: boolean,
   resetPasswordUrl: string | undefined
 ): Promise<void> {
+  const options: Mail.Options = { to: user.email };
   if (existing) {
     // Existing user
-    await sendEmail({
-      to: user.email,
-      subject: `Medplum: Welcome to ${request.project.name}`,
-      text: [
-        `You were invited to ${request.project.name}`,
-        '',
-        `The next time you sign-in, you will see ${request.project.name} as an option.`,
-        '',
-        `You can sign in here: ${getConfig().appBaseUrl}signin`,
-        '',
-        'Thank you,',
-        'Medplum',
-        '',
-      ].join('\n'),
-    });
+    options.subject = `Medplum: Welcome to ${request.project.name}`;
+    options.text = [
+      `You were invited to ${request.project.name}`,
+      '',
+      `The next time you sign in, you will see ${request.project.name} as an option.`,
+      '',
+      `You can sign in here: ${getConfig().appBaseUrl}signin`,
+      '',
+      'Thank you,',
+      'Medplum',
+      '',
+    ].join('\n');
   } else {
     // New user
-    await sendEmail({
-      to: user.email,
-      subject: 'Welcome to Medplum',
-      text: [
-        `You were invited to ${request.project.name}`,
-        '',
-        'Please click on the following link to create your account:',
-        '',
-        resetPasswordUrl,
-        '',
-        'Thank you,',
-        'Medplum',
-        '',
-      ].join('\n'),
+    options.subject = 'Welcome to Medplum';
+    options.text = [
+      `You were invited to ${request.project.name}`,
+      '',
+      'Please click on the following link to create your account:',
+      '',
+      resetPasswordUrl,
+      '',
+      'Thank you,',
+      'Medplum',
+      '',
+    ].join('\n');
+  }
+  try {
+    await sendEmail(systemRepo, options);
+  } catch (err) {
+    // A common error for new self-hosted Medplum servers is that SES is not configured.
+    // A long time ago, we made the mistake of establishing a convention of HTTP 200 + OperationOutcome for this case.
+    // To preserve this behavior, we throw an OperationOutcomeError with allOk ID.
+    throw new OperationOutcomeError({
+      resourceType: 'OperationOutcome',
+      id: allOk.id,
+      issue: [
+        {
+          severity: 'error',
+          code: 'exception',
+          details: {
+            text: 'Could not send email. Make sure you have AWS SES set up.',
+          },
+          diagnostics: normalizeErrorString(err),
+        },
+      ],
     });
   }
 }

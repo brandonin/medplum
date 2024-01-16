@@ -3,7 +3,6 @@ import { Notifications } from '@mantine/notifications';
 import { MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { AppRoutes } from '../AppRoutes';
 
@@ -46,11 +45,11 @@ describe('SitesPage', () => {
 
   test('Add and submit', async () => {
     await setup('/admin/sites');
-    await waitFor(() => screen.getByTitle('Add'));
+    await waitFor(() => screen.getByTitle('Add Site'));
 
     // Click the "Add" button
     await act(async () => {
-      fireEvent.click(screen.getByTitle('Add'));
+      fireEvent.click(screen.getByTitle('Add Site'));
     });
 
     // Enter the site name

@@ -1,3 +1,4 @@
+import { UCUM } from './constants';
 import {
   formatAddress,
   formatCodeableConcept,
@@ -214,6 +215,8 @@ test('Format HumanName', () => {
       }
     )
   ).toEqual('Ms. Alice Gelato Smith III [official]');
+
+  expect(formatHumanName({ text: 'foo bar' })).toEqual('foo bar');
 });
 
 test('Format given name', () => {
@@ -383,6 +386,7 @@ test('Format Coding', () => {
   expect(formatCoding({})).toBe('');
   expect(formatCoding({ display: 'foo' })).toBe('foo');
   expect(formatCoding({ code: 'foo' })).toBe('foo');
+  expect(formatCoding({ code: { foo: 'bar' } as unknown as string })).toBe('');
 });
 
 test('Format Observation value', () => {
@@ -401,14 +405,14 @@ test('Format Observation value', () => {
           valueQuantity: {
             value: 110,
             unit: 'mmHg',
-            system: 'http://unitsofmeasure.org',
+            system: UCUM,
           },
         },
         {
           valueQuantity: {
             value: 75,
             unit: 'mmHg',
-            system: 'http://unitsofmeasure.org',
+            system: UCUM,
           },
         },
       ],

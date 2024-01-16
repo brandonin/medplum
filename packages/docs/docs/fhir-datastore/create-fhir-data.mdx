@@ -23,6 +23,10 @@ These three requirements will need to be in place to connect
   {ExampleCode}
 </MedplumCodeBlock>
 
+:::tip Cloning an existing project
+If you have an existing project, and want to copy your data to a new environment (for example to a staging environment), this can easily be done using the `$clone` operation. For more details [ee the Projects guide](/docs/access/projects#cloning-and-expunging-projects).
+:::
+
 ## Example App - Simple Lab Results Workflow
 
 This example represents a common healthcare workflow, creating an order for lab tests (a.k.a `ServiceRequest` in FHIR) for patients and when the lab test is complete creating results (a.k.a. `Observation` and `DiagnosticReport` in FHIR) that correspond to the original `ServiceRequest`.
@@ -59,7 +63,7 @@ Creating a Patient if one does not exist uses the **conditional create** logic i
   {ExampleCode}
 </MedplumCodeBlock>
 
-The behavior of the the `Patient.identifier` field is important to note. `Patient.identifier` usually has a reference string or URL that describes which system that identifier came from. [Identifiers](/docs/fhir-basics#identifiers-naming-resources) are a concept in FHIR which describe the context in which that identifier is generated, for example, and identifier could be a Social Security Number (SSN) or be created by a health system for their own internal purposes. Here is an example of an identifier scheme for the [Australian Healthcare system](https://namespaces.digitalhealth.gov.au/id/hi/ihi/1.0/).
+The behavior of the the `Patient.identifier` field is important to note. `Patient.identifier` usually has a reference string or URL that describes which system that identifier came from. [Identifiers](/docs/fhir-basics#naming-data-identifiers) are a concept in FHIR which describe the context in which that identifier is generated, for example, and identifier could be a Social Security Number (SSN) or be created by a health system for their own internal purposes. Here is an example of an identifier scheme for the [Australian Healthcare system](https://namespaces.digitalhealth.gov.au/id/hi/ihi/1.0/).
 
 We recommend that providers put documentation of their identifier system online for interoperability purposes.
 

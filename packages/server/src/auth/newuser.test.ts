@@ -8,7 +8,7 @@ import request from 'supertest';
 import { initApp, shutdownApp } from '../app';
 import { getConfig, loadTestConfig } from '../config';
 import { systemRepo } from '../fhir/repo';
-import { setupPwnedPasswordMock, setupRecaptchaMock } from '../test.setup';
+import { setupPwnedPasswordMock, setupRecaptchaMock, withTestContext } from '../test.setup';
 import { registerNew } from './register';
 
 jest.mock('hibp');
@@ -67,6 +67,7 @@ describe('New user', () => {
         lastName: 'Hamilton',
         email: `alex${randomUUID()}@example.com`,
         password: 'password!@#',
+        recaptchaToken: 'xyz',
       });
 
     expect(res.status).toBe(400);
@@ -104,6 +105,51 @@ describe('New user', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.issue[0].details.text).toBe('Recaptcha failed');
+  });
+
+  test('Password too short', async () => {
+    const registerRequest = {
+      firstName: 'George',
+      lastName: 'Washington',
+      email: `george${randomUUID()}@example.com`,
+      password: 'xyz',
+      recaptchaToken: 'xyz',
+    };
+
+    const res = await request(app).post('/auth/newuser').type('json').send(registerRequest);
+    expect(res.status).toBe(400);
+    expect(res.body.issue[0].details.text).toBe('Password must be between 8 and 72 characters');
+  });
+
+  test('Password too long', async () => {
+    const registerRequest = {
+      firstName: 'George',
+      lastName: 'Washington',
+      email: `george${randomUUID()}@example.com`,
+      password: 'xyz'.repeat(100),
+      recaptchaToken: 'xyz',
+    };
+
+    const res = await request(app).post('/auth/newuser').type('json').send(registerRequest);
+    expect(res.status).toBe(400);
+    expect(res.body.issue[0].details.text).toBe('Password must be between 8 and 72 characters');
+  });
+
+  test('Multibyte password too long', async () => {
+    // Use password with 40 multibyte characters
+    // This is 80 bytes, which is too long
+    // The maximum password length for bcrypt is 72 bytes
+    const registerRequest = {
+      firstName: 'George',
+      lastName: 'Washington',
+      email: `george${randomUUID()}@example.com`,
+      password: '☺️'.repeat(40),
+      recaptchaToken: 'xyz',
+    };
+
+    const res = await request(app).post('/auth/newuser').type('json').send(registerRequest);
+    expect(res.status).toBe(400);
+    expect(res.body.issue[0].details.text).toBe('Password must be between 8 and 72 characters');
   });
 
   test('Breached password', async () => {
@@ -148,30 +194,32 @@ describe('New user', () => {
     const recaptchaSiteKey = 'recaptcha-site-key-' + randomUUID();
     const recaptchaSecretKey = 'recaptcha-secret-key-' + randomUUID();
 
-    // Register and create a project
-    const { project } = await registerNew({
-      firstName: 'Google',
-      lastName: 'Google',
-      projectName: 'Require Google Auth',
-      email,
-      password,
-    });
-
-    // As a super admin, set the recaptcha site key
-    // and the default access policy
-    await systemRepo.updateResource({
-      ...project,
-      site: [
-        {
-          name: 'Test Site',
-          domain: ['example.com'],
-          recaptchaSiteKey,
-          recaptchaSecretKey,
+    const project = await withTestContext(async () => {
+      // Register and create a project
+      const { project } = await registerNew({
+        firstName: 'Google',
+        lastName: 'Google',
+        projectName: 'Require Google Auth',
+        email,
+        password,
+      });
+      // As a super admin, set the recaptcha site key
+      // and the default access policy
+      await systemRepo.updateResource({
+        ...project,
+        site: [
+          {
+            name: 'Test Site',
+            domain: ['example.com'],
+            recaptchaSiteKey,
+            recaptchaSecretKey,
+          },
+        ],
+        defaultPatientAccessPolicy: {
+          reference: 'AccessPolicy/' + randomUUID(),
         },
-      ],
-      defaultPatientAccessPolicy: {
-        reference: 'AccessPolicy/' + randomUUID(),
-      },
+      });
+      return project;
     });
 
     const res = await request(app)
@@ -199,29 +247,31 @@ describe('New user', () => {
     const recaptchaSecretKey = 'recaptcha-secret-key-' + randomUUID();
 
     // Register and create a project
-    const { project } = await registerNew({
-      firstName: 'Google',
-      lastName: 'Google',
-      projectName: 'Require Google Auth',
-      email,
-      password,
-    });
-
-    // As a super admin, set the recaptcha site key
-    // and the default access policy
-    await systemRepo.updateResource({
-      ...project,
-      site: [
-        {
-          name: 'Test Site',
-          domain: ['example.com'],
-          recaptchaSiteKey,
-          recaptchaSecretKey,
+    await withTestContext(async () => {
+      const { project } = await registerNew({
+        firstName: 'Google',
+        lastName: 'Google',
+        projectName: 'Require Google Auth',
+        email,
+        password,
+      });
+      // As a super admin, set the recaptcha site key
+      // and the default access policy
+      await systemRepo.updateResource({
+        ...project,
+        site: [
+          {
+            name: 'Test Site',
+            domain: ['example.com'],
+            recaptchaSiteKey,
+            recaptchaSecretKey,
+          },
+        ],
+        defaultPatientAccessPolicy: {
+          reference: 'AccessPolicy/' + randomUUID(),
         },
-      ],
-      defaultPatientAccessPolicy: {
-        reference: 'AccessPolicy/' + randomUUID(),
-      },
+      });
+      return project;
     });
 
     const res = await request(app)
@@ -248,26 +298,28 @@ describe('New user', () => {
     const recaptchaSecretKey = 'recaptcha-secret-key-' + randomUUID();
 
     // Register and create a project
-    const { project } = await registerNew({
-      firstName: 'Google',
-      lastName: 'Google',
-      projectName: 'Require Google Auth',
-      email,
-      password,
-    });
-
-    // As a super admin, set the recaptcha site key
-    // but *not* the access policy
-    await systemRepo.updateResource({
-      ...project,
-      site: [
-        {
-          name: 'Test Site',
-          domain: ['example.com'],
-          recaptchaSiteKey,
-          recaptchaSecretKey,
-        },
-      ],
+    const project = await withTestContext(async () => {
+      const { project } = await registerNew({
+        firstName: 'Google',
+        lastName: 'Google',
+        projectName: 'Require Google Auth',
+        email,
+        password,
+      });
+      // As a super admin, set the recaptcha site key
+      // but *not* the access policy
+      await systemRepo.updateResource({
+        ...project,
+        site: [
+          {
+            name: 'Test Site',
+            domain: ['example.com'],
+            recaptchaSiteKey,
+            recaptchaSecretKey,
+          },
+        ],
+      });
+      return project;
     });
 
     const res = await request(app)
@@ -309,24 +361,26 @@ describe('New user', () => {
     const recaptchaSiteKey = 'recaptcha-site-key-' + randomUUID();
 
     // Register and create a project
-    const { project } = await registerNew({
-      firstName: 'Google',
-      lastName: 'Google',
-      projectName: 'Require Google Auth',
-      email,
-      password,
-    });
-
-    // As a super admin, set the recaptcha site key
-    await systemRepo.updateResource({
-      ...project,
-      site: [
-        {
-          name: 'Test Site',
-          domain: ['example.com'],
-          recaptchaSiteKey,
-        },
-      ],
+    const project = await withTestContext(async () => {
+      const { project } = await registerNew({
+        firstName: 'Google',
+        lastName: 'Google',
+        projectName: 'Require Google Auth',
+        email,
+        password,
+      });
+      // As a super admin, set the recaptcha site key
+      await systemRepo.updateResource({
+        ...project,
+        site: [
+          {
+            name: 'Test Site',
+            domain: ['example.com'],
+            recaptchaSiteKey,
+          },
+        ],
+      });
+      return project;
     });
 
     const res = await request(app)
@@ -356,54 +410,144 @@ describe('New user', () => {
     const password = 'password!@#';
 
     // Project P1 is owned by the email address
-    const reg1 = await registerNew({ firstName: 'P1', lastName: 'P1', projectName: 'P1', email, password });
+    const reg1 = await withTestContext(() =>
+      registerNew({ firstName: 'P1', lastName: 'P1', projectName: 'P1', email, password })
+    );
     expect(reg1).toBeDefined();
 
     // Project P2 is owned by someone else
-    const reg2 = await registerNew({
-      firstName: 'P2',
-      lastName: 'P2',
-      projectName: 'P2',
-      email: randomUUID(),
-      password: randomUUID(),
-    });
+    const reg2 = await withTestContext(() =>
+      registerNew({
+        firstName: 'P2',
+        lastName: 'P2',
+        projectName: 'P2',
+        email: `test${randomUUID()}@example.com`,
+        password: randomUUID(),
+      })
+    );
     expect(reg2).toBeDefined();
 
     // Project P3 is owned by someone else
-    const reg3 = await registerNew({
-      firstName: 'P3',
-      lastName: 'P3',
-      projectName: 'P3',
-      email: randomUUID(),
-      password: randomUUID(),
-    });
+    const reg3 = await withTestContext(() =>
+      registerNew({
+        firstName: 'P3',
+        lastName: 'P3',
+        projectName: 'P3',
+        email: `test${randomUUID()}@example.com`,
+        password: randomUUID(),
+      })
+    );
     expect(reg3).toBeDefined();
 
     // Try to register as a patient in Project P2
-    const res1 = await request(app).post('/auth/newuser').type('json').send({
-      projectId: reg2.project.id,
-      firstName: 'Isolated1',
-      lastName: 'Isolated1',
-      email,
-      password,
-      recaptchaToken: 'xyz',
-    });
+    const res1 = await request(app)
+      .post('/auth/newuser')
+      .type('json')
+      .send({
+        projectId: reg2.project.id,
+        firstName: 'Isolated1',
+        lastName: 'Isolated1',
+        email: `test${randomUUID()}@example.com`,
+        password,
+        recaptchaToken: 'xyz',
+      });
     expect(res1.status).toBe(200);
     expect(res1.body.login).toBeDefined();
     expect(res1.body.code).toBeUndefined();
 
-    // Try to register as a patient in Project P2
-    const res2 = await request(app).post('/auth/newuser').type('json').send({
-      projectId: reg3.project.id,
-      firstName: 'Isolated2',
-      lastName: 'Isolated2',
-      email,
-      password,
-      recaptchaToken: 'xyz',
-    });
+    // Try to register as a patient in Project P3
+    const res2 = await request(app)
+      .post('/auth/newuser')
+      .type('json')
+      .send({
+        projectId: reg3.project.id,
+        firstName: 'Isolated2',
+        lastName: 'Isolated2',
+        email: `test${randomUUID()}@example.com`,
+        password,
+        recaptchaToken: 'xyz',
+      });
     expect(res2.status).toBe(200);
     expect(res2.body.login).toBeDefined();
     expect(res2.body.code).toBeUndefined();
+
+    // Try to register with a valid projectId and clientId
+    const res3 = await request(app)
+      .post('/auth/newuser')
+      .type('json')
+      .send({
+        projectId: reg2.project.id,
+        clientId: reg2.client.id,
+        firstName: 'Isolated3',
+        lastName: 'Isolated3',
+        email: `test${randomUUID()}@example.com`,
+        password,
+        recaptchaToken: 'xyz',
+      });
+    expect(res3.status).toBe(200);
+    expect(res3.body.login).toBeDefined();
+    expect(res3.body.code).toBeUndefined();
+
+    // Try to register with an invalid projectId and clientId pair
+    const res4 = await request(app)
+      .post('/auth/newuser')
+      .type('json')
+      .send({
+        projectId: reg2.project.id,
+        clientId: reg3.client.id,
+        firstName: 'Isolated4',
+        lastName: 'Isolated4',
+        email: `test${randomUUID()}@example.com`,
+        password,
+        recaptchaToken: 'xyz',
+      });
+    expect(res4.status).toBe(400);
+    expect(res4.body.login).toBeUndefined();
+    expect(res4.body.code).toBeUndefined();
+    expect(res4.body).toMatchObject({
+      resourceType: 'OperationOutcome',
+      issue: [
+        {
+          severity: 'error',
+          code: 'invalid',
+          details: {
+            text: 'Client and project do not match',
+          },
+        },
+      ],
+    });
+
+    // Try to register with only a clientId
+    const res5 = await request(app)
+      .post('/auth/newuser')
+      .type('json')
+      .send({
+        clientId: reg2.client.id,
+        firstName: 'Isolated5',
+        lastName: 'Isolated5',
+        email: `test${randomUUID()}@example.com`,
+        password,
+        recaptchaToken: 'xyz',
+      });
+    expect(res5.status).toBe(200);
+    expect(res5.body.login).toBeDefined();
+    expect(res5.body.code).toBeUndefined();
+
+    // Try to register with an invalid clientId
+    const res6 = await request(app)
+      .post('/auth/newuser')
+      .type('json')
+      .send({
+        clientId: randomUUID(),
+        firstName: 'Isolated6',
+        lastName: 'Isolated6',
+        email: `test${randomUUID()}@example.com`,
+        password,
+        recaptchaToken: 'xyz',
+      });
+    expect(res6.status).toBe(404);
+    expect(res6.body.login).toBeUndefined();
+    expect(res6.body.code).toBeUndefined();
   });
 
   test('Success when config has empty recaptchaSecretKey and missing recaptcha token', async () => {

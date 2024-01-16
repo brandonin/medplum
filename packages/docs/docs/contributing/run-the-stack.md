@@ -12,9 +12,9 @@ Follow these instructions to get the complete Medplum stack running directly on 
 ## Prerequisites
 
 1. **[Git](https://git-scm.com/)**
-2. **[npm](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm)**
+2. **[Node.js](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm)** (version 18+ required, version 20+ recommended)
 3. **[Docker](https://docs.docker.com/engine/install/)**
-4. [Clone the Medplum repo](./clone-the-repo)
+4. [Clone the Medplum repo](./local-dev-setup#clone-the-repo)
 
 ## Install
 
@@ -32,7 +32,7 @@ Use Turborepo to build all packages.
 From your root medplum directory run:
 
 ```sh
-npm run build
+npm run build:fast
 ```
 
 ## Background services
@@ -136,12 +136,12 @@ The email and password for the example user are:
 | **Email**    | admin@example.com |
 | **Password** | medplum_admin     |
 
-To make sure the server is working, you can access the health check at <http://localhost:8103/healthcheck>
+To make sure the server is working, you can access the health check at [http://localhost:8103/healthcheck](http://localhost:8103/healthcheck)
 
 If everything is working, you should see the following in your browser:
 
 ```json
-{ "ok": true, "postgres": true, "redis": true }
+{ "ok": true, "version": "<MEDPLUM_VERSION>", "postgres": true, "redis": true }
 ```
 
 ### Run the Medplum Web App
@@ -155,6 +155,6 @@ cd packages/app
 npm run dev
 ```
 
-You can access the app at <http://localhost:3000/>
+You can access the app at [http://localhost:3000/](http://localhost:3000/)
 
 The default username is admin@example.com, default password medplum_admin.

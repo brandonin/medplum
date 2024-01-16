@@ -1,6 +1,7 @@
 import { Button, createStyles, Group } from '@mantine/core';
 import { Slot } from '@medplum/fhirtypes';
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
+import { getMonthString, getStartMonth } from './CalendarInput.utils';
 
 const useStyles = createStyles((theme) => ({
   table: {
@@ -48,15 +49,6 @@ export interface CalendarInputProps {
   slots: Slot[];
   onChangeMonth: (date: Date) => void;
   onClick: (date: Date) => void;
-}
-
-/**
- * Returns a month display string (e.g. "January 2020").
- * @param date Any date within the month.
- * @returns The month display string (e.g. "January 2020")
- */
-export function getMonthString(date: Date): string {
-  return date.toLocaleString('default', { month: 'long' }) + ' ' + date.getFullYear();
 }
 
 interface CalendarCell {
@@ -127,13 +119,6 @@ export function CalendarInput(props: CalendarInputProps): JSX.Element {
   );
 }
 
-export function getStartMonth(): Date {
-  const result = new Date();
-  result.setDate(1);
-  result.setHours(0, 0, 0, 0);
-  return result;
-}
-
 function buildGrid(startDate: Date, slots: Slot[]): OptionalCalendarCell[][] {
   const d = new Date(startDate.getFullYear(), startDate.getMonth());
   const grid: OptionalCalendarCell[][] = [];
@@ -171,8 +156,8 @@ function buildGrid(startDate: Date, slots: Slot[]): OptionalCalendarCell[][] {
 
 /**
  * Returns true if the given date is available for booking.
- * @param day The day to check.
- * @param slots The list of available slots.
+ * @param day - The day to check.
+ * @param slots - The list of available slots.
  * @returns True if there are any available slots for the day.
  */
 function isDayAvailable(day: Date, slots: Slot[]): boolean {

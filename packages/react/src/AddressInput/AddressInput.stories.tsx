@@ -1,5 +1,4 @@
 import { Meta } from '@storybook/react';
-import React from 'react';
 import { Document } from '../Document/Document';
 import { AddressInput } from './AddressInput';
 
@@ -10,7 +9,7 @@ export default {
 
 export const Basic = (): JSX.Element => (
   <Document>
-    <AddressInput name="address" />
+    <AddressInput name="address" path="Patient.address" onChange={undefined} outcome={undefined} />
   </Document>
 );
 
@@ -18,6 +17,7 @@ export const DefaultValue = (): JSX.Element => (
   <Document>
     <AddressInput
       name="address"
+      path="Patient.address"
       defaultValue={{
         use: 'home',
         type: 'physical',
@@ -26,6 +26,8 @@ export const DefaultValue = (): JSX.Element => (
         state: 'IL',
         postalCode: '44444',
       }}
+      onChange={undefined}
+      outcome={undefined}
     />
   </Document>
 );

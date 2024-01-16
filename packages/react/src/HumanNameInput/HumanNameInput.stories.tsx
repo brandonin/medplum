@@ -1,6 +1,5 @@
 import { HumanName } from '@medplum/fhirtypes';
 import { Meta } from '@storybook/react';
-import React from 'react';
 import { Document } from '../Document/Document';
 import { HumanNameInput } from './HumanNameInput';
 
@@ -13,8 +12,10 @@ export const Basic = (): JSX.Element => (
   <Document>
     <HumanNameInput
       name="patient-name"
+      path="Patient.name"
       defaultValue={{ prefix: ['Mr.'], given: ['Homer', 'J.'], family: 'Simpson' } as HumanName}
       onChange={console.log}
+      outcome={undefined}
     />
   </Document>
 );

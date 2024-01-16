@@ -1,5 +1,5 @@
 import { Quantity } from '@medplum/fhirtypes';
-import { Atom, InfixParselet, Parser, ParserBuilder, PrefixParselet } from '../fhirlexer';
+import { Atom, InfixParselet, Parser, ParserBuilder, PrefixParselet } from '../fhirlexer/parse';
 import { PropertyType, TypedValue } from '../types';
 import {
   AndAtom,
@@ -13,6 +13,7 @@ import {
   EquivalentAtom,
   FhirPathAtom,
   FunctionAtom,
+  ImpliesAtom,
   InAtom,
   IndexerAtom,
   IsAtom,
@@ -29,45 +30,43 @@ import { parseDateString } from './date';
 import { tokenize } from './tokenize';
 import { toTypedValue } from './utils';
 
-/* eslint-disable @typescript-eslint/no-duplicate-enum-values */
 /**
  * Operator precedence
  * See: https://hl7.org/fhirpath/#operator-precedence
  */
-export const enum OperatorPrecedence {
-  FunctionCall = 0,
-  Dot = 1,
-  Indexer = 2,
-  UnaryAdd = 3,
-  UnarySubtract = 3,
-  Multiply = 4,
-  Divide = 4,
-  IntegerDivide = 4,
-  Modulo = 4,
-  Add = 5,
-  Subtract = 5,
-  Ampersand = 5,
-  Is = 6,
-  As = 6,
-  Union = 7,
-  GreaterThan = 8,
-  GreaterThanOrEquals = 8,
-  LessThan = 8,
-  LessThanOrEquals = 8,
-  Equals = 9,
-  Equivalent = 9,
-  NotEquals = 9,
-  NotEquivalent = 9,
-  In = 10,
-  Contains = 10,
-  And = 11,
-  Xor = 12,
-  Or = 12,
-  Implies = 13,
-  Arrow = 100,
-  Semicolon = 200,
-}
-/* eslint-enable @typescript-eslint/no-duplicate-enum-values */
+export const OperatorPrecedence = {
+  FunctionCall: 0,
+  Dot: 1,
+  Indexer: 2,
+  UnaryAdd: 3,
+  UnarySubtract: 3,
+  Multiply: 4,
+  Divide: 4,
+  IntegerDivide: 4,
+  Modulo: 4,
+  Add: 5,
+  Subtract: 5,
+  Ampersand: 5,
+  Is: 6,
+  As: 6,
+  Union: 7,
+  GreaterThan: 8,
+  GreaterThanOrEquals: 8,
+  LessThan: 8,
+  LessThanOrEquals: 8,
+  Equals: 9,
+  Equivalent: 9,
+  NotEquals: 9,
+  NotEquivalent: 9,
+  In: 10,
+  Contains: 10,
+  And: 11,
+  Xor: 12,
+  Or: 12,
+  Implies: 13,
+  Arrow: 100,
+  Semicolon: 200,
+};
 
 const PARENTHESES_PARSELET: PrefixParselet = {
   parse(parser: Parser) {
@@ -132,7 +131,11 @@ export function initFhirPathParserBuilder(): ParserBuilder {
       parse: (_, token) => new LiteralAtom({ type: PropertyType.Quantity, value: parseQuantity(token.value) }),
     })
     .registerPrefix('Number', {
-      parse: (_, token) => new LiteralAtom({ type: PropertyType.decimal, value: parseFloat(token.value) }),
+      parse: (_, token) =>
+        new LiteralAtom({
+          type: token.value.includes('.') ? PropertyType.decimal : PropertyType.integer,
+          value: parseFloat(token.value),
+        }),
     })
     .registerPrefix('true', { parse: () => new LiteralAtom({ type: PropertyType.boolean, value: true }) })
     .registerPrefix('false', { parse: () => new LiteralAtom({ type: PropertyType.boolean, value: false }) })
@@ -170,7 +173,7 @@ export function initFhirPathParserBuilder(): ParserBuilder {
     )
     .infixLeft('|', OperatorPrecedence.Union, (left, _, right) => new UnionAtom(left, right))
     .infixLeft('=', OperatorPrecedence.Equals, (left, _, right) => new EqualsAtom(left, right))
-    .infixLeft('!=', OperatorPrecedence.Equals, (left, _, right) => new NotEqualsAtom(left, right))
+    .infixLeft('!=', OperatorPrecedence.NotEquals, (left, _, right) => new NotEqualsAtom(left, right))
     .infixLeft('~', OperatorPrecedence.Equivalent, (left, _, right) => new EquivalentAtom(left, right))
     .infixLeft('!~', OperatorPrecedence.NotEquivalent, (left, _, right) => new NotEquivalentAtom(left, right))
     .infixLeft(
@@ -194,23 +197,24 @@ export function initFhirPathParserBuilder(): ParserBuilder {
       (left, _, right) => new ArithemticOperatorAtom('>=', left, right, (x, y) => x >= y)
     )
     .infixLeft('&', OperatorPrecedence.Ampersand, (left, _, right) => new ConcatAtom(left, right))
-    .infixLeft('and', OperatorPrecedence.Is, (left, _, right) => new AndAtom(left, right))
-    .infixLeft('as', OperatorPrecedence.Is, (left, _, right) => new AsAtom(left, right))
-    .infixLeft('contains', OperatorPrecedence.Is, (left, _, right) => new ContainsAtom(left, right))
+    .infixLeft('and', OperatorPrecedence.And, (left, _, right) => new AndAtom(left, right))
+    .infixLeft('as', OperatorPrecedence.As, (left, _, right) => new AsAtom(left, right))
+    .infixLeft('contains', OperatorPrecedence.Contains, (left, _, right) => new ContainsAtom(left, right))
     .infixLeft(
       'div',
-      OperatorPrecedence.Is,
+      OperatorPrecedence.Divide,
       (left, _, right) => new ArithemticOperatorAtom('div', left, right, (x, y) => (x / y) | 0)
     )
-    .infixLeft('in', OperatorPrecedence.Is, (left, _, right) => new InAtom(left, right))
+    .infixLeft('in', OperatorPrecedence.In, (left, _, right) => new InAtom(left, right))
     .infixLeft('is', OperatorPrecedence.Is, (left, _, right) => new IsAtom(left, right))
     .infixLeft(
       'mod',
-      OperatorPrecedence.Is,
+      OperatorPrecedence.Modulo,
       (left, _, right) => new ArithemticOperatorAtom('mod', left, right, (x, y) => x % y)
     )
-    .infixLeft('or', OperatorPrecedence.Is, (left, _, right) => new OrAtom(left, right))
-    .infixLeft('xor', OperatorPrecedence.Is, (left, _, right) => new XorAtom(left, right));
+    .infixLeft('or', OperatorPrecedence.Or, (left, _, right) => new OrAtom(left, right))
+    .infixLeft('xor', OperatorPrecedence.Xor, (left, _, right) => new XorAtom(left, right))
+    .infixLeft('implies', OperatorPrecedence.Implies, (left, _, right) => new ImpliesAtom(left, right));
 }
 
 const fhirPathParserBuilder = initFhirPathParserBuilder();
@@ -220,7 +224,7 @@ const fhirPathParserBuilder = initFhirPathParserBuilder();
  * The result can be used to evaluate the expression against a resource or other object.
  * This method is useful if you know that you will evaluate the same expression many times
  * against different resources.
- * @param input The FHIRPath expression to parse.
+ * @param input - The FHIRPath expression to parse.
  * @returns The AST representing the expression.
  */
 export function parseFhirPath(input: string): FhirPathAtom {
@@ -229,8 +233,8 @@ export function parseFhirPath(input: string): FhirPathAtom {
 
 /**
  * Evaluates a FHIRPath expression against a resource or other object.
- * @param expression The FHIRPath expression to parse.
- * @param input The resource or object to evaluate the expression against.
+ * @param expression - The FHIRPath expression to parse.
+ * @param input - The resource or object to evaluate the expression against.
  * @returns The result of the FHIRPath expression against the resource or object.
  */
 export function evalFhirPath(expression: string, input: unknown): unknown[] {
@@ -248,9 +252,9 @@ export function evalFhirPath(expression: string, input: unknown): unknown[] {
 
 /**
  * Evaluates a FHIRPath expression against a resource or other object.
- * @param expression The FHIRPath expression to parse.
- * @param input The resource or object to evaluate the expression against.
- * @param variables A map of variables for eval input.
+ * @param expression - The FHIRPath expression to parse.
+ * @param input - The resource or object to evaluate the expression against.
+ * @param variables - A map of variables for eval input.
  * @returns The result of the FHIRPath expression against the resource or object.
  */
 export function evalFhirPathTyped(
@@ -258,6 +262,10 @@ export function evalFhirPathTyped(
   input: TypedValue[],
   variables?: Record<string, TypedValue>
 ): TypedValue[] {
-  const variableInput = variables ? variables : {};
-  return parseFhirPath(expression).eval({ variables: variableInput }, input);
+  const variableInput = variables ?? {};
+  const ast = parseFhirPath(expression);
+  return ast.eval({ variables: variableInput }, input).map((v) => ({
+    type: v.type,
+    value: v.value?.valueOf(),
+  }));
 }

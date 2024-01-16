@@ -25,7 +25,7 @@ Sending notifications via email, SMS or via integration into tools is a common n
 
 ### Search
 
-Sophisticated records search helps providers get to clarity on what's needed for patients. Medplum has a powerful [search API](/docs/search/basic-search) and [search SDK](/docs/sdk/classes/MedplumClient), [search input](https://storybook.medplum.com/?path=/docs/medplum-resourceinput--practitioners) and [search results control](https://storybook.medplum.com/?path=/docs/medplum-searchcontrol--checkboxes)
+Sophisticated records search helps providers get to clarity on what's needed for patients. Medplum has a powerful [search API](/docs/search/basic-search) and [search SDK](/docs/sdk/core.medplumclient), [search input](https://storybook.medplum.com/?path=/docs/medplum-resourceinput--practitioners) and [search results control](https://storybook.medplum.com/?path=/docs/medplum-searchcontrol--checkboxes)
 
 ### Collaboration and Messaging
 
@@ -59,7 +59,7 @@ Commonly in diagnostics and specialty care providers are not part of the same pr
 ## Demos and Resources
 
 - [Compliance](/docs/compliance) portal with guides and resources.
-- [Access Controls](/docs/auth/access-control)
+- [Access Controls](/docs/access/access-policies)
 - [Authentication Methods](/docs/auth)
 - [Communications Product](../products/communications)
 - [Search API](/docs/search)

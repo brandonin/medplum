@@ -1,3 +1,4 @@
+import { ContentType, LOINC } from '@medplum/core';
 import { Observation, Patient } from '@medplum/fhirtypes';
 import { randomUUID } from 'crypto';
 import express from 'express';
@@ -5,11 +6,11 @@ import request from 'supertest';
 import { initApp, shutdownApp } from '../../app';
 import { loadTestConfig } from '../../config';
 import { getClient } from '../../database';
-import { createTestProject, initTestAuth } from '../../test.setup';
-import { systemRepo } from '../repo';
-import { Operator as SqlOperator, SelectQuery } from '../sql';
-import { Expunger } from './expunge';
 import { getRedis } from '../../redis';
+import { createTestProject, initTestAuth, waitForAsyncJob, withTestContext } from '../../test.setup';
+import { systemRepo } from '../repo';
+import { SelectQuery } from '../sql';
+import { Expunger } from './expunge';
 
 const app = express();
 let superAdminAccessToken: string;
@@ -31,16 +32,18 @@ describe('Expunge', () => {
     const res = await request(app)
       .post(`/fhir/R4/Project/${randomUUID()}/$expunge`)
       .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', 'application/fhir+json')
+      .set('Content-Type', ContentType.FHIR_JSON)
       .send({});
     expect(res.status).toBe(403);
   });
 
   test('Expunge single resource', async () => {
-    const patient = await systemRepo.createResource<Patient>({
-      resourceType: 'Patient',
-      name: [{ given: ['Alice'], family: 'Smith' }],
-    });
+    const patient = await withTestContext(() =>
+      systemRepo.createResource<Patient>({
+        resourceType: 'Patient',
+        name: [{ given: ['Alice'], family: 'Smith' }],
+      })
+    );
     expect(patient).toBeDefined();
 
     // Expect the patient to be in the "Patient" and "Patient_History" tables
@@ -51,7 +54,7 @@ describe('Expunge', () => {
     const res = await request(app)
       .post(`/fhir/R4/Patient/${patient.id}/$expunge`)
       .set('Authorization', 'Bearer ' + superAdminAccessToken)
-      .set('Content-Type', 'application/fhir+json')
+      .set('Content-Type', ContentType.FHIR_JSON)
       .set('X-Medplum', 'extended')
       .send({});
     expect(res.status).toBe(200);
@@ -78,7 +81,7 @@ describe('Expunge', () => {
       resourceType: 'Observation',
       meta: { project: project.id },
       status: 'final',
-      code: { coding: [{ system: 'http://loinc.org', code: '12345-6' }] },
+      code: { coding: [{ system: LOINC, code: '12345-6' }] },
       subject: { reference: 'Patient/' + patient.id },
     });
     expect(obs).toBeDefined();
@@ -87,13 +90,16 @@ describe('Expunge', () => {
     const res = await request(app)
       .post(`/fhir/R4/Project/${project.id}/$expunge?everything=true`)
       .set('Authorization', 'Bearer ' + superAdminAccessToken)
-      .set('Content-Type', 'application/fhir+json')
+      .set('Content-Type', ContentType.FHIR_JSON)
       .set('X-Medplum', 'extended')
       .send({});
-    expect(res.status).toBe(200);
-    await new Promise((r) => {
-      setTimeout(r, 200);
-    });
+    expect(res.status).toBe(202);
+
+    await waitForAsyncJob(res.headers['content-location'], app, superAdminAccessToken);
+
+    expect(await existsInDatabase('Project', project.id)).toBe(false);
+    expect(await existsInDatabase('ClientApplication', client.id)).toBe(false);
+    expect(await existsInDatabase('ProjectMembership', membership.id)).toBe(false);
   });
 
   test('Expunger.expunge() expunges all resource types', async () => {
@@ -125,7 +131,7 @@ describe('Expunge', () => {
       resourceType: 'Observation',
       meta: { project: project.id },
       status: 'final',
-      code: { coding: [{ system: 'http://loinc.org', code: '12345-6' }] },
+      code: { coding: [{ system: LOINC, code: '12345-6' }] },
       subject: { reference: 'Patient/' + patient.id },
     });
     expect(obs).toBeDefined();
@@ -178,6 +184,6 @@ async function existsInCache(resourceType: string, id: string | undefined): Prom
 }
 
 async function existsInDatabase(tableName: string, id: string | undefined): Promise<boolean> {
-  const rows = await new SelectQuery(tableName).column('id').where('id', SqlOperator.EQUALS, id).execute(getClient());
+  const rows = await new SelectQuery(tableName).column('id').where('id', '=', id).execute(getClient());
   return rows.length > 0;
 }

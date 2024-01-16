@@ -1,10 +1,11 @@
-import { ElementDefinition, Period, Quantity } from '@medplum/fhirtypes';
-import { buildTypeName, getElementDefinition, isResource, PropertyType, TypedValue } from '../types';
+import { Coding, Extension, Period, Quantity } from '@medplum/fhirtypes';
+import { PropertyType, TypedValue, getElementDefinition, isResource } from '../types';
+import { InternalSchemaElement } from '../typeschema/types';
 import { capitalize, isEmpty } from '../utils';
 
 /**
  * Returns a single element array with a typed boolean value.
- * @param value The primitive boolean value.
+ * @param value - The primitive boolean value.
  * @returns Single element array with a typed boolean value.
  */
 export function booleanToTypedValue(value: boolean): [TypedValue] {
@@ -13,7 +14,7 @@ export function booleanToTypedValue(value: boolean): [TypedValue] {
 
 /**
  * Returns a "best guess" TypedValue for a given value.
- * @param value The unknown value to check.
+ * @param value - The unknown value to check.
  * @returns A "best guess" TypedValue for the given value.
  */
 export function toTypedValue(value: unknown): TypedValue {
@@ -40,11 +41,21 @@ export function toTypedValue(value: unknown): TypedValue {
  * Converts unknown object into a JavaScript boolean.
  * Note that this is different than the FHIRPath "toBoolean",
  * which has particular semantics around arrays, empty arrays, and type conversions.
- * @param obj Any value or array of values.
+ * @param obj - Any value or array of values.
  * @returns The converted boolean value according to FHIRPath rules.
  */
 export function toJsBoolean(obj: TypedValue[]): boolean {
   return obj.length === 0 ? false : !!obj[0].value;
+}
+
+export function singleton(collection: TypedValue[], type?: string): TypedValue | undefined {
+  if (collection.length === 0) {
+    return undefined;
+  } else if (collection.length === 1 && (!type || collection[0].type === type)) {
+    return collection[0];
+  } else {
+    throw new Error(`Expected singleton of type ${type}, but found ${JSON.stringify(collection)}`);
+  }
 }
 
 /**
@@ -53,8 +64,8 @@ export function toJsBoolean(obj: TypedValue[]): boolean {
  * For example, "Observation.value[x]" can be "valueString", "valueInteger", "valueQuantity", etc.
  * According to the spec, there can only be one property for a given element definition.
  * This function returns the value and the type.
- * @param input The base context (FHIR resource or backbone element).
- * @param path The property path.
+ * @param input - The base context (FHIR resource or backbone element).
+ * @param path - The property path.
  * @returns The value of the property and the property type.
  */
 export function getTypedPropertyValue(input: TypedValue, path: string): TypedValue[] | TypedValue | undefined {
@@ -64,10 +75,7 @@ export function getTypedPropertyValue(input: TypedValue, path: string): TypedVal
 
   const elementDefinition = getElementDefinition(input.type, path);
   if (elementDefinition) {
-    const typedResult = getTypedPropertyValueWithSchema(input, path, elementDefinition);
-    if (typedResult) {
-      return typedResult;
-    }
+    return getTypedPropertyValueWithSchema(input.value, path, elementDefinition);
   }
 
   return getTypedPropertyValueWithoutSchema(input, path);
@@ -75,35 +83,75 @@ export function getTypedPropertyValue(input: TypedValue, path: string): TypedVal
 
 /**
  * Returns the value of the property and the property type using a type schema.
- * @param input The base context (FHIR resource or backbone element).
- * @param path The property path.
- * @param property The property element definition.
+ * @param value - The base context (FHIR resource or backbone element).
+ * @param path - The property path.
+ * @param element - The property element definition.
  * @returns The value of the property and the property type.
  */
-function getTypedPropertyValueWithSchema(
-  input: TypedValue,
+export function getTypedPropertyValueWithSchema(
+  value: TypedValue['value'],
   path: string,
-  property: ElementDefinition
+  element: InternalSchemaElement
 ): TypedValue[] | TypedValue | undefined {
-  const types = property.type;
+  // Consider the following cases of the inputs:
+
+  // "path" input types:
+  // 1. Simple path, e.g., "name"
+  // 2. Choice-of-type without type, e.g., "value[x]"
+  // 3. Choice-of-type with type, e.g., "valueBoolean"
+
+  // "element" can be either:
+  // 1. Full ElementDefinition from a well-formed StructureDefinition
+  // 2. Partial ElementDefinition from base-schema.json
+
+  // "types" input types:
+  // 1. Simple single type, e.g., "string"
+  // 2. Choice-of-type with full array of types, e.g., ["string", "integer", "Quantity"]
+  // 3. Choice-of-type with single array of types, e.g., ["Quantity"]
+
+  // Note that FHIR Profiles can define a single type for a choice-of-type element.
+  // e.g. https://build.fhir.org/ig/HL7/US-Core/StructureDefinition-us-core-birthsex.html
+  // Therefore, cannot only check for endsWith('[x]') since FHIRPath uses this code path
+  // with a path of 'value' and expects Choice of Types treatment
+
+  const types = element.type;
   if (!types || types.length === 0) {
     return undefined;
   }
 
+  // The path parameter can be in both "value[x]" form and "valueBoolean" form.
+  // So we need to use the element path to find the type.
   let resultValue: any = undefined;
   let resultType = 'undefined';
+  let primitiveExtension: Extension[] | undefined = undefined;
 
-  if (types.length === 1) {
-    resultValue = input.value[path];
-    resultType = types[0].code as string;
-  } else {
+  if (element.path.endsWith('[x]')) {
+    const elementBasePath = (element.path.split('.').pop() as string).replace('[x]', '');
     for (const type of types) {
-      const path2 = path.replace('[x]', '') + capitalize(type.code as string);
-      if (path2 in input.value) {
-        resultValue = input.value[path2];
-        resultType = type.code as string;
+      const candidatePath = elementBasePath + capitalize(type.code);
+      resultValue = value[candidatePath];
+      primitiveExtension = value['_' + candidatePath];
+      if (resultValue !== undefined || primitiveExtension !== undefined) {
+        resultType = type.code;
         break;
       }
+    }
+  } else {
+    console.assert(types.length === 1, 'Expected single type', element.path);
+    resultValue = value[path];
+    resultType = types[0].code;
+    primitiveExtension = value['_' + path];
+  }
+
+  // When checking for primitive extensions, we must use the "resolved" path.
+  // In the case of [x] choice-of-type, the type must be resolved to a single type.
+  if (primitiveExtension) {
+    if (Array.isArray(resultValue)) {
+      for (let i = 0; i < Math.max(resultValue.length, primitiveExtension.length); i++) {
+        resultValue[i] = assignPrimitiveExtension(resultValue[i], primitiveExtension[i]);
+      }
+    } else {
+      resultValue = assignPrimitiveExtension(resultValue, primitiveExtension);
     }
   }
 
@@ -112,7 +160,7 @@ function getTypedPropertyValueWithSchema(
   }
 
   if (resultType === 'Element' || resultType === 'BackboneElement') {
-    resultType = buildTypeName(property.path?.split('.') as string[]);
+    resultType = element.type[0].code;
   }
 
   if (Array.isArray(resultValue)) {
@@ -133,8 +181,8 @@ function toTypedValueWithType(value: any, type: string): TypedValue {
  * Returns the value of the property and the property type using a type schema.
  * Note that because the type schema is not available, this function may be inaccurate.
  * In some cases, that is the desired behavior.
- * @param typedValue The base context (FHIR resource or backbone element).
- * @param path The property path.
+ * @param typedValue - The base context (FHIR resource or backbone element).
+ * @param path - The property path.
  * @returns The value of the property and the property type.
  */
 function getTypedPropertyValueWithoutSchema(
@@ -179,7 +227,7 @@ function getTypedPropertyValueWithoutSchema(
 
 /**
  * Removes duplicates in array using FHIRPath equality rules.
- * @param arr The input array.
+ * @param arr - The input array.
  * @returns The result array with duplicates removed.
  */
 export function removeDuplicates(arr: TypedValue[]): TypedValue[] {
@@ -201,7 +249,7 @@ export function removeDuplicates(arr: TypedValue[]): TypedValue[] {
 
 /**
  * Returns a negated FHIRPath boolean expression.
- * @param input The input array.
+ * @param input - The input array.
  * @returns The negated type value array.
  */
 export function fhirPathNot(input: TypedValue[]): TypedValue[] {
@@ -210,8 +258,8 @@ export function fhirPathNot(input: TypedValue[]): TypedValue[] {
 
 /**
  * Determines if two arrays are equal according to FHIRPath equality rules.
- * @param x The first array.
- * @param y The second array.
+ * @param x - The first array.
+ * @param y - The second array.
  * @returns FHIRPath true if the arrays are equal.
  */
 export function fhirPathArrayEquals(x: TypedValue[], y: TypedValue[]): TypedValue[] {
@@ -226,13 +274,13 @@ export function fhirPathArrayEquals(x: TypedValue[], y: TypedValue[]): TypedValu
 
 /**
  * Determines if two values are equal according to FHIRPath equality rules.
- * @param x The first value.
- * @param y The second value.
+ * @param x - The first value.
+ * @param y - The second value.
  * @returns True if equal.
  */
 export function fhirPathEquals(x: TypedValue, y: TypedValue): TypedValue[] {
-  const xValue = x.value;
-  const yValue = y.value;
+  const xValue = x.value?.valueOf();
+  const yValue = y.value?.valueOf();
   if (typeof xValue === 'number' && typeof yValue === 'number') {
     return booleanToTypedValue(Math.abs(xValue - yValue) < 1e-8);
   }
@@ -247,8 +295,8 @@ export function fhirPathEquals(x: TypedValue, y: TypedValue): TypedValue[] {
 
 /**
  * Determines if two arrays are equivalent according to FHIRPath equality rules.
- * @param x The first array.
- * @param y The second array.
+ * @param x - The first array.
+ * @param y - The second array.
  * @returns FHIRPath true if the arrays are equivalent.
  */
 export function fhirPathArrayEquivalent(x: TypedValue[], y: TypedValue[]): TypedValue[] {
@@ -265,13 +313,16 @@ export function fhirPathArrayEquivalent(x: TypedValue[], y: TypedValue[]): Typed
 
 /**
  * Determines if two values are equivalent according to FHIRPath equality rules.
- * @param x The first value.
- * @param y The second value.
+ * @param x - The first value.
+ * @param y - The second value.
  * @returns True if equivalent.
  */
 export function fhirPathEquivalent(x: TypedValue, y: TypedValue): TypedValue[] {
-  const xValue = x.value;
-  const yValue = y.value;
+  const { type: xType, value: xValueRaw } = x;
+  const { type: yType, value: yValueRaw } = y;
+  const xValue = xValueRaw?.valueOf();
+  const yValue = yValueRaw?.valueOf();
+
   if (typeof xValue === 'number' && typeof yValue === 'number') {
     // Use more generous threshold than equality
     // Decimal: values must be equal, comparison is done on values rounded to the precision of the least precise operand.
@@ -281,8 +332,25 @@ export function fhirPathEquivalent(x: TypedValue, y: TypedValue): TypedValue[] {
   if (isQuantity(xValue) && isQuantity(yValue)) {
     return booleanToTypedValue(isQuantityEquivalent(xValue, yValue));
   }
+
+  if (xType === 'Coding' && yType === 'Coding') {
+    if (typeof xValue !== 'object' || typeof yValue !== 'object') {
+      return booleanToTypedValue(false);
+    }
+    // "In addition, for Coding values, equivalence is defined based on the code and system elements only.
+    // The version, display, and userSelected elements are ignored for the purposes of determining Coding equivalence."
+    // Source: https://hl7.org/fhir/fhirpath.html#changes
+
+    // We need to check if both `code` and `system` are equivalent.
+    // If both have undefined `system` fields, If so, then the two's `system` values must be compared.
+    // Essentially they must both be `undefined` or both the same.
+    return booleanToTypedValue(
+      (xValue as Coding).code === (yValue as Coding).code && (xValue as Coding).system === (yValue as Coding).system
+    );
+  }
+
   if (typeof xValue === 'object' && typeof yValue === 'object') {
-    return booleanToTypedValue(deepEquals(xValue, yValue));
+    return booleanToTypedValue(deepEquals({ ...xValue, id: undefined }, { ...yValue, id: undefined }));
   }
   if (typeof xValue === 'string' && typeof yValue === 'string') {
     // String: the strings must be the same, ignoring case and locale, and normalizing whitespace
@@ -294,13 +362,13 @@ export function fhirPathEquivalent(x: TypedValue, y: TypedValue): TypedValue[] {
 
 /**
  * Returns the sort order of two values for FHIRPath array equivalence.
- * @param x The first value.
- * @param y The second value.
+ * @param x - The first value.
+ * @param y - The second value.
  * @returns The sort order of the values.
  */
 function fhirPathEquivalentCompare(x: TypedValue, y: TypedValue): number {
-  const xValue = x.value;
-  const yValue = y.value;
+  const xValue = x.value?.valueOf();
+  const yValue = y.value?.valueOf();
   if (typeof xValue === 'number' && typeof yValue === 'number') {
     return xValue - yValue;
   }
@@ -312,8 +380,8 @@ function fhirPathEquivalentCompare(x: TypedValue, y: TypedValue): number {
 
 /**
  * Determines if the typed value is the desired type.
- * @param typedValue The typed value to check.
- * @param desiredType The desired type name.
+ * @param typedValue - The typed value to check.
+ * @param desiredType - The desired type name.
  * @returns True if the typed value is of the desired type.
  */
 export function fhirPathIs(typedValue: TypedValue, desiredType: string): boolean {
@@ -329,11 +397,11 @@ export function fhirPathIs(typedValue: TypedValue, desiredType: string): boolean
     case 'Integer':
       return typeof value === 'number';
     case 'Date':
-      return typeof value === 'string' && !!value.match(/^\d{4}(-\d{2}(-\d{2})?)?/);
+      return typeof value === 'string' && !!/^\d{4}(-\d{2}(-\d{2})?)?/.exec(value);
     case 'DateTime':
-      return typeof value === 'string' && !!value.match(/^\d{4}(-\d{2}(-\d{2})?)?T/);
+      return typeof value === 'string' && !!/^\d{4}(-\d{2}(-\d{2})?)?T/.exec(value);
     case 'Time':
-      return typeof value === 'string' && !!value.match(/^T\d/);
+      return typeof value === 'string' && !!/^T\d/.exec(value);
     case 'Period':
       return isPeriod(value);
     case 'Quantity':
@@ -346,7 +414,7 @@ export function fhirPathIs(typedValue: TypedValue, desiredType: string): boolean
 /**
  * Determines if the input is a Period object.
  * This is heuristic based, as we do not have strong typing at runtime.
- * @param input The input value.
+ * @param input - The input value.
  * @returns True if the input is a period.
  */
 export function isPeriod(input: unknown): input is Period {
@@ -356,7 +424,7 @@ export function isPeriod(input: unknown): input is Period {
 /**
  * Determines if the input is a Quantity object.
  * This is heuristic based, as we do not have strong typing at runtime.
- * @param input The input value.
+ * @param input - The input value.
  * @returns True if the input is a quantity.
  */
 export function isQuantity(input: unknown): input is Quantity {
@@ -373,8 +441,8 @@ export function isQuantityEquivalent(x: Quantity, y: Quantity): boolean {
 /**
  * Resource equality.
  * See: https://dmitripavlutin.com/how-to-compare-objects-in-javascript/#4-deep-equality
- * @param object1 The first object.
- * @param object2 The second object.
+ * @param object1 - The first object.
+ * @param object2 - The second object.
  * @returns True if the objects are equal.
  */
 function deepEquals<T1 extends object, T2 extends object>(object1: T1, object2: T2): boolean {
@@ -399,4 +467,20 @@ function deepEquals<T1 extends object, T2 extends object>(object1: T1, object2: 
 
 function isObject(obj: unknown): obj is object {
   return obj !== null && typeof obj === 'object';
+}
+
+function assignPrimitiveExtension(target: any, primitiveExtension: any): any {
+  if (primitiveExtension) {
+    if (typeof primitiveExtension !== 'object') {
+      throw new Error('Primitive extension must be an object');
+    }
+    return safeAssign(target ?? {}, primitiveExtension);
+  }
+  return target;
+}
+
+function safeAssign(target: any, source: any): any {
+  delete source.__proto__; //eslint-disable-line no-proto
+  delete source.constructor;
+  return Object.assign(target, source);
 }

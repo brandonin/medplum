@@ -1,7 +1,7 @@
 import { Button, Group, Modal, NativeSelect } from '@mantine/core';
-import { Filter, globalSchema, Operator, SearchRequest, stringify } from '@medplum/core';
+import { Filter, getSearchParameters, Operator, SearchRequest, stringify } from '@medplum/core';
 import { SearchParameter } from '@medplum/fhirtypes';
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   addFilter,
   buildFieldNameString,
@@ -40,7 +40,7 @@ export function SearchFilterEditor(props: SearchFilterEditorProps): JSX.Element 
   }
 
   const resourceType = props.search.resourceType;
-  const searchParams = (globalSchema.types[resourceType].searchParams as Record<string, SearchParameter>) ?? {};
+  const searchParams = getSearchParameters(resourceType) ?? {};
   const filters = search.filters || [];
 
   return (
@@ -72,7 +72,7 @@ export function SearchFilterEditor(props: SearchFilterEditorProps): JSX.Element 
               if (index === editingIndex) {
                 return (
                   <FilterRowInput
-                    key={`filter-${index}-${filters.length}-input`}
+                    key={`filter-${filter.code}-${filter.operator}-${filter.value}-input`}
                     resourceType={resourceType}
                     searchParams={searchParams}
                     defaultValue={filter}
@@ -89,7 +89,7 @@ export function SearchFilterEditor(props: SearchFilterEditorProps): JSX.Element 
               } else {
                 return (
                   <FilterRowDisplay
-                    key={`filter-${index}-${filters.length}-display`}
+                    key={`filter-${filter.code}-${filter.operator}-${filter.value}-display`}
                     resourceType={resourceType}
                     searchParams={searchParams}
                     filter={filter}
@@ -175,7 +175,10 @@ function FilterRowInput(props: FilterRowInputProps): JSX.Element {
           data-testid="filter-field"
           defaultValue={valueRef.current.code}
           onChange={(e) => setFilterCode(e.currentTarget.value)}
-          data={Object.keys(props.searchParams).map((param) => ({ value: param, label: buildFieldNameString(param) }))}
+          data={[
+            '',
+            ...Object.keys(props.searchParams).map((param) => ({ value: param, label: buildFieldNameString(param) })),
+          ]}
         />
       </td>
       <td>
@@ -199,7 +202,7 @@ function FilterRowInput(props: FilterRowInputProps): JSX.Element {
         )}
       </td>
       <td>
-        {value.code && value.operator && value.value && (
+        {value.code && value.operator && (
           <Button
             compact
             variant="outline"

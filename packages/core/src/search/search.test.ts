@@ -1,6 +1,16 @@
-import { formatSearchQuery, Operator, parseSearchDefinition } from './search';
+import { readJson } from '@medplum/definitions';
+import { Bundle, Patient, SearchParameter } from '@medplum/fhirtypes';
+import { indexSearchParameterBundle } from '../types';
+import { indexStructureDefinitionBundle } from '../typeschema/types';
+import { Operator, SearchRequest, formatSearchQuery, parseSearchDefinition, parseXFhirQuery } from './search';
 
 describe('Search Utils', () => {
+  beforeAll(() => {
+    indexStructureDefinitionBundle(readJson('fhir/r4/profiles-resources.json') as Bundle);
+    indexSearchParameterBundle(readJson('fhir/r4/search-parameters.json') as Bundle<SearchParameter>);
+    indexSearchParameterBundle(readJson('fhir/r4/search-parameters-medplum.json') as Bundle<SearchParameter>);
+  });
+
   test('Parse Patient search', () => {
     const result = parseSearchDefinition('/x/y/z/Patient');
     expect(result.resourceType).toBe('Patient');
@@ -114,6 +124,28 @@ describe('Search Utils', () => {
           code: '_lastUpdated',
           operator: Operator.LESS_THAN_OR_EQUALS,
           value: '2023-05-01T06:59:59.999Z',
+        },
+      ],
+    });
+  });
+
+  test('Parse chained search parameters', () => {
+    const searchReq = parseSearchDefinition(
+      'Patient?organization.name=Kaiser%20Permanente&_has:Observation:subject:performer:Practitioner.name=Alice'
+    );
+
+    expect(searchReq).toMatchObject<SearchRequest>({
+      resourceType: 'Patient',
+      filters: [
+        {
+          code: 'organization.name',
+          operator: Operator.EQUALS,
+          value: 'Kaiser Permanente',
+        },
+        {
+          code: '_has:Observation:subject:performer:Practitioner.name',
+          operator: Operator.EQUALS,
+          value: 'Alice',
         },
       ],
     });
@@ -249,5 +281,77 @@ describe('Search Utils', () => {
         filters: [{ code: 'code', operator: Operator.NOT, value: 'x' }],
       })
     ).toEqual('?code:not=x');
+  });
+
+  test('Format token not', () => {
+    expect(
+      formatSearchQuery({
+        resourceType: 'Condition',
+        filters: [{ code: 'code', operator: Operator.NOT, value: 'x' }],
+      })
+    ).toEqual('?code:not=x');
+  });
+
+  const maritalStatus = 'http://terminology.hl7.org/CodeSystem/v3-MaritalStatus';
+  test('Format _include', () => {
+    expect(
+      formatSearchQuery({
+        resourceType: 'Patient',
+        include: [
+          {
+            resourceType: 'Patient',
+            searchParam: 'organization',
+          },
+        ],
+      })
+    ).toEqual('?_include=Patient:organization');
+  });
+
+  test.each<[string, SearchRequest]>([
+    [
+      'Patient?name:contains=Just',
+      { resourceType: 'Patient', filters: [{ code: 'name', operator: Operator.CONTAINS, value: 'Just' }] },
+    ],
+    [
+      'Observation?subject={{ %patient }}',
+      {
+        resourceType: 'Observation',
+        filters: [{ code: 'subject', operator: Operator.EQUALS, value: 'Patient/12345' }],
+      },
+    ],
+    [
+      'Observation?patient={{ %patient.id }}',
+      { resourceType: 'Observation', filters: [{ code: 'patient', operator: Operator.EQUALS, value: '12345' }] },
+    ],
+    [
+      'Observation?date=gt{{ %patient.birthDate }}&performer={{ %patient.generalPractitioner[0].reference }}',
+      {
+        resourceType: 'Observation',
+        filters: [
+          { code: 'date', operator: Operator.GREATER_THAN, value: '1955-10-02' },
+          { code: 'performer', operator: Operator.EQUALS, value: 'Practitioner/98765' },
+        ],
+      },
+    ],
+  ])('parseXFhirQuery(%s)', (query, expected) => {
+    const patient: Patient = {
+      resourceType: 'Patient',
+      id: '12345',
+      gender: 'unknown',
+      birthDate: '1955-10-02',
+      multipleBirthBoolean: true,
+      maritalStatus: {
+        coding: [
+          { system: maritalStatus, code: 'unmarried' },
+          { system: maritalStatus, code: 'A' },
+        ],
+      },
+      contact: [{ telecom: [{ system: 'url', value: 'http://example.com' }] }],
+      address: [{ country: 'US', state: 'DE' }],
+      name: [{ given: ['Jan', 'Wyatt'], family: 'Smith' }, { text: 'Green Lantern' }],
+      generalPractitioner: [{ reference: 'Practitioner/98765' }],
+    };
+    const actual = parseXFhirQuery(query, { '%patient': { type: 'Patient', value: patient } });
+    expect(actual).toEqual(expected);
   });
 });

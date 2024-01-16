@@ -110,8 +110,8 @@ describe('CLI Bots', () => {
     await main(['node', 'index.js', 'bot', 'save', 'hello-world']);
     expect(console.log).toBeCalledWith(expect.stringMatching(/Success/));
     const check = await medplum.readResource('Bot', bot.id as string);
-    expect(check.code).toBeDefined();
-    expect(check.code).not.toEqual('');
+    expect(check.code).toBeUndefined();
+    expect(check.sourceCode).toBeDefined();
   });
 
   test('Deploy bot success', async () => {
@@ -137,8 +137,34 @@ describe('CLI Bots', () => {
     await main(['node', 'index.js', 'bot', 'deploy', 'hello-world']);
     expect(console.log).toBeCalledWith(expect.stringMatching(/Success/));
     const check = await medplum.readResource('Bot', bot.id as string);
-    expect(check.code).toBeDefined();
-    expect(check.code).not.toEqual('');
+    expect(check.code).toBeUndefined();
+    expect(check.sourceCode).toBeDefined();
+  });
+
+  test('Deploy bot without dist success', async () => {
+    // Create the bot
+    const bot = await medplum.createResource<Bot>({ resourceType: 'Bot' });
+    expect(bot.code).toBeUndefined();
+
+    // Setup bot config
+    (fs.existsSync as unknown as jest.Mock).mockReturnValue(true);
+    (fs.readFileSync as unknown as jest.Mock).mockReturnValue(
+      JSON.stringify({
+        bots: [
+          {
+            name: 'hello-world',
+            id: bot.id,
+            source: 'src/hello-world.ts',
+          },
+        ],
+      })
+    );
+
+    await main(['node', 'index.js', 'bot', 'deploy', 'hello-world']);
+    expect(console.log).toBeCalledWith(expect.stringMatching(/Success/));
+    const check = await medplum.readResource('Bot', bot.id as string);
+    expect(check.code).toBeUndefined();
+    expect(check.sourceCode).toBeDefined();
   });
 
   test('Deploy bot for multiple bot with wildcards ', async () => {
@@ -204,21 +230,90 @@ describe('CLI Bots', () => {
 
   test('Deploy bot multiple bot ending with bot name with no config', async () => {
     // Setup bot config
-    (fs.existsSync as unknown as jest.Mock).mockReturnValue(true);
+    (fs.existsSync as unknown as jest.Mock).mockReturnValue(false);
     (fs.readFileSync as unknown as jest.Mock).mockReturnValue(undefined);
 
     await main(['node', 'index.js', 'bot', 'deploy', '*-staging']);
     expect(console.log).toBeCalledWith(expect.stringMatching(/Number of bots deployed: 0/));
   });
 
-  test('Create bot command success', async () => {
+  test('Create bot command success with existing config file', async () => {
+    // Setup bot config
+    (fs.existsSync as unknown as jest.Mock).mockReturnValue(true);
+    (fs.readFileSync as unknown as jest.Mock).mockReturnValue(
+      JSON.stringify({
+        bots: [],
+      })
+    );
+
     await main(['node', 'index.js', 'bot', 'create', 'test-bot', '1', 'src/hello-world.ts', 'dist/src/hello-world.ts']);
     expect(console.log).toBeCalledWith(expect.stringMatching('Success! Bot created:'));
+    expect(fs.existsSync).toHaveBeenCalled();
+    expect(fs.readFileSync).toHaveBeenCalled();
+  });
+
+  test('Create bot command success without existing config file', async () => {
+    // No bot config
+    (fs.existsSync as unknown as jest.Mock).mockReturnValue(false);
+    (fs.readFileSync as unknown as jest.Mock).mockReturnValue('');
+
+    await main(['node', 'index.js', 'bot', 'create', 'test-bot', '1', 'src/hello-world.ts', 'dist/src/hello-world.ts']);
+    expect(console.log).toBeCalledWith(expect.stringMatching('Success! Bot created:'));
+    expect(fs.existsSync).toHaveBeenCalled();
+    expect(fs.readFileSync).not.toHaveBeenCalled();
+  });
+
+  test('Create bot command with auth options', async () => {
+    // No bot config
+    (fs.existsSync as unknown as jest.Mock).mockReturnValue(false);
+    (fs.readFileSync as unknown as jest.Mock).mockReturnValue('');
+
+    await main([
+      'node',
+      'index.js',
+      'bot',
+      'create',
+      'test-bot',
+      '1',
+      'src/hello-world.ts',
+      'dist/src/hello-world.ts',
+      '--base-url',
+      'http://localhost:8000',
+      '--client-id',
+      'test-client-id',
+      '--client-secret',
+      'test-client-secret',
+    ]);
+    expect(console.log).toBeCalledWith(expect.stringMatching('Success! Bot created:'));
+    expect(fs.existsSync).toHaveBeenCalled();
+    expect(fs.readFileSync).not.toHaveBeenCalled();
   });
 
   test('Create bot error with lack of commands', async () => {
     await main(['node', 'index.js', 'bot', 'create', 'test-bot']);
     expect(console.log).toBeCalledWith(expect.stringMatching('Error while creating new bot'));
+  });
+
+  test('Create bot do not write to config', async () => {
+    // No bot config
+    (fs.existsSync as unknown as jest.Mock).mockReturnValue(false);
+    (fs.readFileSync as unknown as jest.Mock).mockReturnValue('');
+    (fs.writeFileSync as unknown as jest.Mock).mockImplementation(() => {});
+
+    await main([
+      'node',
+      'index.js',
+      'bot',
+      'create',
+      'test-bot',
+      '1',
+      'src/hello-world.ts',
+      'dist/src/hello-world.ts',
+      '--no-write-config',
+    ]);
+    expect(console.log).toBeCalledWith(expect.stringMatching('Success! Bot created:'));
+    expect(fs.existsSync).toHaveBeenCalled();
+    expect(fs.writeFileSync).not.toHaveBeenCalled();
   });
 
   // Deprecated bot commands
@@ -294,8 +389,8 @@ describe('CLI Bots', () => {
     await main(['node', 'index.js', 'save-bot', 'hello-world']);
     expect(console.log).toBeCalledWith(expect.stringMatching(/Success/));
     const check = await medplum.readResource('Bot', bot.id as string);
-    expect(check.code).toBeDefined();
-    expect(check.code).not.toEqual('');
+    expect(check.code).toBeUndefined();
+    expect(check.sourceCode).toBeDefined();
   });
 
   test('Deprecate Deploy bot success', async () => {
@@ -321,8 +416,8 @@ describe('CLI Bots', () => {
     await main(['node', 'index.js', 'deploy-bot', 'hello-world']);
     expect(console.log).toBeCalledWith(expect.stringMatching(/Success/));
     const check = await medplum.readResource('Bot', bot.id as string);
-    expect(check.code).toBeDefined();
-    expect(check.code).not.toEqual('');
+    expect(check.code).toBeUndefined();
+    expect(check.sourceCode).toBeDefined();
   });
 
   test('Deprecate Deploy bot for multiple bot with wildcards ', async () => {
@@ -389,7 +484,7 @@ describe('CLI Bots', () => {
 
   test('Deprecate Deploy bot multiple bot ending with bot name with no config', async () => {
     // Setup bot config
-    (fs.existsSync as unknown as jest.Mock).mockReturnValue(true);
+    (fs.existsSync as unknown as jest.Mock).mockReturnValue(false);
     (fs.readFileSync as unknown as jest.Mock).mockReturnValue(undefined);
 
     await main(['node', 'index.js', 'deploy-bot', '*-staging']);

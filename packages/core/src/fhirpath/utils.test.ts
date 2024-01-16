@@ -1,6 +1,7 @@
 import { readJson } from '@medplum/definitions';
 import { Bundle, Questionnaire } from '@medplum/fhirtypes';
-import { indexStructureDefinitionBundle, PropertyType, TypedValue } from '../types';
+import { PropertyType, TypedValue } from '../types';
+import { InternalSchemaElement, indexStructureDefinitionBundle } from '../typeschema/types';
 import {
   fhirPathArrayEquals,
   fhirPathArrayEquivalent,
@@ -8,6 +9,7 @@ import {
   fhirPathEquivalent,
   fhirPathIs,
   getTypedPropertyValue,
+  getTypedPropertyValueWithSchema,
   toJsBoolean,
   toTypedValue,
 } from './utils';
@@ -16,6 +18,12 @@ const TYPED_TRUE = { type: PropertyType.boolean, value: true };
 const TYPED_FALSE = { type: PropertyType.boolean, value: false };
 const TYPED_1 = { type: PropertyType.integer, value: 1 };
 const TYPED_2 = { type: PropertyType.integer, value: 2 };
+const TYPED_CODING_MEDPLUM123 = { type: PropertyType.Coding, value: { code: 'MEDPLUM123' } };
+const TYPED_CODING_MEDPLUM123_W_SYSTEM = {
+  type: PropertyType.Coding,
+  value: { code: 'MEDPLUM123', system: 'medplum-v123.456.789' },
+};
+const TYPED_CODING_NOT_MEDPLUM123 = { type: PropertyType.Coding, value: { code: 'NOT_MEDPLUM123' } };
 
 describe('FHIRPath utils', () => {
   beforeAll(() => {
@@ -86,6 +94,14 @@ describe('FHIRPath utils', () => {
     expect(fhirPathEquivalent(TYPED_1, TYPED_1)).toEqual([TYPED_TRUE]);
     expect(fhirPathEquivalent(TYPED_1, TYPED_2)).toEqual([TYPED_FALSE]);
     expect(fhirPathEquivalent(TYPED_2, TYPED_1)).toEqual([TYPED_FALSE]);
+
+    // Test `Coding` equivalence
+    expect(fhirPathEquivalent(TYPED_CODING_MEDPLUM123, TYPED_CODING_MEDPLUM123)).toEqual([TYPED_TRUE]);
+    expect(fhirPathEquivalent(TYPED_CODING_MEDPLUM123, TYPED_CODING_MEDPLUM123_W_SYSTEM)).toEqual([TYPED_FALSE]);
+    expect(fhirPathEquivalent(TYPED_CODING_MEDPLUM123, TYPED_CODING_NOT_MEDPLUM123)).toEqual([TYPED_FALSE]);
+    expect(fhirPathEquivalent(TYPED_CODING_MEDPLUM123_W_SYSTEM, TYPED_CODING_MEDPLUM123_W_SYSTEM)).toEqual([
+      TYPED_TRUE,
+    ]);
   });
 
   test('fhirPathArrayEquivalent', () => {
@@ -123,6 +139,12 @@ describe('FHIRPath utils', () => {
       getTypedPropertyValue(toTypedValue({ resourceType: 'Patient', identifier: [] }), 'identifier')
     ).toBeUndefined();
     expect(getTypedPropertyValue({ type: 'X', value: { x: [] } }, 'x')).toBeUndefined();
+
+    // Property path that is part of multi-type element in schema
+    expect(getTypedPropertyValue({ type: 'Extension', value: { valueBoolean: true } }, 'valueBoolean')).toEqual({
+      type: 'boolean',
+      value: true,
+    });
   });
 
   test('Bundle entries', () => {
@@ -200,6 +222,31 @@ describe('FHIRPath utils', () => {
         linkId: '1.1',
         type: 'display',
       },
+    });
+  });
+
+  test('getTypedPropertyValueWithSchema', () => {
+    const value = { active: true };
+    const path = 'active';
+    const goodElement: InternalSchemaElement = {
+      description: '',
+      path: 'Patient.active',
+      min: 0,
+      max: 0,
+      type: [{ code: 'boolean' }],
+    };
+    expect(getTypedPropertyValueWithSchema(value, path, goodElement)).toEqual({ type: 'boolean', value: true });
+
+    const extensionValueX: InternalSchemaElement = {
+      description: '',
+      path: 'Extension.value[x]',
+      min: 1,
+      max: 1,
+      type: [{ code: 'boolean' }],
+    };
+    expect(getTypedPropertyValueWithSchema({ valueBoolean: true }, 'value[x]', extensionValueX)).toEqual({
+      type: 'boolean',
+      value: true,
     });
   });
 });

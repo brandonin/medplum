@@ -1,7 +1,6 @@
 import { MockClient } from '@medplum/mock';
+import { MedplumProvider } from '@medplum/react-hooks';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import React from 'react';
-import { MedplumProvider } from '../MedplumProvider/MedplumProvider';
 import { QuestionnaireItemType } from '../utils/questionnaire';
 import { QuestionnaireBuilder, QuestionnaireBuilderProps } from './QuestionnaireBuilder';
 
@@ -123,6 +122,48 @@ describe('QuestionnaireBuilder', () => {
     expect(onSubmit).toBeCalled();
   });
 
+  test('Handles AutoSave', async () => {
+    const onSubmit = jest.fn();
+
+    await setup({
+      questionnaire: {
+        resourceType: 'Questionnaire',
+        item: [
+          {
+            type: QuestionnaireItemType.string,
+            linkId: 'question1',
+            text: 'Question 1',
+          },
+        ],
+      },
+      onSubmit,
+      autoSave: true,
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Add item'));
+    });
+
+    expect(onSubmit).toBeCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Question 1'));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getAllByText('Remove')[0]);
+    });
+
+    expect(onSubmit).toBeCalledTimes(2);
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Add group'));
+    });
+
+    // Shouldn't autosave when adding a group
+    expect(onSubmit).toBeCalledTimes(2);
+  });
+
   test('Sets ids', async () => {
     const onSubmit = jest.fn();
 
@@ -189,6 +230,7 @@ describe('QuestionnaireBuilder', () => {
         target: { value: 'Renamed' },
       });
     });
+    fireEvent.blur(screen.getByDisplayValue('Renamed'));
 
     await act(async () => {
       fireEvent.click(screen.getByText('Save'));
@@ -232,6 +274,9 @@ describe('QuestionnaireBuilder', () => {
     await act(async () => {
       fireEvent.click(screen.getByText('Add item'));
     });
+
+    // Should not submit without autosave flag
+    expect(onSubmit).not.toBeCalled();
 
     await act(async () => {
       fireEvent.click(screen.getByText('Save'));
@@ -426,6 +471,7 @@ describe('QuestionnaireBuilder', () => {
         target: { value: 'Renamed' },
       });
     });
+    fireEvent.blur(screen.getByDisplayValue('Renamed'));
 
     await act(async () => {
       fireEvent.click(screen.getByText('Save'));
@@ -435,6 +481,58 @@ describe('QuestionnaireBuilder', () => {
     expect(onSubmit.mock.calls[0][0]).toMatchObject({
       resourceType: 'Questionnaire',
       title: 'Renamed',
+    });
+  });
+
+  test('Add Reference Profiles', async () => {
+    const onSubmit = jest.fn();
+
+    await setup({
+      questionnaire: {
+        resourceType: 'Questionnaire',
+        title: 'My References',
+        item: [
+          {
+            linkId: 'reference1',
+            text: 'Reference 1',
+            type: 'reference',
+          },
+        ],
+      },
+      onSubmit,
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Reference 1'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Add Resource Type'));
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText('Resource Type'), {
+        target: { value: 'Patient' },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Add Resource Type'));
+    });
+    await act(async () => {
+      fireEvent.change(screen.getAllByPlaceholderText('Resource Type')[1], {
+        target: { value: 'Organization' },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByDisplayValue('Patient'), {
+        target: { value: 'Practicitioner' },
+      });
+    });
+    expect(screen.getByDisplayValue('Organization')).toBeDefined();
+    expect(screen.getByDisplayValue('Practicitioner')).toBeDefined();
+    const removeLinks = screen.getAllByText('Remove');
+    expect(removeLinks.length).toEqual(3);
+    await act(async () => {
+      fireEvent.click(removeLinks[0]);
     });
   });
 
@@ -465,6 +563,7 @@ describe('QuestionnaireBuilder', () => {
         target: { value: 'myNewLinkId' },
       });
     });
+    fireEvent.blur(screen.getByDisplayValue('myNewLinkId'));
 
     await act(async () => {
       fireEvent.click(screen.getByText('Save'));
@@ -569,6 +668,347 @@ describe('QuestionnaireBuilder', () => {
           answerOption: [
             {
               valueString: 'foo bar',
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  test('Add Pages', async () => {
+    const onSubmit = jest.fn();
+
+    await setup({
+      questionnaire: {
+        resourceType: 'Questionnaire',
+        title: 'My questionnaire',
+        item: [],
+      },
+      onSubmit,
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Add Page'));
+    });
+
+    expect(screen.getByText('New Page')).toBeDefined();
+  });
+
+  test('Add Repeatable', async () => {
+    await setup({
+      questionnaire: {
+        resourceType: 'Questionnaire',
+        title: 'My questionnaire',
+        item: [
+          {
+            id: 'question1',
+            linkId: 'question1',
+            text: 'Question 1',
+            type: 'string',
+          },
+        ],
+      },
+      onSubmit: jest.fn(),
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Question 1'));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Make Repeatable'));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Remove Repeatable'));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Make Repeatable'));
+    });
+  });
+
+  test('Add Value Set', async () => {
+    const onSubmit = jest.fn();
+
+    await setup({
+      questionnaire: {
+        resourceType: 'Questionnaire',
+        title: 'My questionnaire',
+        item: [],
+      },
+      onSubmit,
+    });
+
+    // Add a new question
+    await act(async () => {
+      fireEvent.click(screen.getByText('Add item'));
+    });
+
+    // Click on the question to start editing
+    await act(async () => {
+      fireEvent.click(screen.getByText('Question'));
+    });
+
+    // Change the question type from "string" (default) to "choice"
+    fireEvent.change(screen.getByDisplayValue('String'), {
+      target: { value: 'choice' },
+    });
+
+    // Add a new choice
+    await act(async () => {
+      fireEvent.click(screen.getByText('Add choice'));
+    });
+
+    // Change the question type from "integer" (default) to "string"
+    fireEvent.change(screen.getByDisplayValue('integer'), {
+      target: { value: 'string' },
+    });
+
+    // Change the text for the choice
+    fireEvent.change(screen.getByTestId('value[x]'), {
+      target: { value: 'foo bar' },
+    });
+
+    // Add a value set
+    await act(async () => {
+      fireEvent.click(screen.getByText('Add value set'));
+    });
+
+    // Change the value set
+    fireEvent.change(screen.getByDisplayValue(''), {
+      target: { value: 'http://example.com' },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Save'));
+    });
+
+    expect(onSubmit).toBeCalled();
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({
+      resourceType: 'Questionnaire',
+      item: [
+        {
+          text: 'Question',
+          type: 'choice',
+          answerOption: [],
+          answerValueSet: 'http://example.com',
+        },
+      ],
+    });
+  });
+
+  test('Move down', async () => {
+    const onSubmit = jest.fn();
+
+    await setup({
+      questionnaire: {
+        resourceType: 'Questionnaire',
+        title: 'My questionnaire',
+        item: [
+          {
+            id: 'question1',
+            linkId: 'question1',
+            text: 'Question 1',
+            type: 'string',
+          },
+          {
+            id: 'question2',
+            linkId: 'question2',
+            text: 'Question 2',
+            type: 'string',
+          },
+          {
+            id: 'question3',
+            linkId: 'question3',
+            text: 'Question 3',
+            type: 'string',
+          },
+        ],
+      },
+      onSubmit,
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Question 1'));
+    });
+
+    await act(async () => {
+      const downButtons = screen.getAllByTestId('down-button');
+      fireEvent.click(downButtons[0]);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Save'));
+    });
+
+    expect(onSubmit).toBeCalled();
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({
+      resourceType: 'Questionnaire',
+      item: [
+        {
+          id: 'question2',
+          linkId: 'question2',
+          text: 'Question 2',
+          type: 'string',
+        },
+        {
+          id: 'question1',
+          linkId: 'question1',
+          text: 'Question 1',
+          type: 'string',
+        },
+        {
+          id: 'question3',
+          linkId: 'question3',
+          text: 'Question 3',
+          type: 'string',
+        },
+      ],
+    });
+  });
+
+  test('Move Up', async () => {
+    const onSubmit = jest.fn();
+
+    await setup({
+      questionnaire: {
+        resourceType: 'Questionnaire',
+        title: 'My questionnaire',
+        item: [
+          {
+            id: 'question1',
+            linkId: 'question1',
+            text: 'Question 1',
+            type: 'string',
+          },
+          {
+            id: 'question2',
+            linkId: 'question2',
+            text: 'Question 2',
+            type: 'string',
+          },
+          {
+            id: 'question3',
+            linkId: 'question3',
+            text: 'Question 3',
+            type: 'string',
+          },
+        ],
+      },
+      onSubmit,
+    });
+
+    await act(async () => {
+      const upButtons = screen.getAllByTestId('up-button');
+      fireEvent.click(upButtons[1]);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Save'));
+    });
+
+    expect(onSubmit).toBeCalled();
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({
+      resourceType: 'Questionnaire',
+      item: [
+        {
+          id: 'question1',
+          linkId: 'question1',
+          text: 'Question 1',
+          type: 'string',
+        },
+        {
+          id: 'question3',
+          linkId: 'question3',
+          text: 'Question 3',
+          type: 'string',
+        },
+        {
+          id: 'question2',
+          linkId: 'question2',
+          text: 'Question 2',
+          type: 'string',
+        },
+      ],
+    });
+  });
+
+  test('Move Up with nested items', async () => {
+    const onSubmit = jest.fn();
+
+    await setup({
+      questionnaire: {
+        resourceType: 'Questionnaire',
+        title: 'My questionnaire',
+        item: [
+          {
+            id: 'group',
+            linkId: 'group',
+            text: 'Group',
+            type: 'group',
+            item: [
+              {
+                id: 'question1',
+                linkId: 'question1',
+                text: 'Question 1',
+                type: 'string',
+              },
+              {
+                id: 'question2',
+                linkId: 'question2',
+                text: 'Question 2',
+                type: 'string',
+              },
+              {
+                id: 'question3',
+                linkId: 'question3',
+                text: 'Question 3',
+                type: 'string',
+              },
+            ],
+          },
+        ],
+      },
+      onSubmit,
+    });
+
+    await act(async () => {
+      const upButtons = screen.getAllByTestId('up-button');
+      fireEvent.click(upButtons[1]);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Save'));
+    });
+
+    expect(onSubmit).toBeCalled();
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({
+      resourceType: 'Questionnaire',
+      item: [
+        {
+          id: 'group',
+          linkId: 'group',
+          text: 'Group',
+          type: 'group',
+          item: [
+            {
+              id: 'question1',
+              linkId: 'question1',
+              text: 'Question 1',
+              type: 'string',
+            },
+            {
+              id: 'question3',
+              linkId: 'question3',
+              text: 'Question 3',
+              type: 'string',
+            },
+            {
+              id: 'question2',
+              linkId: 'question2',
+              text: 'Question 2',
+              type: 'string',
             },
           ],
         },

@@ -1,6 +1,6 @@
 import { GoogleCredentialResponse } from '@medplum/core';
-import React, { useEffect, useRef, useState } from 'react';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
+import { useMedplum } from '@medplum/react-hooks';
+import { useEffect, useRef, useState } from 'react';
 import { createScriptTag } from '../utils/script';
 
 interface GoogleApi {
@@ -24,8 +24,8 @@ export function GoogleButton(props: GoogleButtonProps): JSX.Element | null {
   const { googleClientId, handleGoogleCredential } = props;
   const parentRef = useRef<HTMLDivElement>(null);
   const [scriptLoaded, setScriptLoaded] = useState<boolean>(typeof google !== 'undefined');
-  const [initialized, setInitialized] = useState<boolean>(false);
-  const [buttonRendered, setButtonRendered] = useState<boolean>(false);
+  const [initialized, setInitialized] = useState(false);
+  const [buttonRendered, setButtonRendered] = useState(false);
 
   useEffect(() => {
     if (typeof google === 'undefined') {
@@ -52,20 +52,4 @@ export function GoogleButton(props: GoogleButtonProps): JSX.Element | null {
   }
 
   return <div ref={parentRef} />;
-}
-
-export function getGoogleClientId(clientId: string | undefined): string | undefined {
-  if (clientId) {
-    return clientId;
-  }
-
-  if (typeof window !== 'undefined') {
-    const origin = window.location.protocol + '//' + window.location.host;
-    const authorizedOrigins = process.env.GOOGLE_AUTH_ORIGINS?.split(',') ?? [];
-    if (authorizedOrigins.includes(origin)) {
-      return process.env.GOOGLE_CLIENT_ID;
-    }
-  }
-
-  return undefined;
 }

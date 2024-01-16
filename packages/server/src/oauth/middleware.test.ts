@@ -1,4 +1,4 @@
-import { createReference } from '@medplum/core';
+import { ContentType, createReference } from '@medplum/core';
 import { ClientApplication, Login } from '@medplum/fhirtypes';
 import { randomUUID } from 'crypto';
 import express from 'express';
@@ -6,7 +6,7 @@ import request from 'supertest';
 import { initApp, shutdownApp } from '../app';
 import { loadTestConfig } from '../config';
 import { systemRepo } from '../fhir/repo';
-import { createTestClient, createTestProject } from '../test.setup';
+import { createTestClient, createTestProject, withTestContext } from '../test.setup';
 import { generateAccessToken, generateSecret } from './keys';
 
 const app = express();
@@ -42,15 +42,17 @@ describe('Auth middleware', () => {
   test('Login revoked', async () => {
     const scope = 'openid';
 
-    const login = await systemRepo.createResource<Login>({
-      resourceType: 'Login',
-      authMethod: 'client',
-      user: createReference(client),
-      client: createReference(client),
-      authTime: new Date().toISOString(),
-      revoked: true,
-      scope,
-    });
+    const login = await withTestContext(() =>
+      systemRepo.createResource<Login>({
+        resourceType: 'Login',
+        authMethod: 'client',
+        user: createReference(client),
+        client: createReference(client),
+        authTime: new Date().toISOString(),
+        revoked: true,
+        scope,
+      })
+    );
 
     const accessToken = await generateAccessToken({
       login_id: login.id as string,
@@ -136,7 +138,7 @@ describe('Auth middleware', () => {
     const res = await request(app)
       .post('/fhir/R4/Patient')
       .set('Authorization', 'Basic ' + Buffer.from(client.id + ':' + client.secret).toString('base64'))
-      .set('Content-Type', 'application/fhir+json')
+      .set('Content-Type', ContentType.FHIR_JSON)
       .send({
         resourceType: 'Patient',
         name: [
@@ -155,7 +157,7 @@ describe('Auth middleware', () => {
     const res = await request(app)
       .post('/fhir/R4/Patient')
       .set('Authorization', 'Basic ' + Buffer.from(client.id + ':' + client.secret).toString('base64'))
-      .set('Content-Type', 'application/fhir+json')
+      .set('Content-Type', ContentType.FHIR_JSON)
       .set('X-Medplum', 'extended')
       .send({
         resourceType: 'Patient',
@@ -172,11 +174,13 @@ describe('Auth middleware', () => {
   });
 
   test('Basic auth without project membership', async () => {
-    const client = await systemRepo.createResource<ClientApplication>({
-      resourceType: 'ClientApplication',
-      name: 'Client without project membership',
-      secret: generateSecret(32),
-    });
+    const client = await withTestContext(() =>
+      systemRepo.createResource<ClientApplication>({
+        resourceType: 'ClientApplication',
+        name: 'Client without project membership',
+        secret: generateSecret(32),
+      })
+    );
 
     const res = await request(app)
       .get('/fhir/R4/Patient')

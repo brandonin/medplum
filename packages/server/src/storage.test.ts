@@ -1,40 +1,42 @@
+import { ContentType } from '@medplum/core';
 import { Binary } from '@medplum/fhirtypes';
 import { randomUUID } from 'crypto';
 import express, { Request } from 'express';
-import { mkdtempSync, rmSync, unlinkSync } from 'fs';
-import { resolve, sep } from 'path';
+import { unlinkSync } from 'fs';
+import { resolve } from 'path';
 import { Readable } from 'stream';
 import request from 'supertest';
 import { initApp, shutdownApp } from './app';
-import { loadTestConfig } from './config';
+import { loadTestConfig, MedplumServerConfig } from './config';
 import { systemRepo } from './fhir/repo';
 import { getBinaryStorage } from './fhir/storage';
+import { withTestContext } from './test.setup';
 
 const app = express();
-const binaryDir = mkdtempSync(__dirname + sep + 'binary-');
+let config: MedplumServerConfig;
 let binary: Binary;
 
 describe('Storage Routes', () => {
   beforeAll(async () => {
-    const config = await loadTestConfig();
-    config.binaryStorage = 'file:' + binaryDir;
+    config = await loadTestConfig();
     await initApp(app, config);
 
-    binary = await systemRepo.createResource<Binary>({
-      resourceType: 'Binary',
-      contentType: 'text/plain',
-    });
+    binary = await withTestContext(() =>
+      systemRepo.createResource<Binary>({
+        resourceType: 'Binary',
+        contentType: ContentType.TEXT,
+      })
+    );
 
     const req = new Readable();
     req.push('hello world');
     req.push(null);
     (req as any).headers = {};
-    await getBinaryStorage().writeBinary(binary, 'hello.txt', 'text/plain', req as Request);
+    await getBinaryStorage().writeBinary(binary, 'hello.txt', ContentType.TEXT, req as Request);
   });
 
   afterAll(async () => {
     await shutdownApp();
-    rmSync(binaryDir, { recursive: true, force: true });
   });
 
   test('Missing signature', async () => {
@@ -53,18 +55,21 @@ describe('Storage Routes', () => {
   });
 
   test('File not found', async () => {
-    const resource = await systemRepo.createResource<Binary>({
-      resourceType: 'Binary',
-      contentType: 'text/plain',
-    });
+    const resource = await withTestContext(() =>
+      systemRepo.createResource<Binary>({
+        resourceType: 'Binary',
+        contentType: ContentType.TEXT,
+      })
+    );
 
     const req = new Readable();
     req.push('hello world');
     req.push(null);
     (req as any).headers = {};
-    await getBinaryStorage().writeBinary(resource, 'hello.txt', 'text/plain', req as Request);
+    await getBinaryStorage().writeBinary(resource, 'hello.txt', ContentType.TEXT, req as Request);
 
     // Delete the file on disk
+    const binaryDir = (config.binaryStorage as string).replaceAll('file:', '');
     unlinkSync(resolve(binaryDir, `${resource.id}/${resource.meta?.versionId}`));
 
     const res = await request(app).get(`/storage/${resource.id}?Signature=xyz&Expires=123`);

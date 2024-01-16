@@ -1,4 +1,4 @@
-import { createReference } from '@medplum/core';
+import { ContentType, createReference } from '@medplum/core';
 import { AccessPolicy } from '@medplum/fhirtypes';
 import { randomUUID } from 'crypto';
 import express from 'express';
@@ -7,7 +7,8 @@ import { initApp, shutdownApp } from '../app';
 import { registerNew } from '../auth/register';
 import { loadTestConfig } from '../config';
 import { systemRepo } from '../fhir/repo';
-import { addTestUser } from '../test.setup';
+import { addTestUser, withTestContext } from '../test.setup';
+import { AuthenticatedRequestContext, requestContextStore } from '../context';
 
 const app = express();
 let accessToken: string;
@@ -16,6 +17,7 @@ describe('SCIM Routes', () => {
   beforeAll(async () => {
     const config = await loadTestConfig();
     await initApp(app, config);
+    requestContextStore.enterWith(AuthenticatedRequestContext.system());
 
     // First, Alice creates a project
     const registration = await registerNew({
@@ -59,7 +61,7 @@ describe('SCIM Routes', () => {
     const res1 = await request(app)
       .post(`/scim/v2/Users`)
       .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', 'application/json')
+      .set('Content-Type', ContentType.JSON)
       .send({
         schemas: ['urn:ietf:params:scim:schemas:core:2.0:User'],
         userType: 'Patient',
@@ -88,7 +90,7 @@ describe('SCIM Routes', () => {
     const updateResponse = await request(app)
       .put(`/scim/v2/Users/${res1.body.id}`)
       .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', 'application/json')
+      .set('Content-Type', ContentType.JSON)
       .send({
         ...res1.body,
         externalId: randomUUID(),
@@ -114,7 +116,7 @@ describe('SCIM Routes', () => {
     const res = await request(app)
       .post(`/scim/v2/Users`)
       .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', 'application/json')
+      .set('Content-Type', ContentType.JSON)
       .send({
         schemas: ['urn:ietf:params:scim:schemas:core:2.0:User'],
         name: {
@@ -129,18 +131,21 @@ describe('SCIM Routes', () => {
 
   test('Search users as super admin', async () => {
     // Create new project
-    const registration = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const registration = await withTestContext(async () => {
+      const reg = await registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      });
 
-    // Make the project super admin
-    await systemRepo.updateResource({
-      ...registration.project,
-      superAdmin: true,
+      // Make the project super admin
+      await systemRepo.updateResource({
+        ...reg.project,
+        superAdmin: true,
+      });
+      return reg;
     });
 
     // Add another user

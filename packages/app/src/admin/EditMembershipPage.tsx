@@ -2,7 +2,7 @@ import { Button, Checkbox, Group, Stack, Title } from '@mantine/core';
 import { normalizeOperationOutcome } from '@medplum/core';
 import { AccessPolicy, OperationOutcome, ProjectMembership, Reference, UserConfiguration } from '@medplum/fhirtypes';
 import { Form, FormSection, MedplumLink, ResourceBadge, useMedplum } from '@medplum/react';
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { getProjectId } from '../utils';
 import { AccessPolicyInput } from './AccessPolicyInput';
@@ -20,7 +20,7 @@ export function EditMembershipPage(): JSX.Element {
   );
   const [admin, setAdmin] = useState<boolean>(membership.admin);
   const [outcome, setOutcome] = useState<OperationOutcome>();
-  const [success, setSuccess] = useState<boolean>(false);
+  const [success, setSuccess] = useState(false);
 
   function deleteMembership(): void {
     if (window.confirm('Are you sure?')) {

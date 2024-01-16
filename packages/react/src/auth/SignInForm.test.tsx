@@ -2,10 +2,9 @@ import { Title } from '@mantine/core';
 import { allOk, badRequest, GoogleCredentialResponse, MedplumClient } from '@medplum/core';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import crypto from 'crypto';
-import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { TextEncoder } from 'util';
-import { MedplumProvider } from '../MedplumProvider/MedplumProvider';
+import { MedplumProvider } from '@medplum/react-hooks';
 import { SignInForm, SignInFormProps } from './SignInForm';
 
 function mockFetch(url: string, options: any): Promise<any> {
@@ -118,7 +117,8 @@ function mockFetch(url: string, options: any): Promise<any> {
   } else if (options.method === 'POST' && url.endsWith('/oauth2/token')) {
     status = 200;
     result = {
-      access_token: 'header.' + window.btoa(JSON.stringify({ client_id: 'my-client-id' })) + '.signature',
+      access_token:
+        'header.' + window.btoa(JSON.stringify({ client_id: 'my-client-id', login_id: '123' })) + '.signature',
       refresh_token: 'header.' + window.btoa(JSON.stringify({ client_id: 'my-client-id' })) + '.signature',
       expires_in: 1,
       token_type: 'Bearer',
@@ -550,6 +550,22 @@ describe('SignInForm', () => {
     });
 
     expect(props.onRegister).toBeCalled();
+  });
+
+  test('Disable Email', async () => {
+    const onSuccess = jest.fn();
+
+    await act(async () => {
+      await setup({
+        onSuccess,
+        disableEmailAuth: true,
+        googleClientId: '123',
+      });
+    });
+
+    expect(screen.queryByText('Email', { exact: false })).toBeNull();
+    expect(screen.queryByText('Next')).toBeNull();
+    expect(screen.queryByText('or')).toBeNull();
   });
 
   test('Disable Google auth', async () => {

@@ -7,12 +7,12 @@ import { initApp, shutdownApp } from '../app';
 import { registerNew } from '../auth/register';
 import { loadTestConfig } from '../config';
 import { systemRepo } from '../fhir/repo';
-import { logger } from '../logger';
 import { generateAccessToken } from '../oauth/keys';
-import { createSearchParameters } from '../seeds/searchparameters';
-import { createStructureDefinitions } from '../seeds/structuredefinitions';
-import { createValueSets } from '../seeds/valuesets';
-import { createTestProject, waitForAsyncJob } from '../test.setup';
+import { rebuildR4SearchParameters } from '../seeds/searchparameters';
+import { rebuildR4StructureDefinitions } from '../seeds/structuredefinitions';
+import { createTestProject, waitForAsyncJob, withTestContext } from '../test.setup';
+import { AuthenticatedRequestContext, requestContextStore } from '../context';
+import { rebuildR4ValueSets } from '../seeds/valuesets';
 
 jest.mock('../seeds/valuesets');
 jest.mock('../seeds/structuredefinitions');
@@ -29,6 +29,7 @@ describe('Super Admin routes', () => {
     const config = await loadTestConfig();
     await initApp(app, config);
 
+    requestContextStore.enterWith(AuthenticatedRequestContext.system());
     ({ project, client } = await createTestProject());
 
     // Mark the project as a "Super Admin" project
@@ -121,11 +122,11 @@ describe('Super Admin routes', () => {
       .send({});
 
     expect(res.status).toEqual(400);
-    expect(res.body.issue[0].details.text).toBe('Operation requires "Prefer: respond-async"');
+    expect(res.body?.issue?.[0]?.details?.text).toBe('Operation requires "Prefer: respond-async"');
   });
 
   test('Rebuild ValueSetElements as super admin with respond-async', async () => {
-    (createValueSets as unknown as jest.Mock).mockImplementationOnce((): Promise<any> => {
+    (rebuildR4ValueSets as unknown as jest.Mock).mockImplementationOnce((): Promise<any> => {
       return Promise.resolve(true);
     });
 
@@ -142,10 +143,10 @@ describe('Super Admin routes', () => {
   });
 
   test('Rebuild ValueSetElements as super admin with respond-async error', async () => {
-    (createValueSets as unknown as jest.Mock).mockImplementationOnce((): Promise<any> => {
-      return Promise.reject(new Error('createvalueSet test error'));
+    const err = new Error('createvalueSet test error');
+    (rebuildR4ValueSets as unknown as jest.Mock).mockImplementationOnce((): Promise<any> => {
+      return Promise.reject(err);
     });
-    const loggerErrorSpy = jest.spyOn(logger, 'error').mockReturnValueOnce();
 
     const res = await request(app)
       .post('/admin/super/valuesets')
@@ -155,7 +156,8 @@ describe('Super Admin routes', () => {
       .send({});
 
     expect(res.status).toEqual(202);
-    expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining('createvalueSet test error'));
+    const job = await waitForAsyncJob(res.headers['content-location'], app, adminAccessToken);
+    expect(job.status).toEqual('error');
   });
 
   test('Rebuild ValueSetElements access denied', async () => {
@@ -180,7 +182,7 @@ describe('Super Admin routes', () => {
   });
 
   test('Rebuild StructureDefinitions as super admin with respond-async', async () => {
-    (createStructureDefinitions as unknown as jest.Mock).mockImplementationOnce((): Promise<any> => {
+    (rebuildR4StructureDefinitions as unknown as jest.Mock).mockImplementationOnce((): Promise<any> => {
       return Promise.resolve(true);
     });
 
@@ -197,10 +199,10 @@ describe('Super Admin routes', () => {
   });
 
   test('Rebuild StructureDefinitions as super admin with respond-async error', async () => {
-    (createStructureDefinitions as unknown as jest.Mock).mockImplementationOnce((): Promise<any> => {
-      return Promise.reject(new Error('structuredefinitions test error'));
+    const err = new Error('structuredefinitions test error');
+    (rebuildR4StructureDefinitions as unknown as jest.Mock).mockImplementationOnce((): Promise<any> => {
+      return Promise.reject(err);
     });
-    const loggerErrorSpy = jest.spyOn(logger, 'error').mockReturnValueOnce();
 
     const res = await request(app)
       .post('/admin/super/structuredefinitions')
@@ -210,7 +212,8 @@ describe('Super Admin routes', () => {
       .send({});
 
     expect(res.status).toEqual(202);
-    expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining('structuredefinitions test error'));
+    const job = await waitForAsyncJob(res.headers['content-location'], app, adminAccessToken);
+    expect(job.status).toEqual('error');
   });
 
   test('Rebuild StructureDefinitions access denied', async () => {
@@ -235,7 +238,7 @@ describe('Super Admin routes', () => {
   });
 
   test('Rebuild searchparameters as super admin with respond-async', async () => {
-    (createSearchParameters as unknown as jest.Mock).mockImplementationOnce((): Promise<any> => {
+    (rebuildR4SearchParameters as unknown as jest.Mock).mockImplementationOnce((): Promise<any> => {
       return Promise.resolve(true);
     });
 
@@ -252,10 +255,10 @@ describe('Super Admin routes', () => {
   });
 
   test('Rebuild searchparameters as super admin with respond-async error', async () => {
-    (createSearchParameters as unknown as jest.Mock).mockImplementationOnce((): Promise<any> => {
-      return Promise.reject(new Error('rebuild searchparameters test error'));
+    const err = new Error('rebuild searchparameters test error');
+    (rebuildR4SearchParameters as unknown as jest.Mock).mockImplementationOnce((): Promise<any> => {
+      return Promise.reject(err);
     });
-    const loggerErrorSpy = jest.spyOn(logger, 'error').mockReturnValueOnce();
 
     const res = await request(app)
       .post('/admin/super/searchparameters')
@@ -265,7 +268,8 @@ describe('Super Admin routes', () => {
       .send({});
 
     expect(res.status).toEqual(202);
-    expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining('rebuild searchparameters test error'));
+    const job = await waitForAsyncJob(res.headers['content-location'], app, adminAccessToken);
+    expect(job.status).toEqual('error');
   });
 
   test('Rebuild SearchParameters access denied', async () => {
@@ -331,10 +335,10 @@ describe('Super Admin routes', () => {
   });
 
   test('Reindex with respond-async error', async () => {
+    const err = new Error('reindex test error');
     jest.spyOn(systemRepo, 'reindexResourceType').mockImplementationOnce((): Promise<any> => {
-      return Promise.reject(new Error('reindex test error'));
+      return Promise.reject(err);
     });
-    const loggerErrorSpy = jest.spyOn(logger, 'error').mockReturnValueOnce();
 
     const res = await request(app)
       .post('/admin/super/reindex')
@@ -346,7 +350,8 @@ describe('Super Admin routes', () => {
       });
 
     expect(res.status).toEqual(202);
-    expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining('reindex test error'));
+    const job = await waitForAsyncJob(res.headers['content-location'], app, adminAccessToken);
+    expect(job.status).toEqual('error');
   });
 
   test('Rebuild compartments access denied', async () => {
@@ -401,10 +406,10 @@ describe('Super Admin routes', () => {
   });
 
   test('Rebuild compartments with respond-async error', async () => {
+    const err = new Error('rebuildCompartmentsForResourceType test error');
     jest.spyOn(systemRepo, 'rebuildCompartmentsForResourceType').mockImplementationOnce((): Promise<any> => {
-      return Promise.reject(new Error('rebuildCompartmentsForResourceType test error'));
+      return Promise.reject(err);
     });
-    const loggerErrorSpy = jest.spyOn(logger, 'error').mockReturnValueOnce();
 
     const res = await request(app)
       .post('/admin/super/compartments')
@@ -416,9 +421,8 @@ describe('Super Admin routes', () => {
       });
 
     expect(res.status).toEqual(202);
-    expect(loggerErrorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('rebuildCompartmentsForResourceType test error')
-    );
+    const job = await waitForAsyncJob(res.headers['content-location'], app, adminAccessToken);
+    expect(job.status).toEqual('error');
   });
 
   test('Set password access denied', async () => {
@@ -465,13 +469,15 @@ describe('Super Admin routes', () => {
   test('Set password success', async () => {
     const email = `alice${randomUUID()}@example.com`;
 
-    await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email,
-      password: 'password!@#',
-    });
+    await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email,
+        password: 'password!@#',
+      })
+    );
 
     const res = await request(app)
       .post('/admin/super/setpassword')
@@ -564,6 +570,19 @@ describe('Super Admin routes', () => {
   test('Rebuild projectId as super admin with respond-async', async () => {
     const res1 = await request(app)
       .post('/admin/super/rebuildprojectid')
+      .set('Authorization', 'Bearer ' + adminAccessToken)
+      .set('Prefer', 'respond-async')
+      .type('json')
+      .send({});
+
+    expect(res1.status).toEqual(202);
+    expect(res1.headers['content-location']).toBeDefined();
+    await waitForAsyncJob(res1.headers['content-location'], app, adminAccessToken);
+  });
+
+  test('Run data migrations', async () => {
+    const res1 = await request(app)
+      .post('/admin/super/migrate')
       .set('Authorization', 'Bearer ' + adminAccessToken)
       .set('Prefer', 'respond-async')
       .type('json')

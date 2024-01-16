@@ -17,14 +17,14 @@ Read more about the Medplum App [here](/docs/app)
 
 ## Download JSON Files
 
-Below are resources belonging to two patients. This is FHIR data constructed in accordance with the [USCDI Data Element](/docs/fhir-datastore/understanding-uscdi-dataclasses) standards. That means that the FHIR Resources provided are tagged with the right [CodableConcepts](/docs/fhir-basics#codeable-concepts-standarding-data) and ontologies to match the interoperability requirements for an EHR in the US.
+Below are resources belonging to two patients. This is FHIR data constructed in accordance with the [USCDI Data Element](/docs/fhir-datastore/understanding-uscdi-dataclasses) standards. That means that the FHIR Resources provided are tagged with the right [CodableConcepts](/docs/fhir-basics#standardizing-data-codeable-concepts) and ontologies to match the interoperability requirements for an EHR in the US.
 
 Download one or both of the following files:
 
-| Data      | View                                                                                                                                                                      | Download                                                                                                    |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Patient 1 | [Patient 1 View Link](https://raw.githubusercontent.com/inferno-framework/inferno-reference-server/master/us-core-r4-resources/d831ec91-c7a3-4a61-9312-7ff0c4a32134.json) | [Patient 1 Download](https://drive.google.com/file/d/1bEyKSy55k9ZrrDLBj1NkHyL4ou75_eRX/view?usp=sharing)    |
-| Patient 2 | [Patient 2 View Link](https://raw.githubusercontent.com/inferno-framework/inferno-reference-server/master/us-core-r4-resources/e91975f5-9445-c11f-cabf-c3c6dae161f2.json) | [Patient 2 Download](https://drive.google.com/file/d/1Zj3EWeWj7-wP52CAZjSqzwCxZMlx6QZM/view?usp=share_link) |
+| Data      | Download                                                                                                    |
+| --------- | ----------------------------------------------------------------------------------------------------------- |
+| Patient 1 | [Patient 1 Download](https://drive.google.com/file/d/1bEyKSy55k9ZrrDLBj1NkHyL4ou75_eRX/view?usp=sharing)    |
+| Patient 2 | [Patient 2 Download](https://drive.google.com/file/d/1Zj3EWeWj7-wP52CAZjSqzwCxZMlx6QZM/view?usp=share_link) |
 
 ## Batch Upload Tool
 
@@ -38,4 +38,4 @@ Log into Medplum and navigate to the [batch create](https://app.medplum.com/batc
 
 ![Batch create tool](/img/tutorials/batch-create.png)
 
-The batch upload tool is a lightweight wrapper around the [batch/transaction api](https://www.hl7.org/fhir/http.html#transaction) and here is the documentation on how to [upload a batch using the SDK](/docs/sdk/classes/MedplumClient#batch).
+The batch upload tool is a lightweight wrapper around the [batch/transaction api](https://www.hl7.org/fhir/http.html#transaction) and here is the documentation on how to [upload a batch using the SDK](/docs/sdk/core.medplumclient.executebatch).

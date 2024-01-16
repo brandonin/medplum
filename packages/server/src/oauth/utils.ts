@@ -1,5 +1,6 @@
 import {
   badRequest,
+  ContentType,
   createReference,
   Filter,
   getDateProperty,
@@ -8,6 +9,8 @@ import {
   Operator,
   ProfileResource,
   resolveId,
+  tooManyRequests,
+  unauthorized,
 } from '@medplum/core';
 import {
   AccessPolicy,
@@ -26,11 +29,21 @@ import { timingSafeEqual } from 'crypto';
 import { JWTPayload, jwtVerify, VerifyOptions } from 'jose';
 import fetch from 'node-fetch';
 import { authenticator } from 'otplib';
+import { getRequestContext } from '../context';
 import { getAccessPolicyForLogin } from '../fhir/accesspolicy';
 import { systemRepo } from '../fhir/repo';
-import { logger } from '../logger';
 import { AuditEventOutcome, logAuthEvent, LoginEvent } from '../util/auditevent';
-import { generateAccessToken, generateIdToken, generateRefreshToken, generateSecret } from './keys';
+import {
+  generateAccessToken,
+  generateIdToken,
+  generateRefreshToken,
+  generateSecret,
+  MedplumAccessTokenClaims,
+  verifyJwt,
+} from './keys';
+import { AuthState } from './middleware';
+
+export type CodeChallengeMethod = 'plain' | 'S256';
 
 export interface LoginRequest {
   readonly email?: string;
@@ -44,10 +57,11 @@ export interface LoginRequest {
   readonly clientId?: string;
   readonly launchId?: string;
   readonly codeChallenge?: string;
-  readonly codeChallengeMethod?: string;
+  readonly codeChallengeMethod?: CodeChallengeMethod;
   readonly googleCredentials?: GoogleCredentialClaims;
   readonly remoteAddress?: string;
   readonly userAgent?: string;
+  readonly allowNoMembership?: boolean;
   /** @deprecated Use scope of "offline" or "offline_access" instead. */
   readonly remember?: boolean;
 }
@@ -93,7 +107,7 @@ export interface GoogleCredentialClaims extends JWTPayload {
 /**
  * Returns the client application by ID.
  * Handles special cases for "built-in" clients.
- * @param clientId The client ID.
+ * @param clientId - The client ID.
  * @returns The client application.
  */
 export async function getClient(clientId: string): Promise<ClientApplication> {
@@ -162,6 +176,11 @@ export async function tryLogin(request: LoginRequest): Promise<Login> {
   // If they only have one membership, set it now
   // Otherwise the application will need to prompt the user
   const memberships = await getMembershipsForLogin(login);
+
+  if (memberships.length === 0 && !request.allowNoMembership) {
+    throw new OperationOutcomeError(badRequest('User not found'));
+  }
+
   if (memberships.length === 1) {
     return setLoginMembership(login, memberships[0].id as string);
   } else {
@@ -239,8 +258,8 @@ async function authenticate(request: LoginRequest, user: User): Promise<void> {
  * Ensures that the token is valid.
  * On success, updates the login with the MFA status.
  * On error, throws an error.
- * @param login The login resource.
- * @param token The user supplied MFA token.
+ * @param login - The login resource.
+ * @param token - The user supplied MFA token.
  * @returns The updated login resource.
  */
 export async function verifyMfaToken(login: Login, token: string): Promise<Login> {
@@ -277,7 +296,7 @@ export async function verifyMfaToken(login: Login, token: string): Promise<Login
  * When a user logs in, gather all the available profiles.
  * If there is only one profile, then automatically select it.
  * Otherwise, the user must select a profile.
- * @param login The login resource.
+ * @param login - The login resource.
  * @returns Array of profile resources that the user has access to.
  */
 export async function getMembershipsForLogin(login: Login): Promise<ProjectMembership[]> {
@@ -321,15 +340,12 @@ export async function getMembershipsForLogin(login: Login): Promise<ProjectMembe
 
 /**
  * Returns the project membership for the client application.
- * @param client The client application.
+ * @param client - The client application.
  * @returns The project membership for the client application if found; otherwise undefined.
  */
-export async function getClientApplicationMembership(
-  client: ClientApplication
-): Promise<ProjectMembership | undefined> {
-  const bundle = await systemRepo.search<ProjectMembership>({
+export function getClientApplicationMembership(client: ClientApplication): Promise<ProjectMembership | undefined> {
+  return systemRepo.searchOne<ProjectMembership>({
     resourceType: 'ProjectMembership',
-    count: 1,
     filters: [
       {
         code: 'user',
@@ -338,8 +354,6 @@ export async function getClientApplicationMembership(
       },
     ],
   });
-
-  return bundle.entry && bundle.entry.length > 0 ? (bundle.entry[0].resource as ProjectMembership) : undefined;
 }
 
 /**
@@ -347,8 +361,8 @@ export async function getClientApplicationMembership(
  * Ensures that the login satisfies the project requirements.
  * Most users will only have one membership, so this happens immediately after login.
  * Some users have multiple memberships, so this happens after choosing a profile.
- * @param login The login before the membership is set.
- * @param membershipId The membership to set.
+ * @param login - The login before the membership is set.
+ * @param membershipId - The membership to set.
  * @returns The updated login.
  */
 export async function setLoginMembership(login: Login, membershipId: string): Promise<Login> {
@@ -404,8 +418,8 @@ export async function setLoginMembership(login: Login, membershipId: string): Pr
  * Returns successfully if the login first matches an "allow" rule.
  * Returns successfully if the login does not match any rules.
  * Throws an error if the login matches a "block" rule.
- * @param login The candidate login.
- * @param accessPolicy The access policy for the login.
+ * @param login - The candidate login.
+ * @param accessPolicy - The access policy for the login.
  */
 async function checkIpAccessRules(login: Login, accessPolicy: AccessPolicy | undefined): Promise<void> {
   if (!login.remoteAddress || !accessPolicy?.ipAccessRule) {
@@ -425,8 +439,8 @@ async function checkIpAccessRules(login: Login, accessPolicy: AccessPolicy | und
 
 /**
  * Returns true if the remote address matches the rule value.
- * @param remoteAddress The login remote address.
- * @param ruleValue The IP Access Rule value.
+ * @param remoteAddress - The login remote address.
+ * @param ruleValue - The IP Access Rule value.
  * @returns True if the remote address matches the rule value; otherwise false.
  */
 function matchesIpAccessRule(remoteAddress: string, ruleValue: string): boolean {
@@ -436,8 +450,8 @@ function matchesIpAccessRule(remoteAddress: string, ruleValue: string): boolean 
 /**
  * Sets the login scope.
  * Ensures that the scope is the same or a subset of the originally requested scope.
- * @param login The login before the membership is set.
- * @param scope The scope to set.
+ * @param login - The login before the membership is set.
+ * @param scope - The scope to set.
  * @returns The updated login.
  */
 export async function setLoginScope(login: Login, scope: string): Promise<Login> {
@@ -531,8 +545,8 @@ export async function revokeLogin(login: Login): Promise<void> {
 /**
  * Searches for a user by externalId and project.
  * External ID users are explicitly associated with the project.
- * @param externalId The external ID.
- * @param projectId The project ID.
+ * @param externalId - The external ID.
+ * @param projectId - The project ID.
  * @returns The user if found; otherwise, undefined.
  */
 export async function getUserByExternalId(externalId: string, projectId: string): Promise<User | undefined> {
@@ -575,8 +589,8 @@ export async function getUserByExternalId(externalId: string, projectId: string)
 
 /**
  * Searches for user by email.
- * @param email The email string.
- * @param projectId Optional project ID.
+ * @param email - The email string.
+ * @param projectId - Optional project ID.
  * @returns The user if found; otherwise, undefined.
  */
 export async function getUserByEmail(email: string, projectId: string | undefined): Promise<User | undefined> {
@@ -593,8 +607,8 @@ export async function getUserByEmail(email: string, projectId: string | undefine
 /**
  * Searches for a user by email and project.
  * This will only return users that are explicitly associated with the project.
- * @param email The email string.
- * @param projectId The project ID.
+ * @param email - The email string.
+ * @param projectId - The project ID.
  * @returns The user if found; otherwise, undefined.
  */
 export async function getUserByEmailInProject(email: string, projectId: string): Promise<User | undefined> {
@@ -619,7 +633,7 @@ export async function getUserByEmailInProject(email: string, projectId: string):
 /**
  * Searches for a user by email without a project.
  * This returns users that are not explicitly associated with a project.
- * @param email The email string.
+ * @param email - The email string.
  * @returns The user if found; otherwise, undefined.
  */
 export async function getUserByEmailWithoutProject(email: string): Promise<User | undefined> {
@@ -649,8 +663,8 @@ export async function getUserByEmailWithoutProject(email: string): Promise<User 
  * The built-in function timingSafeEqual requires that buffers are equal length.
  * Per the discussion here: https://github.com/nodejs/node/issues/17178
  * That is considered ok, and does not invalidate the protection from timing attack.
- * @param a First string.
- * @param b Second string.
+ * @param a - First string.
+ * @param b - Second string.
  * @returns True if the strings are equal.
  */
 export function timingSafeEqualStr(a: string, b: string): boolean {
@@ -661,7 +675,7 @@ export function timingSafeEqualStr(a: string, b: string): boolean {
 
 /**
  * Determines if the login request should include a refresh token.
- * @param request The login request.
+ * @param request - The login request.
  * @returns True if the login should include a refresh token.
  */
 function includeRefreshToken(request: LoginRequest): boolean {
@@ -681,49 +695,55 @@ function includeRefreshToken(request: LoginRequest): boolean {
 /**
  * Returns the external identity provider user info for an access token.
  * This can be used to verify the access token and get the user's email address.
- * @param idp The identity provider configuration.
- * @param externalAccessToken The external identity provider access token.
+ * @param idp - The identity provider configuration.
+ * @param externalAccessToken - The external identity provider access token.
  * @returns The user info claims.
  */
 export async function getExternalUserInfo(
   idp: IdentityProvider,
   externalAccessToken: string
 ): Promise<Record<string, unknown>> {
+  const ctx = getRequestContext();
   let response;
   try {
     response = await fetch(idp.userInfoUrl as string, {
       method: 'GET',
       headers: {
-        Accept: 'application/json',
+        Accept: ContentType.JSON,
         Authorization: `Bearer ${externalAccessToken}`,
       },
     });
-  } catch (err) {
-    logger.warn('Failed to verify code', err);
+  } catch (err: any) {
+    ctx.logger.warn('Error while verifying external auth code', err);
     throw new OperationOutcomeError(badRequest('Failed to verify code - check your identity provider configuration'));
   }
 
+  if (response.status === 429) {
+    ctx.logger.warn('Auth rate limit exceeded', { url: idp.userInfoUrl, clientId: idp.clientId });
+    throw new OperationOutcomeError(tooManyRequests);
+  }
+
   if (response.status !== 200) {
-    logger.warn('Failed to verify code', response.status);
+    ctx.logger.warn('Failed to verify external authorization code', { status: response.status });
     throw new OperationOutcomeError(badRequest('Failed to verify code - check your identity provider configuration'));
   }
 
   // Make sure content type is json
-  if (!response.headers.get('content-type')?.includes('application/json')) {
+  if (!response.headers.get('content-type')?.includes(ContentType.JSON)) {
     let text = '';
     try {
       text = await response.text();
-    } catch (err) {
-      logger.debug('Failed to get response text', err);
+    } catch (err: any) {
+      ctx.logger.debug('Failed to get response text', err);
     }
-    logger.warn('Failed to verify code, non-JSON response', text);
+    ctx.logger.warn('Failed to verify external authorization code, non-JSON response', { text });
     throw new OperationOutcomeError(badRequest('Failed to verify code - check your identity provider configuration'));
   }
 
   try {
     return await response.json();
-  } catch (err) {
-    logger.warn('Failed to verify code', err);
+  } catch (err: any) {
+    ctx.logger.warn('Failed to verify external authorization code', err);
     throw new OperationOutcomeError(badRequest('Failed to verify code - check your identity provider configuration'));
   }
 }
@@ -753,4 +773,29 @@ export async function verifyMultipleMatchingException(
     }
   }
   return { error: 'ERR_JWS_SIGNATURE_VERIFICATION_FAILED' };
+}
+
+/**
+ * Verifies the access token and returns the corresponding login, membership, and project.
+ * @param accessToken - The access token as provided by the client.
+ * @returns On success, returns the login, membership, and project. On failure, throws an error.
+ */
+export async function getLoginForAccessToken(accessToken: string): Promise<AuthState> {
+  const verifyResult = await verifyJwt(accessToken);
+  const claims = verifyResult.payload as MedplumAccessTokenClaims;
+
+  let login = undefined;
+  try {
+    login = await systemRepo.readResource<Login>('Login', claims.login_id);
+  } catch (err) {
+    throw new OperationOutcomeError(unauthorized);
+  }
+
+  if (!login?.membership || login.revoked) {
+    throw new OperationOutcomeError(unauthorized);
+  }
+
+  const membership = await systemRepo.readReference<ProjectMembership>(login.membership);
+  const project = await systemRepo.readReference<Project>(membership.project as Reference<Project>);
+  return { login, membership, project, accessToken };
 }

@@ -1,7 +1,6 @@
 import { MockClient } from '@medplum/mock';
-import { act, fireEvent, render, screen } from '@testing-library/react';
-import React from 'react';
-import { MedplumProvider } from '../MedplumProvider/MedplumProvider';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MedplumProvider } from '@medplum/react-hooks';
 import { ResourceInput, ResourceInputProps } from './ResourceInput';
 
 const medplum = new MockClient();
@@ -46,7 +45,8 @@ describe('ResourceInput', () => {
         placeholder: 'Test',
       });
     });
-    expect(screen.getByPlaceholderText('Test')).toBeInTheDocument();
+    await waitFor(() => screen.getByText('Homer Simpson'));
+    expect(screen.getByText('Homer Simpson')).toBeInTheDocument();
   });
 
   test('Use autocomplete', async () => {
@@ -103,7 +103,23 @@ describe('ResourceInput', () => {
       fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
     });
 
-    expect(screen.getByDisplayValue('Homer Simpson')).toBeDefined();
+    expect(screen.getByText('Homer Simpson')).toBeInTheDocument();
     expect(onChange).toHaveBeenCalled();
+  });
+
+  test('Handle invalid reference default value', async () => {
+    await act(async () => {
+      setup({
+        resourceType: 'Patient',
+        name: 'foo',
+        defaultValue: {
+          reference: '',
+        },
+        placeholder: 'Test',
+      });
+    });
+
+    await waitFor(() => screen.getByPlaceholderText('Test'));
+    expect(screen.getByPlaceholderText('Test')).toBeInTheDocument();
   });
 });

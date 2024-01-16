@@ -1,9 +1,9 @@
 import { showNotification } from '@mantine/notifications';
 import { BaseLoginRequest, LoginAuthenticationResponse, normalizeErrorString } from '@medplum/core';
 import { ProjectMembership } from '@medplum/fhirtypes';
-import React, { useCallback, useEffect, useState } from 'react';
+import { useMedplum } from '@medplum/react-hooks';
+import { ReactNode, useCallback, useEffect, useState } from 'react';
 import { Document } from '../Document/Document';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
 import { AuthenticationForm } from './AuthenticationForm';
 import { ChooseProfileForm } from './ChooseProfileForm';
 import { ChooseScopeForm } from './ChooseScopeForm';
@@ -13,12 +13,13 @@ import { NewProjectForm } from './NewProjectForm';
 export interface SignInFormProps extends BaseLoginRequest {
   readonly login?: string;
   readonly chooseScopes?: boolean;
+  readonly disableEmailAuth?: boolean;
   readonly disableGoogleAuth?: boolean;
   readonly onSuccess?: () => void;
   readonly onForgotPassword?: () => void;
   readonly onRegister?: () => void;
   readonly onCode?: (code: string) => void;
-  readonly children?: React.ReactNode;
+  readonly children?: ReactNode;
 }
 
 /**
@@ -30,7 +31,7 @@ export interface SignInFormProps extends BaseLoginRequest {
  * 3) Choose profile - If the user has multiple profiles, prompt to choose one
  * 4) Choose scope - If the user has multiple scopes, prompt to choose one
  * 5) Success - Return to the caller with either a code or a redirect
- * @param props The SignInForm React props.
+ * @param props - The SignInForm React props.
  * @returns The SignInForm React node.
  */
 export function SignInForm(props: SignInFormProps): JSX.Element {
@@ -44,9 +45,9 @@ export function SignInForm(props: SignInFormProps): JSX.Element {
     ...baseLoginRequest
   } = props;
   const medplum = useMedplum();
-  const [login, setLogin] = useState<string | undefined>(undefined);
-  const [mfaRequired, setAuthenticatorRequired] = useState<boolean>(false);
-  const [memberships, setMemberships] = useState<ProjectMembership[] | undefined>(undefined);
+  const [login, setLogin] = useState<string>();
+  const [mfaRequired, setAuthenticatorRequired] = useState(false);
+  const [memberships, setMemberships] = useState<ProjectMembership[]>();
 
   const handleCode = useCallback(
     (code: string): void => {
@@ -119,6 +120,7 @@ export function SignInForm(props: SignInFormProps): JSX.Element {
               onRegister={onRegister}
               handleAuthResponse={handleAuthResponse}
               disableGoogleAuth={props.disableGoogleAuth}
+              disableEmailAuth={props.disableEmailAuth}
               {...baseLoginRequest}
             >
               {props.children}

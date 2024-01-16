@@ -22,6 +22,7 @@ import { Request, Response } from 'express';
 import { sendOutcome } from '../outcomes';
 import { Repository } from '../repo';
 import { isFhirJsonContentType, sendResponse } from '../routes';
+import { getAuthenticatedContext } from '../../context';
 
 type SubjectType =
   | CareTeam
@@ -43,15 +44,14 @@ interface PlanDefinitionApplyParameters {
  * The operation converts a PlanDefinition to a RequestGroup.
  *
  * See: https://hl7.org/fhir/plandefinition-operation-apply.html
- * @param req The HTTP request.
- * @param res The HTTP response.
+ * @param req - The HTTP request.
+ * @param res - The HTTP response.
  */
 export async function planDefinitionApplyHandler(req: Request, res: Response): Promise<void> {
+  const ctx = getAuthenticatedContext();
   const { id } = req.params;
-  const repo = res.locals.repo as Repository;
-  const profile = res.locals.profile as Reference<ProfileResource>;
 
-  const planDefinition = await repo.readResource<PlanDefinition>('PlanDefinition', id);
+  const planDefinition = await ctx.repo.readResource<PlanDefinition>('PlanDefinition', id);
 
   const params = await validateParameters(req, res);
   if (!params) {
@@ -61,11 +61,11 @@ export async function planDefinitionApplyHandler(req: Request, res: Response): P
   const actions: RequestGroupAction[] = [];
   if (planDefinition.action) {
     for (const action of planDefinition.action) {
-      actions.push(await createAction(repo, profile, params, action));
+      actions.push(await createAction(ctx.repo, ctx.profile, params, action));
     }
   }
 
-  const requestGroup = await repo.createResource<RequestGroup>({
+  const requestGroup = await ctx.repo.createResource<RequestGroup>({
     resourceType: 'RequestGroup',
     instantiatesCanonical: [getReferenceString(planDefinition)],
     subject: createReference(params.subject) as Reference<Patient | Group>,
@@ -79,11 +79,12 @@ export async function planDefinitionApplyHandler(req: Request, res: Response): P
 /**
  * Parses and validates the operation parameters.
  * See: https://hl7.org/fhir/plandefinition-operation-apply.html
- * @param req The HTTP request.
- * @param res The HTTP response.
+ * @param req - The HTTP request.
+ * @param res - The HTTP response.
  * @returns The operation parameters if available; otherwise, undefined.
  */
 async function validateParameters(req: Request, res: Response): Promise<PlanDefinitionApplyParameters | undefined> {
+  const ctx = getAuthenticatedContext();
   if (!isFhirJsonContentType(req)) {
     res.status(400).send('Unsupported content type');
     return undefined;
@@ -101,8 +102,7 @@ async function validateParameters(req: Request, res: Response): Promise<PlanDefi
     return undefined;
   }
 
-  const repo = res.locals.repo as Repository;
-  const subject = await repo.readReference(subjectParam.valueReference as Reference<SubjectType>);
+  const subject = await ctx.repo.readReference(subjectParam.valueReference as Reference<SubjectType>);
 
   return {
     subject,
@@ -111,10 +111,10 @@ async function validateParameters(req: Request, res: Response): Promise<PlanDefi
 
 /**
  * Creates a Task and RequestGroup action for the given PlanDefinition action.
- * @param repo The repository configured for the current user.
- * @param requester The user who requested the plan definition.
- * @param params The apply operation parameters (subject, etc).
- * @param action The PlanDefinition action.
+ * @param repo - The repository configured for the current user.
+ * @param requester - The user who requested the plan definition.
+ * @param params - The apply operation parameters (subject, etc).
+ * @param action - The PlanDefinition action.
  * @returns The RequestGroup action.
  */
 async function createAction(
@@ -131,10 +131,10 @@ async function createAction(
 
 /**
  * Creates a Task and RequestGroup action to complete a Questionnaire.
- * @param repo The repository configured for the current user.
- * @param requester The user who requested the plan definition.
- * @param params The apply operation parameters (subject, etc).
- * @param action The PlanDefinition action.
+ * @param repo - The repository configured for the current user.
+ * @param requester - The user who requested the plan definition.
+ * @param params - The apply operation parameters (subject, etc).
+ * @param action - The PlanDefinition action.
  * @returns The RequestGroup action.
  */
 async function createQuestionnaireTask(
@@ -158,11 +158,11 @@ async function createQuestionnaireTask(
 
 /**
  * Creates a Task and RequestGroup action for a PlanDefinition action.
- * @param repo The repository configured for the current user.
- * @param requester The requester profile.
- * @param params The apply operation parameters (subject, etc).
- * @param action The PlanDefinition action.
- * @param input Optional input details.
+ * @param repo - The repository configured for the current user.
+ * @param requester - The requester profile.
+ * @param params - The apply operation parameters (subject, etc).
+ * @param action - The PlanDefinition action.
+ * @param input - Optional input details.
  * @returns The RequestGroup action.
  */
 async function createTask(

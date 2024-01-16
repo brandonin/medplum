@@ -1,10 +1,11 @@
 import { createStyles } from '@mantine/core';
 import { Bundle, Resource, ResourceType } from '@medplum/fhirtypes';
-import React, { useEffect, useState } from 'react';
+import { useMedplum } from '@medplum/react-hooks';
+import { useEffect, useState } from 'react';
 import { MedplumLink } from '../MedplumLink/MedplumLink';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
 import { ResourceBadge } from '../ResourceBadge/ResourceBadge';
 import { blame } from '../utils/blame';
+import { getTimeString, getVersionUrl } from './ResourceBlame.utils';
 
 const useStyles = createStyles((theme) => ({
   container: {
@@ -69,7 +70,7 @@ export interface ResourceBlameProps {
   id?: string;
 }
 
-export function ResourceBlame(props: ResourceBlameProps): JSX.Element {
+export function ResourceBlame(props: ResourceBlameProps): JSX.Element | null {
   const { classes } = useStyles();
   const medplum = useMedplum();
   const [value, setValue] = useState<Bundle | undefined>(props.history);
@@ -85,7 +86,13 @@ export function ResourceBlame(props: ResourceBlameProps): JSX.Element {
   }
 
   const resource = value.entry?.[0]?.resource as Resource;
+
+  if (!resource) {
+    return null;
+  }
+
   const table = blame(value);
+
   return (
     <div className={classes.container}>
       <table className={classes.root}>
@@ -114,43 +121,4 @@ export function ResourceBlame(props: ResourceBlameProps): JSX.Element {
       </table>
     </div>
   );
-}
-
-function getVersionUrl(resource: Resource, versionId: string): string {
-  return `/${resource.resourceType}/${resource.id}/_history/${versionId}`;
-}
-
-export function getTimeString(lastUpdated: string): string {
-  const seconds = Math.floor((Date.now() - Date.parse(lastUpdated)) / 1000);
-
-  const years = Math.floor(seconds / 31536000);
-  if (years > 0) {
-    return pluralizeTime(years, 'year');
-  }
-
-  const months = Math.floor(seconds / 2592000);
-  if (months > 0) {
-    return pluralizeTime(months, 'month');
-  }
-
-  const days = Math.floor(seconds / 86400);
-  if (days > 0) {
-    return pluralizeTime(days, 'day');
-  }
-
-  const hours = Math.floor(seconds / 3600);
-  if (hours > 0) {
-    return pluralizeTime(hours, 'hour');
-  }
-
-  const minutes = Math.floor(seconds / 60);
-  if (minutes > 0) {
-    return pluralizeTime(minutes, 'minute');
-  }
-
-  return pluralizeTime(seconds, 'second');
-}
-
-function pluralizeTime(count: number, noun: string): string {
-  return `${count} ${count === 1 ? noun : noun + 's'} ago`;
 }

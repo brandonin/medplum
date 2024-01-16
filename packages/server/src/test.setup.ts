@@ -1,6 +1,7 @@
 import { createReference, getReferenceString, ProfileResource, sleep } from '@medplum/core';
 import {
   AccessPolicy,
+  AsyncJob,
   Bundle,
   ClientApplication,
   Login,
@@ -16,12 +17,17 @@ import { inviteUser } from './admin/invite';
 import { systemRepo } from './fhir/repo';
 import { generateAccessToken } from './oauth/keys';
 import { tryLogin } from './oauth/utils';
+import { AuthenticatedRequestContext, requestContextStore } from './context';
 
-export async function createTestProject(options?: Partial<Project>): Promise<{
+export async function createTestProject(
+  projectOptions?: Partial<Project>,
+  membershipOptions?: Partial<ProjectMembership>
+): Promise<{
   project: Project;
   client: ClientApplication;
   membership: ProjectMembership;
 }> {
+  requestContextStore.enterWith(AuthenticatedRequestContext.system());
   const project = await systemRepo.createResource<Project>({
     resourceType: 'Project',
     name: 'Test Project',
@@ -36,7 +42,7 @@ export async function createTestProject(options?: Partial<Project>): Promise<{
         valueString: 'bar',
       },
     ],
-    ...options,
+    ...projectOptions,
   });
 
   const client = await systemRepo.createResource<ClientApplication>({
@@ -54,6 +60,7 @@ export async function createTestProject(options?: Partial<Project>): Promise<{
     user: createReference(client),
     profile: createReference(client),
     project: createReference(project),
+    ...membershipOptions,
   });
 
   return {
@@ -63,12 +70,18 @@ export async function createTestProject(options?: Partial<Project>): Promise<{
   };
 }
 
-export async function createTestClient(options?: Partial<Project>): Promise<ClientApplication> {
-  return (await createTestProject(options)).client;
+export async function createTestClient(
+  projectOptions?: Partial<Project>,
+  membershipOptions?: Partial<ProjectMembership>
+): Promise<ClientApplication> {
+  return (await createTestProject(projectOptions, membershipOptions)).client;
 }
 
-export async function initTestAuth(options?: Partial<Project>): Promise<string> {
-  const { client, membership } = await createTestProject(options);
+export async function initTestAuth(
+  projectOptions?: Partial<Project>,
+  membershipOptions?: Partial<ProjectMembership>
+): Promise<string> {
+  const { client, membership } = await createTestProject(projectOptions, membershipOptions);
   const scope = 'openid';
 
   const login = await systemRepo.createResource<Login>({
@@ -78,7 +91,7 @@ export async function initTestAuth(options?: Partial<Project>): Promise<string> 
     client: createReference(client),
     membership: createReference(membership),
     authTime: new Date().toISOString(),
-    superAdmin: options?.superAdmin,
+    superAdmin: projectOptions?.superAdmin,
     scope,
   });
 
@@ -96,6 +109,7 @@ export async function addTestUser(
   project: Project,
   accessPolicy?: AccessPolicy
 ): Promise<{ user: User; profile: ProfileResource; accessToken: string }> {
+  requestContextStore.enterWith(AuthenticatedRequestContext.system());
   if (accessPolicy) {
     accessPolicy = await systemRepo.createResource<AccessPolicy>({
       ...accessPolicy,
@@ -112,8 +126,10 @@ export async function addTestUser(
     resourceType: 'Practitioner',
     firstName: 'Bob',
     lastName: 'Jones',
-    accessPolicy: accessPolicy && createReference(accessPolicy),
     sendEmail: false,
+    membership: {
+      accessPolicy: accessPolicy && createReference(accessPolicy),
+    },
   });
 
   const login = await tryLogin({
@@ -137,8 +153,8 @@ export async function addTestUser(
 
 /**
  * Sets up the pwnedPassword mock to handle "Have I Been Pwned" requests.
- * @param pwnedPassword The pwnedPassword mock.
- * @param numPwns The mock value to return. Zero is a safe password.
+ * @param pwnedPassword - The pwnedPassword mock.
+ * @param numPwns - The mock value to return. Zero is a safe password.
  */
 export function setupPwnedPasswordMock(pwnedPassword: jest.Mock, numPwns: number): void {
   pwnedPassword.mockImplementation(async () => numPwns);
@@ -146,8 +162,8 @@ export function setupPwnedPasswordMock(pwnedPassword: jest.Mock, numPwns: number
 
 /**
  * Sets up the fetch mock to handle Recaptcha requests.
- * @param fetch The fetch mock.
- * @param success Whether the mock should return a successful response.
+ * @param fetch - The fetch mock.
+ * @param success - Whether the mock should return a successful response.
  */
 export function setupRecaptchaMock(fetch: jest.Mock, success: boolean): void {
   fetch.mockImplementation(() => ({
@@ -158,8 +174,8 @@ export function setupRecaptchaMock(fetch: jest.Mock, success: boolean): void {
 
 /**
  * Returns true if the resource is in an entry in the bundle.
- * @param bundle A bundle of resources.
- * @param resource The resource to search for.
+ * @param bundle - A bundle of resources.
+ * @param resource - The resource to search for.
  * @returns True if the resource is in the bundle.
  */
 export function bundleContains(bundle: Bundle, resource: Resource): boolean {
@@ -169,7 +185,7 @@ export function bundleContains(bundle: Bundle, resource: Resource): boolean {
 /**
  * Waits for a function to evaluate successfully.
  * Use this to wait for async behaviors without a handle.
- * @param fn Function to call.
+ * @param fn - Function to call.
  */
 export function waitFor(fn: () => Promise<void>): Promise<void> {
   return new Promise((resolve) => {
@@ -186,15 +202,19 @@ export function waitFor(fn: () => Promise<void>): Promise<void> {
   });
 }
 
-export async function waitForAsyncJob(contentLocation: string, app: Express, accessToken: string): Promise<void> {
+export async function waitForAsyncJob(contentLocation: string, app: Express, accessToken: string): Promise<AsyncJob> {
   for (let i = 0; i < 10; i++) {
     const res = await request(app)
       .get(new URL(contentLocation).pathname)
       .set('Authorization', 'Bearer ' + accessToken);
     if (res.status !== 202) {
-      return;
+      return res.body as AsyncJob;
     }
     await sleep(1000);
   }
   throw new Error('Async Job did not complete');
+}
+
+export function withTestContext<T>(fn: () => T): T {
+  return requestContextStore.run(AuthenticatedRequestContext.system(), fn);
 }

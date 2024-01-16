@@ -1,4 +1,4 @@
-import { Paper, Text, Title } from '@mantine/core';
+import { Box, Paper, Text, Title } from '@mantine/core';
 import { createReference, getDisplayString, getReferenceString } from '@medplum/core';
 import {
   Bundle,
@@ -9,7 +9,7 @@ import {
   Resource,
 } from '@medplum/fhirtypes';
 import { Document, Loading, MedplumLink, QuestionnaireForm, useMedplum } from '@medplum/react';
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import { PatientHeader } from './components/PatientHeader';
 import { ResourceHeader } from './components/ResourceHeader';
@@ -21,7 +21,7 @@ export function FormPage(): JSX.Element {
   const queryParams = Object.fromEntries(new URLSearchParams(location.search).entries()) as Record<string, string>;
   const subjectParam = queryParams.subject;
   const medplum = useMedplum();
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState(true);
   const [questionnaire, setQuestionnaire] = useState<Questionnaire | undefined>();
   const [subjectList, setSubjectList] = useState<string[] | undefined>();
   const [subject, setSubject] = useState<Resource | undefined>();
@@ -96,7 +96,7 @@ export function FormPage(): JSX.Element {
               Review your answers:
               <ul>
                 {result.map((response) => (
-                  <li>
+                  <li key={response.id}>
                     <MedplumLink to={response}>{getReferenceString(response)}</MedplumLink>
                   </li>
                 ))}
@@ -124,13 +124,15 @@ export function FormPage(): JSX.Element {
 
   return (
     <>
-      {patient && <PatientHeader patient={patient} />}
-      {subject && subject.resourceType !== 'Patient' && <ResourceHeader resource={subject} />}
-      <Paper p="xl" shadow="xs" radius={0}>
-        <Text>
-          {getDisplayString(questionnaire)}
-          {subjectList && subjectList.length > 1 && <>&nbsp;(for {subjectList.length} resources)</>}
-        </Text>
+      <Paper shadow="xs" radius={0}>
+        {patient && <PatientHeader patient={patient} />}
+        {subject && subject.resourceType !== 'Patient' && <ResourceHeader resource={subject} />}
+        <Box px="xl" py="md">
+          <Text>
+            {getDisplayString(questionnaire)}
+            {subjectList && subjectList.length > 1 && <>&nbsp;(for {subjectList.length} resources)</>}
+          </Text>
+        </Box>
       </Paper>
       <Document>
         <QuestionnaireForm

@@ -1,27 +1,32 @@
 import { SendEmailCommand, SESv2Client } from '@aws-sdk/client-sesv2';
-import { getReferenceString } from '@medplum/core';
-import { BundleEntry, ProjectMembership } from '@medplum/fhirtypes';
+import { ContentType, createReference, getReferenceString, normalizeErrorString } from '@medplum/core';
+import { BundleEntry, Practitioner, ProjectMembership } from '@medplum/fhirtypes';
+import { AwsClientStub, mockClient } from 'aws-sdk-client-mock';
+import 'aws-sdk-client-mock-jest';
 import { randomUUID } from 'crypto';
 import express from 'express';
 import { pwnedPassword } from 'hibp';
 import { simpleParser } from 'mailparser';
 import fetch from 'node-fetch';
+import { Readable } from 'stream';
 import request from 'supertest';
+
 import { initApp, shutdownApp } from '../app';
 import { registerNew } from '../auth/register';
 import { loadTestConfig } from '../config';
-import { addTestUser, initTestAuth, setupPwnedPasswordMock, setupRecaptchaMock } from '../test.setup';
+import { addTestUser, initTestAuth, setupPwnedPasswordMock, setupRecaptchaMock, withTestContext } from '../test.setup';
 
-jest.mock('@aws-sdk/client-sesv2');
 jest.mock('hibp');
 jest.mock('node-fetch');
 
 const app = express();
 
 describe('Admin Invite', () => {
+  let mockSESv2Client: AwsClientStub<SESv2Client>;
+
   beforeAll(async () => {
     const config = await loadTestConfig();
-    await initApp(app, config);
+    await withTestContext(() => initApp(app, config));
   });
 
   afterAll(async () => {
@@ -29,23 +34,30 @@ describe('Admin Invite', () => {
   });
 
   beforeEach(() => {
-    (SESv2Client as unknown as jest.Mock).mockClear();
-    (SendEmailCommand as unknown as jest.Mock).mockClear();
+    mockSESv2Client = mockClient(SESv2Client);
+    mockSESv2Client.on(SendEmailCommand).resolves({ MessageId: 'ID_TEST_123' });
+
     (fetch as unknown as jest.Mock).mockClear();
     (pwnedPassword as unknown as jest.Mock).mockClear();
     setupPwnedPasswordMock(pwnedPassword as unknown as jest.Mock, 0);
     setupRecaptchaMock(fetch as unknown as jest.Mock, true);
   });
 
+  afterEach(() => {
+    mockSESv2Client.restore();
+  });
+
   test('New user to project', async () => {
     // First, Alice creates a project
-    const { project, accessToken } = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const { project, accessToken } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
 
     // Second, Alice invites Bob to the project
     const bobEmail = `bob${randomUUID()}@example.com`;
@@ -60,35 +72,41 @@ describe('Admin Invite', () => {
       });
 
     expect(res2.status).toBe(200);
-    expect(SESv2Client).toHaveBeenCalledTimes(1);
-    expect(SendEmailCommand).toHaveBeenCalledTimes(1);
+    expect(mockSESv2Client.send.callCount).toBe(1);
+    expect(mockSESv2Client).toHaveReceivedCommandTimes(SendEmailCommand, 1);
 
-    const args = (SendEmailCommand as unknown as jest.Mock).mock.calls[0][0];
-    expect(args.Destination.ToAddresses[0]).toBe(bobEmail);
+    const inputArgs = mockSESv2Client.commandCalls(SendEmailCommand)[0].args[0].input;
 
-    const parsed = await simpleParser(args.Content.Raw.Data);
+    expect(inputArgs?.Destination?.ToAddresses?.[0] ?? '').toBe(bobEmail);
+
+    const parsed = await simpleParser(Readable.from(inputArgs?.Content?.Raw?.Data ?? ''));
+
     expect(parsed.subject).toBe('Welcome to Medplum');
   });
 
   test('Existing user to project', async () => {
     // First, Alice creates a project
-    const aliceRegistration = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const aliceRegistration = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
 
     // Second, Bob creates a project
     const bobEmail = `bob${randomUUID()}@example.com`;
-    await registerNew({
-      firstName: 'Bob',
-      lastName: 'Jones',
-      projectName: 'Bob Project',
-      email: bobEmail,
-      password: 'password!@#',
-    });
+    await withTestContext(() =>
+      registerNew({
+        firstName: 'Bob',
+        lastName: 'Jones',
+        projectName: 'Bob Project',
+        email: bobEmail,
+        password: 'password!@#',
+      })
+    );
 
     // Third, Alice invites Bob to the project
     // Because Bob already has an account, no emails should be sent
@@ -103,25 +121,28 @@ describe('Admin Invite', () => {
       });
 
     expect(res3.status).toBe(200);
-    expect(SESv2Client).toHaveBeenCalledTimes(1);
-    expect(SendEmailCommand).toHaveBeenCalledTimes(1);
+    expect(mockSESv2Client.send.callCount).toBe(1);
+    expect(mockSESv2Client).toHaveReceivedCommandTimes(SendEmailCommand, 1);
 
-    const args = (SendEmailCommand as unknown as jest.Mock).mock.calls[0][0];
-    expect(args.Destination.ToAddresses[0]).toBe(bobEmail);
+    const inputArgs = mockSESv2Client.commandCalls(SendEmailCommand)[0].args[0].input;
 
-    const parsed = await simpleParser(args.Content.Raw.Data);
+    expect(inputArgs?.Destination?.ToAddresses?.[0] ?? '').toBe(bobEmail);
+
+    const parsed = await simpleParser(Readable.from(inputArgs?.Content?.Raw?.Data ?? ''));
     expect(parsed.subject).toBe('Medplum: Welcome to Alice Project');
   });
 
   test('Existing practitioner to project', async () => {
     // First, Alice creates a project
-    const { project, accessToken } = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const { project, accessToken } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
 
     // Second, Alice creates a Practitioner resource
     const bobEmail = `bob${randomUUID()}@example.com`;
@@ -154,15 +175,62 @@ describe('Admin Invite', () => {
     expect(res3.body.profile.reference).toEqual(getReferenceString(res2.body));
   });
 
+  test('Specified practitioner to project', async () => {
+    // First, Alice creates a project
+    const { project, accessToken } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
+
+    // Second, Alice creates a Practitioner resource
+    const bobEmail = `bob${randomUUID()}@example.com`;
+    const res2 = await request(app)
+      .post('/fhir/R4/Practitioner')
+      .set('Authorization', 'Bearer ' + accessToken)
+      .type('json')
+      .send({
+        resourceType: 'Practitioner',
+        name: [{ given: ['Bob'], family: 'Jones' }],
+      });
+    expect(res2.status).toBe(201);
+    expect(res2.body.id).toBeDefined();
+
+    // Third, Alice invites Bob to the project
+    // Alice specifies the practitioner in the membership.
+    // This should work, even though the practitioner does not have an email.
+    const res3 = await request(app)
+      .post('/admin/projects/' + project.id + '/invite')
+      .set('Authorization', 'Bearer ' + accessToken)
+      .send({
+        resourceType: 'Practitioner',
+        firstName: 'Bob',
+        lastName: 'Jones',
+        email: bobEmail,
+        membership: {
+          profile: createReference(res2.body as Practitioner),
+        },
+      });
+
+    expect(res3.status).toBe(200);
+    expect(res3.body.profile.reference).toEqual(getReferenceString(res2.body));
+  });
+
   test('Access denied', async () => {
     // First, Alice creates a project
-    const aliceRegistration = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const aliceRegistration = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
 
     // Second, Alice invites Bob to project
     const bobRegistration = await addTestUser(aliceRegistration.project);
@@ -181,19 +249,21 @@ describe('Admin Invite', () => {
       });
 
     expect(res3.status).toBe(403);
-    expect(SESv2Client).not.toHaveBeenCalled();
-    expect(SendEmailCommand).not.toHaveBeenCalled();
+    expect(mockSESv2Client.send.callCount).toBe(0);
+    expect(mockSESv2Client).not.toHaveReceivedCommand(SendEmailCommand);
   });
 
   test('Input validation', async () => {
     // First, Alice creates a project
-    const { project, accessToken } = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const { project, accessToken } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
 
     // Second, Alice invites Bob to the project
     // But she forgets his email address
@@ -210,19 +280,21 @@ describe('Admin Invite', () => {
 
     expect(res2.status).toBe(400);
     expect(res2.body.issue).toBeDefined();
-    expect(SESv2Client).not.toHaveBeenCalled();
-    expect(SendEmailCommand).not.toHaveBeenCalled();
+    expect(mockSESv2Client.send.callCount).toBe(0);
+    expect(mockSESv2Client).not.toHaveReceivedCommand(SendEmailCommand);
   });
 
   test('Do not send email', async () => {
     // First, Alice creates a project
-    const { project, accessToken } = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const { project, accessToken } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
 
     // Second, Alice invites Bob to the project
     const bobEmail = `bob${randomUUID()}@example.com`;
@@ -238,19 +310,21 @@ describe('Admin Invite', () => {
       });
 
     expect(res2.status).toBe(200);
-    expect(SESv2Client).toHaveBeenCalledTimes(0);
-    expect(SendEmailCommand).toHaveBeenCalledTimes(0);
+    expect(mockSESv2Client.send.callCount).toBe(0);
+    expect(mockSESv2Client).not.toHaveReceivedCommand(SendEmailCommand);
   });
 
   test('Invite by externalId', async () => {
     // First, Alice creates a project
-    const { project, accessToken } = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const { project, accessToken } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
 
     // Second, Alice invites Bob to the project
     const bobSub = randomUUID();
@@ -267,19 +341,21 @@ describe('Admin Invite', () => {
     expect(res2.status).toBe(200);
     expect(res2.body.profile.reference).toContain('Patient/');
     expect(res2.body.admin).toBe(undefined);
-    expect(SESv2Client).toHaveBeenCalledTimes(0);
-    expect(SendEmailCommand).toHaveBeenCalledTimes(0);
+    expect(mockSESv2Client.send.callCount).toBe(0);
+    expect(mockSESv2Client).not.toHaveReceivedCommand(SendEmailCommand);
   });
 
   test('Reuse deleted externalId', async () => {
     // First, Alice creates a project
-    const { project, accessToken } = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const { project, accessToken } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
 
     // Alice invites Bob to the project
     const bobSub = randomUUID();
@@ -321,13 +397,15 @@ describe('Admin Invite', () => {
 
   test('Invite as client', async () => {
     // First, Alice creates a project
-    const { project, accessToken, client } = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const { project, accessToken, client } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
 
     // Get the client membership
     const res2 = await request(app)
@@ -362,7 +440,7 @@ describe('Admin Invite', () => {
     const res8 = await request(app)
       .post('/admin/projects/' + project.id + '/invite')
       .set('Authorization', 'Basic ' + Buffer.from(client.id + ':' + client.secret).toString('base64'))
-      .set('Content-Type', 'application/json')
+      .set('Content-Type', ContentType.JSON)
       .send({
         resourceType: 'Patient',
         firstName: 'Bob',
@@ -375,13 +453,15 @@ describe('Admin Invite', () => {
 
   test('Invite user as admin', async () => {
     // First, Alice creates a project
-    const { project, accessToken } = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const { project, accessToken } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
 
     // Second, Alice invites Bob to the project
     const bobEmail = `bob${randomUUID()}@example.com`;
@@ -397,19 +477,21 @@ describe('Admin Invite', () => {
       });
     expect(res2.status).toBe(200);
     expect(res2.body.admin).toBe(true);
-    expect(SESv2Client).toHaveBeenCalledTimes(1);
-    expect(SendEmailCommand).toHaveBeenCalledTimes(1);
+    expect(mockSESv2Client.send.callCount).toBe(1);
+    expect(mockSESv2Client).toHaveReceivedCommandTimes(SendEmailCommand, 1);
   });
 
   test('Invite user with admin flag as false', async () => {
     // First, Alice creates a project
-    const { project, accessToken } = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const { project, accessToken } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
 
     // Second, Alice invites Bob to the project
     const bobEmail = `bob${randomUUID()}@example.com`;
@@ -425,24 +507,23 @@ describe('Admin Invite', () => {
       });
     expect(res2.status).toBe(200);
     expect(res2.body.admin).toBe(false);
-    expect(SESv2Client).toHaveBeenCalledTimes(1);
-    expect(SendEmailCommand).toHaveBeenCalledTimes(1);
+    expect(mockSESv2Client.send.callCount).toBe(1);
+    expect(mockSESv2Client).toHaveReceivedCommandTimes(SendEmailCommand, 1);
   });
 
   test('Email sending error due to SES not being set up', async () => {
-    // AWS is mocked to not be set up
-    (SESv2Client as unknown as jest.Mock).mockImplementationOnce(() => {
-      throw new Error('error');
-    });
+    mockSESv2Client.rejects('error');
 
     // First, Alice creates a project
-    const aliceRegistration = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const aliceRegistration = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
     const bobEmail = `bob${randomUUID()}@example.com`;
 
     // Alice invites Bob. Under normal circumstances the email would be sent
@@ -456,22 +537,21 @@ describe('Admin Invite', () => {
         email: bobEmail,
       });
     expect(res2.status).toBe(200);
-    expect(SESv2Client).toHaveBeenCalledTimes(1);
-    expect(res2.body.error.outcome.issue?.[0].details.text).toBe(
-      'Could not send email. Make sure you have AWS SES set up.'
-    );
-    expect(SendEmailCommand).not.toHaveBeenCalled();
+    expect(mockSESv2Client.send.callCount).toBe(1);
+    expect(res2.body.issue?.[0].details.text).toBe('Could not send email. Make sure you have AWS SES set up.');
   });
 
   test('Super admin invite to different project', async () => {
     // First, Alice creates a project
-    const aliceRegistration = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const aliceRegistration = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
 
     // As a super admin, invite Bob to Alice's project
     const superAdminAccessToken = await initTestAuth({ superAdmin: true });
@@ -491,13 +571,15 @@ describe('Admin Invite', () => {
 
   test('Convert capitalized email to lower case', async () => {
     // First, Alice creates a project
-    const { project, accessToken } = await registerNew({
-      firstName: 'Alice',
-      lastName: 'Smith',
-      projectName: 'Alice Project',
-      email: `alice${randomUUID()}@example.com`,
-      password: 'password!@#',
-    });
+    const { project, accessToken } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
 
     // Second, Alice invites Bob to the project
     const upperBobEmail = `BOB${randomUUID()}@example.com`;
@@ -517,13 +599,85 @@ describe('Admin Invite', () => {
       console.log(JSON.stringify(res2.body, null, 2));
     }
     expect(res2.body.user.display).toBe(lowerBobEmail);
-    expect(SESv2Client).toHaveBeenCalledTimes(1);
-    expect(SendEmailCommand).toHaveBeenCalledTimes(1);
+    expect(mockSESv2Client.send.callCount).toBe(1);
+    expect(mockSESv2Client).toHaveReceivedCommandTimes(SendEmailCommand, 1);
 
-    const args = (SendEmailCommand as unknown as jest.Mock).mock.calls[0][0];
-    expect(args.Destination.ToAddresses[0]).toBe(lowerBobEmail);
+    const inputArgs = mockSESv2Client.commandCalls(SendEmailCommand)[0].args[0].input;
 
-    const parsed = await simpleParser(args.Content.Raw.Data);
+    expect(inputArgs?.Destination?.ToAddresses?.[0] ?? '').toBe(lowerBobEmail);
+
+    const parsed = await simpleParser(Readable.from(inputArgs?.Content?.Raw?.Data ?? ''));
     expect(parsed.subject).toBe('Welcome to Medplum');
+  });
+
+  test('Invite user with existing membership', async () => {
+    const { project, accessToken, profile } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
+
+    // Invite Bob first time - should succeed
+    const bobEmail = `bob${randomUUID()}@example.com`;
+    const res2 = await request(app)
+      .post('/admin/projects/' + project.id + '/invite')
+      .set('Authorization', 'Bearer ' + accessToken)
+      .send({
+        resourceType: 'Practitioner',
+        firstName: 'Bob',
+        lastName: 'Jones',
+        email: bobEmail,
+      });
+    expect(res2.status).toBe(200);
+    expect(res2.body.resourceType).toBe('ProjectMembership');
+
+    // Invite Bob second time - should fail
+    const res3 = await request(app)
+      .post('/admin/projects/' + project.id + '/invite')
+      .set('Authorization', 'Bearer ' + accessToken)
+      .send({
+        resourceType: 'Practitioner',
+        firstName: 'Bob',
+        lastName: 'Jones',
+        email: bobEmail,
+      });
+    expect(res3.status).toBe(400);
+    expect(normalizeErrorString(res3.body)).toEqual('User is already a member of this project');
+
+    // Invite Bob third time with "upsert = true" - should succeed
+    const res4 = await request(app)
+      .post('/admin/projects/' + project.id + '/invite')
+      .set('Authorization', 'Bearer ' + accessToken)
+      .send({
+        resourceType: 'Practitioner',
+        firstName: 'Bob',
+        lastName: 'Jones',
+        email: bobEmail,
+        upsert: true,
+      });
+    expect(res4.status).toBe(200);
+    expect(res4.body.resourceType).toBe('ProjectMembership');
+    expect(res4.body.id).toEqual(res2.body.id);
+
+    // Invite Bob again with different profiile - should fail
+    const res5 = await request(app)
+      .post('/admin/projects/' + project.id + '/invite')
+      .set('Authorization', 'Bearer ' + accessToken)
+      .send({
+        resourceType: 'Practitioner',
+        firstName: 'Bob',
+        lastName: 'Jones',
+        email: bobEmail,
+        upsert: true,
+        membership: { profile: createReference(profile) },
+      });
+    expect(res5.status).toBe(400);
+    expect(normalizeErrorString(res5.body)).toEqual(
+      'User is already a member of this project with a different profile'
+    );
   });
 });

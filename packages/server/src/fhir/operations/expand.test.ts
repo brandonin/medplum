@@ -1,10 +1,11 @@
-import { OperationOutcome } from '@medplum/fhirtypes';
+import { ContentType, LOINC, SNOMED } from '@medplum/core';
+import { OperationOutcome, ValueSet, ValueSetExpansionContains } from '@medplum/fhirtypes';
 import { randomUUID } from 'crypto';
 import express from 'express';
 import request from 'supertest';
 import { initApp, shutdownApp } from '../../app';
 import { loadTestConfig } from '../../config';
-import { initTestAuth } from '../../test.setup';
+import { initTestAuth, withTestContext } from '../../test.setup';
 import { systemRepo } from '../repo';
 
 const app = express();
@@ -39,11 +40,13 @@ describe('Expand', () => {
 
   test('No systems', async () => {
     const url = 'https://example.com/ValueSet/' + randomUUID();
-    await systemRepo.createResource({
-      resourceType: 'ValueSet',
-      status: 'active',
-      url,
-    });
+    await withTestContext(() =>
+      systemRepo.createResource({
+        resourceType: 'ValueSet',
+        status: 'active',
+        url,
+      })
+    );
     const res = await request(app)
       .get(`/fhir/R4/ValueSet/$expand?url=${encodeURIComponent(url)}`)
       .set('Authorization', 'Bearer ' + accessToken);
@@ -57,7 +60,7 @@ describe('Expand', () => {
       .set('Authorization', 'Bearer ' + accessToken);
     expect(res.status).toBe(200);
     expect(res.body.expansion.contains.length).toBe(10);
-    expect(res.body.expansion.contains[0].system).toBe('http://loinc.org');
+    expect(res.body.expansion.contains[0].system).toBe(LOINC);
   });
 
   test('Invalid filter', async () => {
@@ -81,7 +84,7 @@ describe('Expand', () => {
       )
       .set('Authorization', 'Bearer ' + accessToken);
     expect(res.status).toBe(200);
-    expect(res.body.expansion.contains[0].system).toBe('http://loinc.org');
+    expect(res.body.expansion.contains[0].system).toBe(LOINC);
     expect(res.body.expansion.contains[0].display).toMatch(/left/i);
   });
 
@@ -96,7 +99,7 @@ describe('Expand', () => {
     expect(res.status).toBe(200);
     expect(res.body.expansion.offset).toBe(1);
     expect(res.body.expansion.contains.length).toBe(1);
-    expect(res.body.expansion.contains[0].system).toBe('http://loinc.org');
+    expect(res.body.expansion.contains[0].system).toBe(LOINC);
     expect(res.body.expansion.contains[0].display).toMatch(/left/i);
   });
 
@@ -159,7 +162,7 @@ describe('Expand', () => {
         offset: 0,
         contains: [
           {
-            system: 'http://snomed.info/sct',
+            system: SNOMED,
             code: '363679005',
             display: 'Imaging',
           },
@@ -209,7 +212,87 @@ describe('Expand', () => {
       )
       .set('Authorization', 'Bearer ' + accessToken);
     expect(res.status).toBe(200);
-    expect(res.body.expansion.contains[0].system).toBe('http://loinc.org');
+    expect(res.body.expansion.contains[0].system).toBe(LOINC);
     expect(res.body.expansion.contains[0].display).toMatch(/left/i);
+  });
+
+  test('Handle empty string after punctuation', async () => {
+    const res = await request(app)
+      .get(
+        `/fhir/R4/ValueSet/$expand?url=${encodeURIComponent(
+          'http://hl7.org/fhir/ValueSet/observation-codes'
+        )}&filter=${encodeURIComponent('[')}`
+      )
+      .set('Authorization', 'Bearer ' + accessToken);
+    expect(res.status).toBe(200);
+  });
+
+  test('No null `display` field', async () => {
+    const res = await request(app)
+      .get(`/fhir/R4/ValueSet/$expand?url=${encodeURIComponent('http://hl7.org/fhir/ValueSet/observation-codes')}`)
+      .set('Authorization', 'Bearer ' + accessToken);
+    expect(res.status).toBe(200);
+
+    const body = res.body as ValueSet;
+    expect(body).toBeDefined();
+
+    let foundNullDisplay = false;
+    const contains = body.expansion?.contains;
+    expect(contains).toBeDefined();
+    expect(contains?.length).toBeGreaterThan(0);
+    for (const code of contains as ValueSetExpansionContains[]) {
+      if (code.display && code.display === null) {
+        foundNullDisplay = true;
+        break;
+      }
+    }
+
+    expect(foundNullDisplay).toBe(false);
+  });
+
+  test('User uploaded ValueSet', async () => {
+    const res1 = await request(app)
+      .post(`/fhir/R4/ValueSet`)
+      .set('Authorization', 'Bearer ' + accessToken)
+      .set('Content-Type', ContentType.FHIR_JSON)
+      .send({
+        resourceType: 'ValueSet',
+        status: 'active',
+        url: 'https://example.com/fhir/ValueSet/fruits',
+        expansion: {
+          timestamp: '2023-09-13T23:24:00.000Z',
+        },
+        compose: {
+          include: [
+            {
+              system: 'http://example.com/fruits',
+              concept: [
+                {
+                  code: 'apple',
+                  display: 'Apple',
+                },
+                {
+                  code: 'banana',
+                  display: 'Banana',
+                },
+                {
+                  code: 'cherry',
+                  display: 'Cherry',
+                },
+              ],
+            },
+          ],
+        },
+      });
+    expect(res1.status).toBe(201);
+
+    const res2 = await request(app)
+      .get(
+        `/fhir/R4/ValueSet/$expand?url=${encodeURIComponent('https://example.com/fhir/ValueSet/fruits')}&filter=apple`
+      )
+      .set('Authorization', 'Bearer ' + accessToken);
+    expect(res2.status).toBe(200);
+    expect(res2.body.expansion.contains[0].system).toBe('http://example.com/fruits');
+    expect(res2.body.expansion.contains[0].display).toMatch(/apple/i);
   });
 });

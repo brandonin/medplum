@@ -1,6 +1,5 @@
 import { Blockquote, createStyles, Stack } from '@mantine/core';
 import { Annotation } from '@medplum/fhirtypes';
-import React from 'react';
 
 const useStyles = createStyles((theme) => ({
   noteBody: { fontSize: theme.fontSizes.sm },
@@ -21,10 +20,10 @@ export function NoteDisplay({ value }: NoteDisplayProps): JSX.Element | null {
   return (
     <Stack justify="flex-start" spacing="xs">
       {value.map(
-        (note, index) =>
+        (note) =>
           note.text && (
             <Blockquote
-              key={`note-${index}`}
+              key={`note-${note.text}`}
               classNames={{ cite: classes.noteCite, body: classes.noteBody, root: classes.noteRoot }}
               cite={note.authorReference?.display || note.authorString}
               icon={null}

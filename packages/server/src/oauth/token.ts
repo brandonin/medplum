@@ -1,22 +1,28 @@
 import {
-  createReference,
-  normalizeErrorString,
+  ContentType,
+  OAuthClientAssertionType,
   OAuthGrantType,
   OAuthTokenType,
   Operator,
-  parseJWTPayload,
   ProfileResource,
+  createReference,
+  getStatus,
+  isJwt,
+  normalizeErrorString,
+  normalizeOperationOutcome,
+  parseJWTPayload,
   resolveId,
 } from '@medplum/core';
 import { ClientApplication, Login, Project, ProjectMembership, Reference } from '@medplum/fhirtypes';
 import { createHash, randomUUID } from 'crypto';
 import { Request, RequestHandler, Response } from 'express';
-import { createRemoteJWKSet, jwtVerify, JWTVerifyOptions } from 'jose';
+import { JWTVerifyOptions, createRemoteJWKSet, jwtVerify } from 'jose';
 import { asyncWrap } from '../async';
 import { getProjectIdByClientId } from '../auth/utils';
 import { getConfig } from '../config';
 import { systemRepo } from '../fhir/repo';
-import { generateSecret, MedplumRefreshTokenClaims, verifyJwt } from './keys';
+import { getTopicForUser } from '../fhircast/utils';
+import { MedplumRefreshTokenClaims, generateSecret, verifyJwt } from './keys';
 import {
   getAuthTokens,
   getClient,
@@ -29,6 +35,7 @@ import {
 } from './utils';
 
 type ClientIdAndSecret = { error?: string; clientId?: string; clientSecret?: string };
+type FhircastProps = { 'hub.topic': string; 'hub.url': string };
 
 /**
  * Handles the OAuth/OpenID Token Endpoint.
@@ -41,7 +48,7 @@ type ClientIdAndSecret = { error?: string; clientId?: string; clientSecret?: str
  * See: https://openid.net/specs/openid-connect-core-1_0.html#TokenEndpoint
  */
 export const tokenHandler: RequestHandler = asyncWrap(async (req: Request, res: Response) => {
-  if (!req.is('application/x-www-form-urlencoded')) {
+  if (!req.is(ContentType.FORM_URL_ENCODED)) {
     res.status(400).send('Unsupported content type');
     return;
   }
@@ -73,8 +80,8 @@ export const tokenHandler: RequestHandler = asyncWrap(async (req: Request, res: 
 /**
  * Handles the "Client Credentials" OAuth flow.
  * See: https://datatracker.ietf.org/doc/html/rfc6749#section-4.4
- * @param req The HTTP request.
- * @param res The HTTP response.
+ * @param req - The HTTP request.
+ * @param res - The HTTP response.
  */
 async function handleClientCredentials(req: Request, res: Response): Promise<void> {
   const { clientId, clientSecret, error } = await getClientIdAndSecret(req);
@@ -97,6 +104,11 @@ async function handleClientCredentials(req: Request, res: Response): Promise<voi
   try {
     client = await systemRepo.readResource<ClientApplication>('ClientApplication', clientId);
   } catch (err) {
+    sendTokenError(res, 'invalid_request', 'Invalid client');
+    return;
+  }
+
+  if (client.status && client.status !== 'active') {
     sendTokenError(res, 'invalid_request', 'Invalid client');
     return;
   }
@@ -132,8 +144,8 @@ async function handleClientCredentials(req: Request, res: Response): Promise<voi
 /**
  * Handles the "Authorization Code Grant" flow.
  * See: https://datatracker.ietf.org/doc/html/rfc6749#section-4.1
- * @param req The HTTP request.
- * @param res The HTTP response.
+ * @param req - The HTTP request.
+ * @param res - The HTTP response.
  */
 async function handleAuthorizationCode(req: Request, res: Response): Promise<void> {
   const { clientId, clientSecret, error } = await getClientIdAndSecret(req);
@@ -226,8 +238,8 @@ async function handleAuthorizationCode(req: Request, res: Response): Promise<voi
 /**
  * Handles the "Refresh" flow.
  * See: https://datatracker.ietf.org/doc/html/rfc6749#section-6
- * @param req The HTTP request.
- * @param res The HTTP response.
+ * @param req - The HTTP request.
+ * @param res - The HTTP response.
  */
 async function handleRefreshToken(req: Request, res: Response): Promise<void> {
   const refreshToken = req.body.refresh_token;
@@ -302,8 +314,8 @@ async function handleRefreshToken(req: Request, res: Response): Promise<void> {
 /**
  * Handles the "Exchange" flow.
  * See: https://datatracker.ietf.org/doc/html/rfc8693
- * @param req The HTTP request.
- * @param res The HTTP response.
+ * @param req - The HTTP request.
+ * @param res - The HTTP response.
  * @returns Promise to complete.
  */
 async function handleTokenExchange(req: Request, res: Response): Promise<void> {
@@ -313,11 +325,11 @@ async function handleTokenExchange(req: Request, res: Response): Promise<void> {
 /**
  * Exchanges an existing token for a new set of tokens.
  * See: https://datatracker.ietf.org/doc/html/rfc8693
- * @param req The HTTP request.
- * @param res The HTTP response.
- * @param clientId The client application ID.
- * @param subjectToken The subject token. Only access tokens are currently supported.
- * @param subjectTokenType The subject token type as defined in Section 3.  Only "urn:ietf:params:oauth:token-type:access_token" is currently supported.
+ * @param req - The HTTP request.
+ * @param res - The HTTP response.
+ * @param clientId - The client application ID.
+ * @param subjectToken - The subject token. Only access tokens are currently supported.
+ * @param subjectTokenType - The subject token type as defined in Section 3.  Only "urn:ietf:params:oauth:token-type:access_token" is currently supported.
  */
 export async function exchangeExternalAuthToken(
   req: Request,
@@ -352,8 +364,9 @@ export async function exchangeExternalAuthToken(
   let userInfo;
   try {
     userInfo = await getExternalUserInfo(idp, subjectToken);
-  } catch (err) {
-    sendTokenError(res, 'invalid_request', normalizeErrorString(err));
+  } catch (err: any) {
+    const outcome = normalizeOperationOutcome(err);
+    sendTokenError(res, 'invalid_request', normalizeErrorString(err), getStatus(outcome));
     return;
   }
 
@@ -393,7 +406,7 @@ export async function exchangeExternalAuthToken(
  * 3. Form body (client_secret_post)
  *
  * See SMART "token_endpoint_auth_methods_supported"
- * @param req The HTTP request.
+ * @param req - The HTTP request.
  * @returns The client ID and secret on success, or an error message on failure.
  */
 async function getClientIdAndSecret(req: Request): Promise<ClientIdAndSecret> {
@@ -427,13 +440,20 @@ async function getClientIdAndSecret(req: Request): Promise<ClientIdAndSecret> {
  * 2. https://www.hl7.org/fhir/smart-app-launch/example-backend-services.html#step-2-discovery
  * 3. https://docs.oracle.com/en/cloud/get-started/subscriptions-cloud/csimg/obtaining-access-token-using-self-signed-client-assertion.html
  * 4. https://darutk.medium.com/oauth-2-0-client-authentication-4b5f929305d4
- * @param clientAssertiontype The client assertion type.
- * @param clientAssertion The client assertion JWT.
+ * @param clientAssertionType - The client assertion type.
+ * @param clientAssertion - The client assertion JWT.
  * @returns The parsed client ID and secret on success, or an error message on failure.
  */
-async function parseClientAssertion(clientAssertiontype: string, clientAssertion: string): Promise<ClientIdAndSecret> {
-  if (clientAssertiontype !== 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer') {
+async function parseClientAssertion(
+  clientAssertionType: OAuthClientAssertionType,
+  clientAssertion: string
+): Promise<ClientIdAndSecret> {
+  if (clientAssertionType !== OAuthClientAssertionType.JwtBearer) {
     return { error: 'Unsupported client assertion type' };
+  }
+
+  if (!clientAssertion || !isJwt(clientAssertion)) {
+    return { error: 'Invalid client assertion' };
   }
 
   const { tokenUrl } = getConfig();
@@ -485,7 +505,7 @@ async function parseClientAssertion(clientAssertiontype: string, clientAssertion
 
 /**
  * Tries to parse the client ID and secret from the Authorization header.
- * @param authHeader The Authorizaiton header string.
+ * @param authHeader - The Authorizaiton header string.
  * @returns Client ID and secret on success, or an error message on failure.
  */
 async function parseAuthorizationHeader(authHeader: string): Promise<ClientIdAndSecret> {
@@ -520,9 +540,9 @@ async function validateClientIdAndSecret(
 
 /**
  * Sends a successful token response.
- * @param res The HTTP response.
- * @param login The user login.
- * @param membership The project membership.
+ * @param res - The HTTP response.
+ * @param login - The user login.
+ * @param membership - The project membership.
  */
 async function sendTokenResponse(res: Response, login: Login, membership: ProjectMembership): Promise<void> {
   const config = getConfig();
@@ -540,6 +560,14 @@ async function sendTokenResponse(res: Response, login: Login, membership: Projec
     patient = membership.profile.reference.replace('Patient/', '');
   }
 
+  const fhircastProps = {} as FhircastProps;
+  if (login.scope?.includes('fhircast/')) {
+    const userId = resolveId(login.user) as string;
+    const topic = await getTopicForUser(userId);
+    fhircastProps['hub.url'] = config.baseUrl + 'fhircast/STU3/'; // TODO: Figure out how to handle the split between STU2 and STU3...
+    fhircastProps['hub.topic'] = topic;
+  }
+
   res.status(200).json({
     token_type: 'Bearer',
     expires_in: 3600,
@@ -553,18 +581,20 @@ async function sendTokenResponse(res: Response, login: Login, membership: Projec
     encounter,
     smart_style_url: config.baseUrl + 'fhir/R4/.well-known/smart-styles.json',
     need_patient_banner: !!patient,
+    ...fhircastProps, // Spreads no props when FHIRcast scopes not present
   });
 }
 
 /**
  * Sends an OAuth2 response.
- * @param res The HTTP response.
- * @param error The error code.  See: https://datatracker.ietf.org/doc/html/rfc6749#appendix-A.7
- * @param description The error description.  See: https://datatracker.ietf.org/doc/html/rfc6749#appendix-A.8
+ * @param res - The HTTP response.
+ * @param error - The error code.  See: https://datatracker.ietf.org/doc/html/rfc6749#appendix-A.7
+ * @param description - The error description.  See: https://datatracker.ietf.org/doc/html/rfc6749#appendix-A.8
+ * @param status - The HTTP status code.
  * @returns Reference to the HTTP response.
  */
-function sendTokenError(res: Response, error: string, description?: string): Response {
-  return res.status(400).json({
+function sendTokenError(res: Response, error: string, description?: string, status = 400): Response {
+  return res.status(status).json({
     error,
     error_description: description,
   });
@@ -572,9 +602,9 @@ function sendTokenError(res: Response, error: string, description?: string): Res
 
 /**
  * Verifies the code challenge and verifier.
- * @param challenge The code_challenge from the authorization.
- * @param method The code_challenge_method from the authorization.
- * @param verifier The code_verifier from the token request.
+ * @param challenge - The code_challenge from the authorization.
+ * @param method - The code_challenge_method from the authorization.
+ * @param verifier - The code_verifier from the token request.
  * @returns True if the verifier succeeds; false otherwise.
  */
 function verifyCode(challenge: string, method: string, verifier: string): boolean {
@@ -594,7 +624,7 @@ function verifyCode(challenge: string, method: string, verifier: string): boolea
  * The details around '+', '/', and '=' are important for compatibility.
  * See: https://auth0.com/docs/flows/call-your-api-using-the-authorization-code-flow-with-pkce
  * See: packages/client/src/crypto.ts
- * @param code The input code.
+ * @param code - The input code.
  * @returns The base64-url-encoded SHA256 hash.
  */
 export function hashCode(code: string): string {

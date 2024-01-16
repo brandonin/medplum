@@ -1,4 +1,3 @@
-import React from 'react';
 import { Route, Routes } from 'react-router-dom';
 import { BatchPage } from './BatchPage';
 import { BulkAppPage } from './BulkAppPage';
@@ -27,6 +26,7 @@ import { ProjectPage } from './admin/ProjectPage';
 import { SecretsPage } from './admin/SecretsPage';
 import { SitesPage } from './admin/SitesPage';
 import { SuperAdminPage } from './admin/SuperAdminPage';
+import { ProjectAdminConfigPage } from './admin/ProjectAdminConfigPage';
 import { UsersPage } from './admin/UsersPage';
 import { AssaysPage } from './lab/AssaysPage';
 import { PanelsPage } from './lab/PanelsPage';
@@ -51,6 +51,9 @@ import { ResourcePage } from './resource/ResourcePage';
 import { ResourceVersionPage } from './resource/ResourceVersionPage';
 import { SubscriptionsPage } from './resource/SubscriptionsPage';
 import { TimelinePage } from './resource/TimelinePage';
+import { FormCreatePage } from './resource/FormCreatePage';
+import { JsonCreatePage } from './resource/JsonCreatePage';
+import { ProfilesPage } from './resource/ProfilesPage';
 
 export function AppRoutes(): JSX.Element {
   return (
@@ -69,6 +72,7 @@ export function AppRoutes(): JSX.Element {
         <Route path="/smart" element={<SmartSearchPage />} />
         <Route path="/forms/:id" element={<FormPage />} />
         <Route path="/admin/super" element={<SuperAdminPage />} />
+        <Route path="/admin/config" element={<ProjectAdminConfigPage />} />
         <Route path="/admin" element={<ProjectPage />}>
           <Route path="patients" element={<PatientsPage />} />
           <Route path="bots/new" element={<CreateBotPage />} />
@@ -87,7 +91,11 @@ export function AppRoutes(): JSX.Element {
         <Route path="/lab/panels" element={<PanelsPage />} />
         <Route path="/:resourceType/:id/_history/:versionId/:tab" element={<ResourceVersionPage />} />
         <Route path="/:resourceType/:id/_history/:versionId" element={<ResourceVersionPage />} />
-        <Route path="/:resourceType/new" element={<CreateResourcePage />} />
+        <Route path="/:resourceType/new" element={<CreateResourcePage />}>
+          <Route index element={<FormCreatePage />} />
+          <Route path="form" element={<FormCreatePage />} />
+          <Route path="json" element={<JsonCreatePage />} />
+        </Route>
         <Route path="/:resourceType/:id" element={<ResourcePage />}>
           <Route index element={<TimelinePage />} />
           <Route path="apply" element={<ApplyPage />} />
@@ -109,6 +117,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="ranges" element={<ReferenceRangesPage />} />
           <Route path="subscriptions" element={<SubscriptionsPage />} />
           <Route path="timeline" element={<TimelinePage />} />
+          <Route path="profiles" element={<ProfilesPage />} />
         </Route>
         <Route path="/:resourceType" element={<HomePage />} />
         <Route path="/" element={<HomePage />} />

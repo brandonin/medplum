@@ -1,5 +1,4 @@
 import { ContactDetail } from '@medplum/fhirtypes';
-import React from 'react';
 import { ContactPointDisplay } from '../ContactPointDisplay/ContactPointDisplay';
 
 export interface ContactDetailDisplayProps {
@@ -16,8 +15,8 @@ export function ContactDetailDisplay(props: ContactDetailDisplayProps): JSX.Elem
     <>
       {contactDetail.name}
       {contactDetail.name && ': '}
-      {contactDetail.telecom?.map((telecom, index) => (
-        <ContactPointDisplay key={'telecom-' + index} value={telecom} />
+      {contactDetail.telecom?.map((telecom) => (
+        <ContactPointDisplay key={`telecom-${contactDetail.name}-${telecom.value}`} value={telecom} />
       ))}
     </>
   );

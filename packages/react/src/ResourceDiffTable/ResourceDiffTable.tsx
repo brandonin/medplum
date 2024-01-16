@@ -1,9 +1,10 @@
 import { createStyles } from '@mantine/core';
-import { getPropertyDisplayName, IndexedStructureDefinition, stringify, toTypedValue } from '@medplum/core';
+import { capitalize, evalFhirPathTyped, getSearchParameterDetails, toTypedValue } from '@medplum/core';
 import { Resource } from '@medplum/fhirtypes';
-import React, { useEffect, useState } from 'react';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
-import { getValueAndType, ResourcePropertyDisplay } from '../ResourcePropertyDisplay/ResourcePropertyDisplay';
+import { useMedplum } from '@medplum/react-hooks';
+import { useEffect, useState } from 'react';
+import { createPatch } from 'rfc6902';
+import { ResourcePropertyDisplay } from '../ResourcePropertyDisplay/ResourcePropertyDisplay';
 
 const useStyles = createStyles((theme) => ({
   root: {
@@ -22,11 +23,15 @@ const useStyles = createStyles((theme) => ({
 
   removed: {
     color: theme.colors.red[7],
+    fontFamily: 'monospace',
     textDecoration: 'line-through',
+    whiteSpace: 'pre-wrap',
   },
 
   added: {
     color: theme.colors.green[7],
+    fontFamily: 'monospace',
+    whiteSpace: 'pre-wrap',
   },
 }));
 
@@ -38,71 +43,75 @@ export interface ResourceDiffTableProps {
 export function ResourceDiffTable(props: ResourceDiffTableProps): JSX.Element | null {
   const { classes } = useStyles();
   const medplum = useMedplum();
-  const [schema, setSchema] = useState<IndexedStructureDefinition | undefined>();
+  const [schemaLoaded, setSchemaLoaded] = useState(false);
 
   useEffect(() => {
-    medplum.requestSchema(props.original.resourceType).then(setSchema).catch(console.log);
+    medplum
+      .requestSchema(props.original.resourceType)
+      .then(() => setSchemaLoaded(true))
+      .catch(console.log);
   }, [medplum, props.original.resourceType]);
 
-  if (!schema) {
+  if (!schemaLoaded) {
     return null;
   }
 
-  const typeSchema = schema.types[props.original.resourceType];
-  if (!typeSchema) {
-    return null;
-  }
+  const patch = createPatch(props.original, props.revised);
+  const typedOriginal = [toTypedValue(props.original)];
+  const typedRevised = [toTypedValue(props.revised)];
 
   return (
     <table className={classes.root}>
-      <colgroup>
-        <col style={{ width: '30%' }} />
-        <col style={{ width: '35%' }} />
-        <col style={{ width: '35%' }} />
-      </colgroup>
       <thead>
         <tr>
-          <th>Property</th>
+          <th />
           <th>Before</th>
           <th>After</th>
         </tr>
       </thead>
       <tbody>
-        {Object.entries(typeSchema.properties).map((entry) => {
-          const key = entry[0];
-          if (key === 'id' || key === 'meta') {
+        {patch.map((op) => {
+          if (op.path.startsWith('/meta')) {
             return null;
           }
 
-          const property = entry[1];
-          const [originalPropertyValue, originalPropertyType] = getValueAndType(toTypedValue(props.original), key);
-          const [revisedPropertyValue, revisedPropertyType] = getValueAndType(toTypedValue(props.revised), key);
-          if (isEmpty(originalPropertyValue) && isEmpty(revisedPropertyValue)) {
-            return null;
-          }
-
-          if (stringify(originalPropertyValue) === stringify(revisedPropertyValue)) {
-            return null;
-          }
+          const path = op.path;
+          const fhirPath = jsonPathToFhirPath(path);
+          const details = getSearchParameterDetails(props.original.resourceType, {
+            resourceType: 'SearchParameter',
+            base: [props.original.resourceType],
+            code: props.original.resourceType + '.' + fhirPath,
+            expression: props.original.resourceType + '.' + fhirPath,
+          });
+          const property = details?.elementDefinitions?.[0];
+          const isArray = !!property?.isArray;
+          const originalValue = op.op === 'add' ? undefined : evalFhirPathTyped(fhirPath, typedOriginal)?.[0];
+          const revisedValue = op.op === 'remove' ? undefined : evalFhirPathTyped(fhirPath, typedRevised)?.[0];
 
           return (
-            <tr key={key}>
-              <td>{getPropertyDisplayName(key)}</td>
+            <tr key={`op-${op.op}-${op.path}`}>
+              <td>
+                {capitalize(op.op)} {fhirPath}
+              </td>
               <td className={classes.removed}>
-                <ResourcePropertyDisplay
-                  property={property}
-                  propertyType={originalPropertyType}
-                  value={originalPropertyValue}
-                  ignoreMissingValues={true}
-                />
+                {originalValue && (
+                  <ResourcePropertyDisplay
+                    property={property}
+                    propertyType={originalValue.type}
+                    value={fixArray(originalValue.value, isArray)}
+                    ignoreMissingValues={true}
+                  />
+                )}
               </td>
               <td className={classes.added}>
-                <ResourcePropertyDisplay
-                  property={property}
-                  propertyType={revisedPropertyType}
-                  value={revisedPropertyValue}
-                  ignoreMissingValues={true}
-                />
+                {revisedValue && (
+                  <ResourcePropertyDisplay
+                    property={property}
+                    propertyType={revisedValue.type}
+                    value={fixArray(revisedValue.value, isArray)}
+                    ignoreMissingValues={true}
+                  />
+                )}
               </td>
             </tr>
           );
@@ -112,10 +121,31 @@ export function ResourceDiffTable(props: ResourceDiffTableProps): JSX.Element | 
   );
 }
 
-function isEmpty(value: unknown): boolean {
-  return (
-    !value ||
-    (Array.isArray(value) && value.length === 0) ||
-    (typeof value === 'object' && Object.keys(value).length === 0)
-  );
+function jsonPathToFhirPath(path: string): string {
+  const parts = path.split('/').filter(Boolean);
+  let result = '';
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (part === '-') {
+      result += '.last()';
+    } else if (/^\d+$/.test(part)) {
+      result += `[${part}]`;
+    } else {
+      if (i > 0) {
+        result += '.';
+      }
+      result += part;
+    }
+  }
+  return result;
+}
+
+function fixArray(inputValue: any, isArray: boolean): any {
+  if (Array.isArray(inputValue) && !isArray) {
+    return inputValue[0];
+  }
+  if (!Array.isArray(inputValue) && isArray) {
+    return [inputValue];
+  }
+  return inputValue;
 }

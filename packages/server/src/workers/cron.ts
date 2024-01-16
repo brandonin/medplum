@@ -1,13 +1,13 @@
-import { createReference } from '@medplum/core';
+import { ContentType, createReference } from '@medplum/core';
 import { Bot, Project, Resource, Timing } from '@medplum/fhirtypes';
 import { Job, Queue, QueueBaseOptions, Worker } from 'bullmq';
-import { MedplumRedisConfig } from '../config';
+import { isValidCron } from 'cron-validator';
+import { MedplumServerConfig } from '../config';
+import { getRequestContext } from '../context';
 import { executeBot } from '../fhir/operations/execute';
 import { systemRepo } from '../fhir/repo';
-import { logger } from '../logger';
-import { AuditEventOutcome } from '../util/auditevent';
-import { isValidCron } from 'cron-validator';
-import { createAuditEvent, findProjectMembership } from './utils';
+import { globalLogger } from '../logger';
+import { findProjectMembership } from './utils';
 
 const daysOfWeekConversion = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
 
@@ -41,11 +41,11 @@ let worker: Worker<CronJobData> | undefined = undefined;
  * Initializes the Cron worker.
  * Sets up the BullMQ job queue.
  * Sets up the BullMQ worker.
- * @param config The Redis config.
+ * @param config - The Medplum server config to use.
  */
-export function initCronWorker(config: MedplumRedisConfig): void {
+export function initCronWorker(config: MedplumServerConfig): void {
   const defaultOptions: QueueBaseOptions = {
-    connection: config,
+    connection: config.redis,
   };
 
   queue = new Queue<CronJobData>(queueName, {
@@ -58,15 +58,19 @@ export function initCronWorker(config: MedplumRedisConfig): void {
       },
     },
   });
-  worker = new Worker<CronJobData>(queueName, execBot, defaultOptions);
-  worker.on('completed', (job) => logger.info(`Completed job ${job.id} successfully`));
-  worker.on('failed', (job, err) => logger.info(`Failed job ${job?.id} with ${err}`));
+
+  worker = new Worker<CronJobData>(queueName, execBot, {
+    ...defaultOptions,
+    ...config.bullmq,
+  });
+  worker.on('completed', (job) => globalLogger.info(`Completed job ${job.id} successfully`));
+  worker.on('failed', (job, err) => globalLogger.info(`Failed job ${job?.id} with ${err}`));
 }
 
 /**
  * Shuts down the Cron worker.
  * Closes the BullMQ job queue.
- * Clsoes the BullMQ worker.
+ * Closes the BullMQ worker.
  */
 export async function closeCronWorker(): Promise<void> {
   if (queue) {
@@ -81,7 +85,7 @@ export async function closeCronWorker(): Promise<void> {
 }
 
 /**
- * Returns theCron queue instance.
+ * Returns the Cron queue instance.
  * This is used by the unit tests.
  * @returns The Cron queue (if available).
  */
@@ -90,9 +94,10 @@ export function getCronQueue(): Queue<CronJobData> | undefined {
 }
 
 /**
- * @param resource The resource that was created or updated.
+ * @param resource - The resource that was created or updated.
  */
 export async function addCronJobs(resource: Resource): Promise<void> {
+  const ctx = getRequestContext();
   if (resource.resourceType !== 'Bot') {
     // For now we have only the bot to execute on a timed job
     return;
@@ -101,10 +106,8 @@ export async function addCronJobs(resource: Resource): Promise<void> {
   const bot = resource;
   // Adding a new feature for project that allows users to add a cron
   const project = await systemRepo.readResource<Project>('Project', resource.meta?.project as string);
-  const isCronEnabled = !!project.features?.includes('cron');
-
-  if (!isCronEnabled) {
-    logger.debug('Cron not enabled. Cron needs to be enabled in project to create cron job for bot');
+  if (!project.features?.includes('cron')) {
+    ctx.logger.debug('Cron not enabled. Cron needs to be enabled in project to create cron job for bot');
     return;
   }
 
@@ -113,17 +116,17 @@ export async function addCronJobs(resource: Resource): Promise<void> {
   if (bot.cronTiming) {
     cron = convertTimingToCron(bot.cronTiming);
     if (!cron) {
-      logger.debug('cronTiming had the wrong format for a timed cron job');
+      ctx.logger.debug('cronTiming had the wrong format for a timed cron job');
       return;
     }
   } else if (bot.cronString && isValidCron(bot.cronString)) {
     cron = bot.cronString;
   } else if (bot.cronString === '') {
     await removeBullMQJobByKey(bot.id as string);
-    logger.debug(`no job for bot: ${bot.id}`);
+    ctx.logger.debug(`no job for bot: ${bot.id}`);
     return;
   } else {
-    logger.debug('cronString had the wrong format for a timed cron job');
+    ctx.logger.debug('cronString had the wrong format for a timed cron job');
     return;
   }
 
@@ -143,24 +146,25 @@ export async function addCronJobs(resource: Resource): Promise<void> {
 /**
  * Adds a Cron job to the queue, and removes the previous job for bot
  * if it exists
- * @param job The Cron job details.
- * @param repeatable The repeat format that instructs BullMQ when to run the job
+ * @param job - The Cron job details.
+ * @param repeatable - The repeat format that instructs BullMQ when to run the job
  */
 async function addCronJobData(job: CronJobData, repeatable: Repeatable): Promise<void> {
+  const ctx = getRequestContext();
   // Check if there was a job previously for this bot, if there was, we remove it.
   await removeBullMQJobByKey(job.botId);
-  logger.debug('Adding Cron job');
+  ctx.logger.debug('Adding Cron job');
   // Parameters of queue.add https://api.docs.bullmq.io/classes/Queue.html#add
   if (queue) {
     await queue.add(jobName, job, repeatable);
   } else {
-    logger.debug('Cron queue not initialized');
+    ctx.logger.debug('Cron queue not initialized');
   }
 }
 
 /**
  * BullMQ repeat option, which conducts the job has a cron-parser's pattern
- * @param timing The Cron property from the bot, which is a Timing Type.
+ * @param timing - The Cron property from the bot, which is a Timing Type.
  * @returns The cron string.
  */
 export function convertTimingToCron(timing: Timing): string | undefined {
@@ -202,9 +206,7 @@ export function convertTimingToCron(timing: Timing): string | undefined {
 }
 
 export async function execBot(job: Job<CronJobData>): Promise<void> {
-  const startTime = new Date().toISOString();
   const bot = await systemRepo.readReference<Bot>({ reference: 'Bot/' + job.data.botId });
-
   const project = bot.meta?.project as string;
   const runAs = await findProjectMembership(project, createReference(bot));
 
@@ -212,17 +214,7 @@ export async function execBot(job: Job<CronJobData>): Promise<void> {
     throw new Error('Could not find project membership for bot');
   }
 
-  let outcome: AuditEventOutcome;
-  let logResult: string;
-  try {
-    const result = await executeBot({ bot, runAs, input: bot, contentType: 'application/fhir+json' });
-    outcome = result.success ? AuditEventOutcome.Success : AuditEventOutcome.MinorFailure;
-    logResult = result.logResult;
-  } catch (error) {
-    outcome = AuditEventOutcome.MajorFailure;
-    logResult = (error as Error).message;
-  }
-  await createAuditEvent(bot, startTime, outcome, logResult);
+  await executeBot({ bot, runAs, input: bot, contentType: ContentType.FHIR_JSON });
 }
 
 export async function removeBullMQJobByKey(botId: string): Promise<void> {
@@ -231,6 +223,6 @@ export async function removeBullMQJobByKey(botId: string): Promise<void> {
   // There likely should not be more than one repeatable job per bot id.
   for (const p of previousJobs) {
     await queue?.removeRepeatableByKey(p.key);
-    logger.debug(`Found a previous job for bot ${botId}, updating...`);
+    getRequestContext().logger.debug(`Found a previous job for bot ${botId}, updating...`);
   }
 }

@@ -11,7 +11,6 @@ import {
   useMedplum,
 } from '@medplum/react';
 import { IconCheck, IconX } from '@tabler/icons-react';
-import React from 'react';
 
 export function SuperAdminPage(): JSX.Element {
   const medplum = useMedplum();
@@ -33,32 +32,32 @@ export function SuperAdminPage(): JSX.Element {
   }
 
   function reindexResourceType(formData: Record<string, string>): void {
-    startAsyncJob(medplum, 'Reindexing Resources', 'admin/super/valuesets', formData);
+    startAsyncJob(medplum, 'Reindexing Resources', 'admin/super/reindex', formData);
   }
 
   function rebuildCompartments(formData: Record<string, string>): void {
-    startAsyncJob(medplum, 'Rebuilding Compartments', 'admin/super/valuesets', formData);
+    startAsyncJob(medplum, 'Rebuilding Compartments', 'admin/super/compartments', formData);
   }
 
   function removeBotIdJobsFromQueue(formData: Record<string, string>): void {
     medplum
       .post('admin/super/removebotidjobsfromqueue', formData)
       .then(() => showNotification({ color: 'green', message: 'Done' }))
-      .catch((err) => showNotification({ color: 'red', message: normalizeErrorString(err) }));
+      .catch((err) => showNotification({ color: 'red', message: normalizeErrorString(err), autoClose: false }));
   }
 
   function purgeResources(formData: Record<string, string>): void {
     medplum
       .post('admin/super/purge', { ...formData, before: convertLocalToIso(formData.before) })
       .then(() => showNotification({ color: 'green', message: 'Done' }))
-      .catch((err) => showNotification({ color: 'red', message: normalizeErrorString(err) }));
+      .catch((err) => showNotification({ color: 'red', message: normalizeErrorString(err), autoClose: false }));
   }
 
   function forceSetPassword(formData: Record<string, string>): void {
     medplum
       .post('admin/super/setpassword', formData)
       .then(() => showNotification({ color: 'green', message: 'Done' }))
-      .catch((err) => showNotification({ color: 'red', message: normalizeErrorString(err) }));
+      .catch((err) => showNotification({ color: 'red', message: normalizeErrorString(err), autoClose: false }));
   }
 
   return (
@@ -188,7 +187,8 @@ function startAsyncJob(medplum: MedplumClient, title: string, url: string, body?
         title,
         message: 'Done',
         icon: <IconCheck size="1rem" />,
-        autoClose: 2000,
+        autoClose: false,
+        withCloseButton: true,
       });
     })
     .catch((err) => {
@@ -198,7 +198,8 @@ function startAsyncJob(medplum: MedplumClient, title: string, url: string, body?
         title,
         message: normalizeErrorString(err),
         icon: <IconX size="1rem" />,
-        autoClose: 2000,
+        autoClose: false,
+        withCloseButton: true,
       });
     });
 }

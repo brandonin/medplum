@@ -29,7 +29,7 @@ export class HumanNameTable extends LookupTable<HumanName> {
 
   /**
    * Returns the column name for the given search parameter.
-   * @param code The search parameter code.
+   * @param code - The search parameter code.
    * @returns The column name.
    */
   getColumnName(code: string): string {
@@ -38,7 +38,7 @@ export class HumanNameTable extends LookupTable<HumanName> {
 
   /**
    * Returns true if the search parameter is an HumanName parameter.
-   * @param searchParam The search parameter.
+   * @param searchParam - The search parameter.
    * @returns True if the search parameter is an HumanName parameter.
    */
   isIndexed(searchParam: SearchParameter): boolean {
@@ -48,8 +48,8 @@ export class HumanNameTable extends LookupTable<HumanName> {
   /**
    * Indexes a resource HumanName values.
    * Attempts to reuse existing identifiers if they are correct.
-   * @param client The database client.
-   * @param resource The resource to index.
+   * @param client - The database client.
+   * @param resource - The resource to index.
    * @returns Promise on completion.
    */
   async indexResource(client: PoolClient, resource: Resource): Promise<void> {
@@ -85,7 +85,7 @@ export class HumanNameTable extends LookupTable<HumanName> {
           resourceId,
           index: i,
           content: stringify(name),
-          name: formatHumanName(name),
+          name: getNameString(name),
           given: formatGivenName(name),
           family: formatFamilyName(name),
         });
@@ -94,4 +94,47 @@ export class HumanNameTable extends LookupTable<HumanName> {
       await this.insertValuesForResource(client, resourceType, values);
     }
   }
+}
+
+/**
+ * Returns a string representation of the human name for indexing.
+ *
+ * In previous versions, we simply used `formatHumanName(name)`.
+ *
+ * However, the FHIR spec indicates that the `text` field should be used for indexing.
+ *
+ * Quote:
+ *
+ *   "The given name parts may contain whitespace, though generally they don't.
+ *    Initials may be used in place of the full name if that is all that is recorded.
+ *    Systems that operate across cultures should generally rely on the text form for
+ *    presentation and use the parts for index/search functionality. For this reason,
+ *    applications SHOULD populate the text element for future robustness."
+ *
+ * @param name - The input human name.
+ * @returns A string representation of the human name.
+ */
+export function getNameString(name: HumanName): string {
+  let result = formatHumanName(name);
+
+  if (name.text) {
+    // Add unique tokens from the text field
+    const resultTokens = getTokens(result);
+    const textTokens = getTokens(name.text);
+    for (const token of textTokens) {
+      if (!resultTokens.has(token)) {
+        result += ' ' + token;
+        resultTokens.add(token);
+      }
+    }
+  }
+
+  return result;
+}
+
+function getTokens(input: string): Set<string> {
+  // Convert to lowercase
+  // Split on whitespace
+  // Remove empty strings
+  return new Set<string>(input.toLowerCase().split(/\s+/).filter(Boolean));
 }

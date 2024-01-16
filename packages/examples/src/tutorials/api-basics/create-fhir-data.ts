@@ -1,6 +1,8 @@
+/* eslint-disable no-duplicate-imports */
+
 // start-block core-imports
+import { MedplumClient, UCUM } from '@medplum/core';
 import fetch from 'node-fetch';
-import { MedplumClient } from '@medplum/core';
 
 // end-block core-imports
 // start-block patient-imports
@@ -9,8 +11,8 @@ import { randomUUID } from 'crypto';
 
 // end-block patient-imports
 // start-block service-request-imports
-import { ServiceRequest } from '@medplum/fhirtypes';
 import { createReference } from '@medplum/core';
+import { ServiceRequest } from '@medplum/fhirtypes';
 
 // end-block service-request-imports
 // start-block observation-imports
@@ -96,7 +98,7 @@ const observationData: Observation[] = [
     valueQuantity: {
       value: 5.7,
       unit: 'mg/dL',
-      system: 'http://unitsofmeasure.org',
+      system: UCUM,
       code: 'mg/dL',
     },
   },
@@ -117,7 +119,7 @@ const observationData: Observation[] = [
     valueQuantity: {
       value: 100,
       unit: 'mg/dL',
-      system: 'http://unitsofmeasure.org',
+      system: UCUM,
       code: 'mg/dL',
     },
   },

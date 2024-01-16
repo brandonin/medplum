@@ -1,4 +1,4 @@
-import { createReference } from '@medplum/core';
+import { lazy, ContentType, createReference } from '@medplum/core';
 import { Organization, Practitioner, Schedule, Slot } from '@medplum/fhirtypes';
 
 export const TestOrganization: Organization = {
@@ -37,7 +37,7 @@ export const DrAliceSmith: Practitioner = {
   ],
   photo: [
     {
-      contentType: 'image/png',
+      contentType: ContentType.PNG,
       url: 'https://www.medplum.com/img/cdc-femaledoc.png',
     },
   ],
@@ -67,7 +67,7 @@ export const DrAliceSmithSchedule: Schedule = {
   ],
 };
 
-export const DrAliceSmithSlots: Slot[] = (() => {
+export const makeDrAliceSmithSlots = lazy((): Slot[] => {
   const schedule = createReference(DrAliceSmithSchedule);
   const result: Slot[] = [];
   const slotDate = new Date();
@@ -84,4 +84,4 @@ export const DrAliceSmithSlots: Slot[] = (() => {
     slotDate.setDate(slotDate.getDate() + 1);
   }
   return result;
-})();
+});

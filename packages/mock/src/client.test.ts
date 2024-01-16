@@ -1,5 +1,7 @@
 import {
   allOk,
+  ClientStorage,
+  ContentType,
   getReferenceString,
   indexSearchParameterBundle,
   indexStructureDefinitionBundle,
@@ -8,6 +10,7 @@ import {
   NewProjectRequest,
   NewUserRequest,
   OperationOutcomeError,
+  MockAsyncClientStorage,
 } from '@medplum/core';
 import { readJson } from '@medplum/definitions';
 import { Bundle, CodeableConcept, Patient, SearchParameter, ServiceRequest } from '@medplum/fhirtypes';
@@ -247,24 +250,6 @@ describe('MockClient', () => {
     });
   });
 
-  test('Request schema', async () => {
-    const client = new MockClient();
-    const schema = await client.requestSchema('Patient');
-    expect(schema).toBeDefined();
-    expect(schema.types['Patient']).toBeDefined();
-    expect(schema.types['Patient'].searchParams).toBeDefined();
-  });
-
-  test('Get cached schema', async () => {
-    const client = new MockClient();
-    const schema = await client.requestSchema('Patient');
-    expect(schema).toBeDefined();
-    expect(schema.types['Patient']).toBeDefined();
-
-    const schema2 = await client.requestSchema('Patient');
-    expect(schema2).toEqual(schema);
-  });
-
   test('Debug mode', async () => {
     console.log = jest.fn();
     const client = new MockClient({ debug: true });
@@ -280,20 +265,20 @@ describe('MockClient', () => {
 
   test('Create binary success', async () => {
     const client = new MockClient();
-    const result = await client.createBinary('test', 'test.txt', 'text/plain');
+    const result = await client.createBinary('test', 'test.txt', ContentType.TEXT);
     expect(result).toMatchObject({
       resourceType: 'Binary',
-      contentType: 'text/plain',
+      contentType: ContentType.TEXT,
     });
   });
 
   test('Create binary with progress listener', async () => {
     const client = new MockClient();
     const onProgress = jest.fn();
-    const result = await client.createBinary('test', 'test.txt', 'text/plain', onProgress);
+    const result = await client.createBinary('test', 'test.txt', ContentType.TEXT, onProgress);
     expect(result).toMatchObject({
       resourceType: 'Binary',
-      contentType: 'text/plain',
+      contentType: ContentType.TEXT,
     });
     expect(onProgress).toHaveBeenCalled();
   });
@@ -683,6 +668,40 @@ describe('MockClient', () => {
     expect(homer).toBeDefined();
     expect(homer.name[0].given[0]).toEqual('Homer');
     expect(homer.name[0].family).toEqual('Simpson');
+  });
+});
+
+describe('MockAsyncClientStorage', () => {
+  let clientStorage: MockAsyncClientStorage;
+
+  test('Constructor creates instance of ClientStorage', () => {
+    clientStorage = new MockAsyncClientStorage();
+    expect(clientStorage).toBeInstanceOf(ClientStorage);
+  });
+
+  test('.getInitPromise() returns a promise', () => {
+    expect(clientStorage.getInitPromise()).toBeInstanceOf(Promise);
+  });
+
+  test('Calling .setInitialized() resolves initPromise', async () => {
+    expect(clientStorage.isInitialized).toEqual(false);
+    const initPromise = clientStorage.getInitPromise();
+    clientStorage.setInitialized();
+    await expect(initPromise).resolves;
+    expect(clientStorage.isInitialized).toEqual(true);
+  });
+
+  test('Not calling .setInitialized() causes promise not to resolve', async () => {
+    const anotherStorage = new MockAsyncClientStorage();
+    const initPromise = anotherStorage.getInitPromise();
+    initPromise
+      .then(() => {
+        throw new Error('Failed!');
+      })
+      .catch((err) => {
+        throw err;
+      });
+    await new Promise(process.nextTick);
   });
 });
 

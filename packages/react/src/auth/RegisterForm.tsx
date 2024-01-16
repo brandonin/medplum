@@ -1,24 +1,25 @@
-import { LoginAuthenticationResponse } from '@medplum/core';
+import { LoginAuthenticationResponse, normalizeOperationOutcome } from '@medplum/core';
 import { OperationOutcome } from '@medplum/fhirtypes';
-import React, { useEffect, useState } from 'react';
+import { useMedplum } from '@medplum/react-hooks';
+import { ReactNode, useEffect, useState } from 'react';
 import { Document } from '../Document/Document';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
 import { NewProjectForm } from './NewProjectForm';
 import { NewUserForm } from './NewUserForm';
 
 export interface RegisterFormProps {
   readonly type: 'patient' | 'project';
   readonly projectId?: string;
+  readonly clientId?: string;
   readonly googleClientId?: string;
   readonly recaptchaSiteKey?: string;
-  readonly children?: React.ReactNode;
+  readonly children?: ReactNode;
   readonly onSuccess: () => void;
 }
 
 export function RegisterForm(props: RegisterFormProps): JSX.Element {
-  const { type, projectId, googleClientId, recaptchaSiteKey, onSuccess } = props;
+  const { type, projectId, clientId, googleClientId, recaptchaSiteKey, onSuccess } = props;
   const medplum = useMedplum();
-  const [login, setLogin] = useState<string | undefined>(undefined);
+  const [login, setLogin] = useState<string>();
   const [outcome, setOutcome] = useState<OperationOutcome>();
 
   useEffect(() => {
@@ -27,7 +28,7 @@ export function RegisterForm(props: RegisterFormProps): JSX.Element {
         .startNewPatient({ login, projectId: projectId as string })
         .then((response) => medplum.processCode(response.code as string))
         .then(() => onSuccess())
-        .catch((err) => setOutcome(err as OperationOutcome));
+        .catch((err) => setOutcome(normalizeOperationOutcome(err)));
     }
   }, [medplum, type, projectId, login, onSuccess]);
 
@@ -48,6 +49,7 @@ export function RegisterForm(props: RegisterFormProps): JSX.Element {
       {!login && (
         <NewUserForm
           projectId={projectId as string}
+          clientId={clientId}
           googleClientId={googleClientId}
           recaptchaSiteKey={recaptchaSiteKey}
           handleAuthResponse={handleAuthResponse}

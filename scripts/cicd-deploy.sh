@@ -6,11 +6,13 @@
 # Inspects files changed in the most recent commit
 # and deploys the appropriate service
 
+COMMIT_MESSAGE=$(git log -1 --pretty=%B)
+echo "$COMMIT_MESSAGE"
+
 FILES_CHANGED=$(git diff --name-only HEAD HEAD~1)
 echo "$FILES_CHANGED"
 
 DEPLOY_APP=false
-DEPLOY_BOT_LAYER=false
 DEPLOY_GRAPHIQL=false
 DEPLOY_SERVER=false
 
@@ -26,12 +28,6 @@ if [[ "$FILES_CHANGED" =~ Dockerfile ]]; then
   DEPLOY_SERVER=true
 fi
 
-if [[ "$FILES_CHANGED" =~ package-lock.json ]]; then
-  DEPLOY_APP=true
-  DEPLOY_GRAPHIQL=true
-  DEPLOY_SERVER=true
-fi
-
 if [[ "$FILES_CHANGED" =~ cicd-deploy.sh ]]; then
   DEPLOY_APP=true
   DEPLOY_GRAPHIQL=true
@@ -44,10 +40,6 @@ fi
 
 if [[ "$FILES_CHANGED" =~ packages/app ]]; then
   DEPLOY_APP=true
-fi
-
-if [[ "$FILES_CHANGED" =~ packages/bot-layer ]]; then
-  DEPLOY_BOT_LAYER=true
 fi
 
 if [[ "$FILES_CHANGED" =~ packages/core ]]; then
@@ -82,20 +74,45 @@ if [[ "$FILES_CHANGED" =~ packages/react ]]; then
 fi
 
 #
+# Send a slack message
+#
+
+read -r -d '' PAYLOAD <<- EOM
+{
+  "text": "Deploying ${COMMIT_MESSAGE}",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "Deploying ${COMMIT_MESSAGE}\\n\\n* Deploy app: ${DEPLOY_APP}\\n* Deploy graphiql: ${DEPLOY_GRAPHIQL}\\n* Deploy server: ${DEPLOY_SERVER}"
+      }
+    }
+  ]
+}
+EOM
+
+curl -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+
+#
 # Run the appropriate deploy scripts
 #
 
 if [[ "$DEPLOY_APP" = true ]]; then
   echo "Deploy app"
+  npm run build -- --force --filter=@medplum/app
   source ./scripts/deploy-app.sh
 fi
 
 if [[ "$DEPLOY_GRAPHIQL" = true ]]; then
   echo "Deploy GraphiQL"
+  npm run build -- --force --filter=@medplum/graphiql
   source ./scripts/deploy-graphiql.sh
 fi
 
 if [[ "$DEPLOY_SERVER" = true ]]; then
   echo "Deploy server"
+  npm run build -- --force --filter=@medplum/server
+  source ./scripts/build-docker.sh
   source ./scripts/deploy-server.sh
 fi

@@ -8,7 +8,8 @@ import {
   SearchParameter,
   ServiceRequest,
 } from '@medplum/fhirtypes';
-import { indexStructureDefinitionBundle, PropertyType } from '../types';
+import { PropertyType } from '../types';
+import { indexStructureDefinitionBundle } from '../typeschema/types';
 import { evalFhirPath, evalFhirPathTyped, parseFhirPath } from './parse';
 import { toTypedValue } from './utils';
 
@@ -477,7 +478,7 @@ describe('FHIRPath parser', () => {
         { system: 'email', value: 'alice@example.com' },
       ],
     };
-    const variables = { current: toTypedValue(patient2), previous: toTypedValue(patient) };
+    const variables = { '%current': toTypedValue(patient2), '%previous': toTypedValue(patient) };
     const result = evalFhirPathTyped('%current=%previous', [toTypedValue(patient)], variables);
 
     expect(result).toEqual([
@@ -504,7 +505,7 @@ describe('FHIRPath parser', () => {
         { system: 'email', value: 'alice@example.com' },
       ],
     };
-    const variables = { current: toTypedValue(patient2), previous: toTypedValue(patient) };
+    const variables = { '%current': toTypedValue(patient2), '%previous': toTypedValue(patient) };
     const result = evalFhirPathTyped('%current!=%previous', [toTypedValue(patient)], variables);
 
     expect(result).toEqual([
@@ -531,7 +532,7 @@ describe('FHIRPath parser', () => {
         { system: 'email', value: 'alice@example.com' },
       ],
     };
-    const variables = { current: toTypedValue(patient2) };
+    const variables = { '%current': toTypedValue(patient2) };
 
     expect(() => evalFhirPathTyped('%current=%previous', [toTypedValue(patient)], variables)).toThrowError(
       `Undefined variable %previous`
@@ -594,5 +595,18 @@ describe('FHIRPath parser', () => {
         value: { value: 5, unit: '%' },
       },
     ]);
+  });
+
+  test('ValueSet vsd-2', () => {
+    const expr = '(concept.exists() or filter.exists()) implies system.exists()';
+    const system = 'http://example.com';
+    const concept = [{ code: 'foo' }];
+    const filter = [{ property: 'bar', op: 'eq', value: 'baz' }];
+    expect(evalFhirPath(expr, {})).toEqual([true]);
+    expect(evalFhirPath(expr, { concept })).toEqual([false]);
+    expect(evalFhirPath(expr, { concept, filter })).toEqual([false]);
+    expect(evalFhirPath(expr, { filter })).toEqual([false]);
+    expect(evalFhirPath(expr, { concept, system })).toEqual([true]);
+    expect(evalFhirPath(expr, { concept, filter, system })).toEqual([true]);
   });
 });

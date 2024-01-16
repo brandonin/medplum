@@ -18,9 +18,9 @@ import { HttpMethod } from './urlrouter';
  * Processes a FHIR batch request.
  *
  * See: https://www.hl7.org/fhir/http.html#transaction
- * @param router The FHIR router.
- * @param repo The FHIR repository.
- * @param bundle The input bundle.
+ * @param router - The FHIR router.
+ * @param repo - The FHIR repository.
+ * @param bundle - The input bundle.
  * @returns The bundle response.
  */
 export async function processBatch(router: FhirRouter, repo: FhirRepository, bundle: Bundle): Promise<Bundle> {
@@ -36,9 +36,9 @@ class BatchProcessor {
 
   /**
    * Creates a batch processor.
-   * @param router The FHIR router.
-   * @param repo The FHIR repository.
-   * @param bundle The input bundle.
+   * @param router - The FHIR router.
+   * @param repo - The FHIR repository.
+   * @param bundle - The input bundle.
    */
   constructor(
     private readonly router: FhirRouter,
@@ -92,7 +92,7 @@ class BatchProcessor {
 
   /**
    * Processes a single entry from a FHIR batch request.
-   * @param entry The bundle entry.
+   * @param entry - The bundle entry.
    * @returns The bundle entry response.
    */
   private async processBatchEntry(entry: BundleEntry): Promise<BundleEntry> {
@@ -172,7 +172,7 @@ class BatchProcessor {
       throw new OperationOutcomeError(badRequest('Missing entry.resource.data'));
     }
 
-    return JSON.parse(Buffer.from(patchResource.data, 'base64').toString('utf8'));
+    return this.rewriteIdsInArray(JSON.parse(Buffer.from(patchResource.data, 'base64').toString('utf8')));
   }
 
   private addReplacementId(fullUrl: string, resource: Resource): void {
@@ -188,7 +188,7 @@ class BatchProcessor {
     if (typeof input === 'string') {
       return this.rewriteIdsInString(input);
     }
-    if (typeof input === 'object') {
+    if (typeof input === 'object' && input !== null) {
       return this.rewriteIdsInObject(input);
     }
     return input;
@@ -203,7 +203,7 @@ class BatchProcessor {
   }
 
   private rewriteIdsInString(input: string, removeResourceType = false): string {
-    const matches = input.match(/urn:uuid:\w{8}-\w{4}-\w{4}-\w{4}-\w{12}/);
+    const matches = /urn:uuid:\w{8}-\w{4}-\w{4}-\w{4}-\w{12}/.exec(input);
     if (matches) {
       const fullUrl = matches[0];
       const resource = this.ids[fullUrl];

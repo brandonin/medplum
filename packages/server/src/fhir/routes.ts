@@ -1,13 +1,16 @@
-import { allOk, getStatus, isOk, OperationOutcomeError, validateResource } from '@medplum/core';
+import { allOk, ContentType, getStatus, isCreated, isOk, OperationOutcomeError, validateResource } from '@medplum/core';
 import { FhirRequest, FhirRouter, HttpMethod } from '@medplum/fhir-router';
 import { OperationOutcome, Resource } from '@medplum/fhirtypes';
 import { NextFunction, Request, Response, Router } from 'express';
 import { asyncWrap } from '../async';
 import { getConfig } from '../config';
-import { authenticateToken } from '../oauth/middleware';
+import { getAuthenticatedContext } from '../context';
+import { authenticateRequest } from '../oauth/middleware';
 import { bulkDataRouter } from './bulkdata';
 import { jobRouter } from './job';
 import { getCapabilityStatement } from './metadata';
+import { agentPushHandler } from './operations/agentpush';
+import { conceptMapTranslateHandler } from './operations/conceptmaptranslate';
 import { csvHandler } from './operations/csv';
 import { deployHandler } from './operations/deploy';
 import { evaluateMeasureHandler } from './operations/evaluatemeasure';
@@ -15,15 +18,18 @@ import { executeHandler } from './operations/execute';
 import { expandOperator } from './operations/expand';
 import { bulkExportHandler, patientExportHandler } from './operations/export';
 import { expungeHandler } from './operations/expunge';
+import { getWsBindingTokenHandler } from './operations/getwsbindingtoken';
 import { groupExportHandler } from './operations/groupexport';
 import { patientEverythingHandler } from './operations/patienteverything';
 import { planDefinitionApplyHandler } from './operations/plandefinitionapply';
 import { projectCloneHandler } from './operations/projectclone';
+import { projectInitHandler } from './operations/projectinit';
 import { resourceGraphHandler } from './operations/resourcegraph';
 import { sendOutcome } from './outcomes';
-import { Repository } from './repo';
 import { rewriteAttachments, RewriteMode } from './rewrite';
+import { getFullUrl } from './search';
 import { smartConfigurationHandler, smartStylingHandler } from './smart';
+import { codeSystemImportHandler } from './operations/codesystemimport';
 
 export const fhirRouter = Router();
 
@@ -50,7 +56,7 @@ fhirRouter.use((req: Request, res: Response, next: NextFunction) => {
 
     // Unless already set, use the FHIR content type
     if (!res.get('Content-Type')) {
-      res.contentType('application/fhir+json');
+      res.contentType(ContentType.FHIR_JSON);
     }
 
     return res.json(data);
@@ -67,13 +73,17 @@ publicRoutes.get('/metadata', (_req: Request, res: Response) => {
   res.status(200).json(getCapabilityStatement());
 });
 
+// FHIR Versions
+publicRoutes.get('/([$]|%24)versions', (_req: Request, res: Response) => {
+  res.status(200).json({ versions: ['4.0'], default: '4.0' });
+});
+
 // SMART-on-FHIR configuration
 publicRoutes.get('/.well-known/smart-configuration', smartConfigurationHandler);
 publicRoutes.get('/.well-known/smart-styles.json', smartStylingHandler);
 
 // Protected routes require authentication
-const protectedRoutes = Router();
-protectedRoutes.use(authenticateToken);
+const protectedRoutes = Router().use(authenticateRequest);
 fhirRouter.use(protectedRoutes);
 
 // Project $export
@@ -83,11 +93,25 @@ protectedRoutes.post('/([$]|%24)export', bulkExportHandler);
 // Project $clone
 protectedRoutes.post('/Project/:id/([$]|%24)clone', asyncWrap(projectCloneHandler));
 
+// Project $init
+protectedRoutes.post('/Project/([$]|%24)init', asyncWrap(projectInitHandler));
+
+// ConceptMap $translate
+protectedRoutes.post('/ConceptMap/([$]|%24)translate', asyncWrap(conceptMapTranslateHandler));
+protectedRoutes.post('/ConceptMap/:id/([$]|%24)translate', asyncWrap(conceptMapTranslateHandler));
+
 // ValueSet $expand operation
 protectedRoutes.get('/ValueSet/([$]|%24)expand', expandOperator);
 
+// CodeSystem $import operation
+protectedRoutes.post('/CodeSystem/([$]|%24)import', codeSystemImportHandler);
+
 // CSV Export
 protectedRoutes.get('/:resourceType/([$]|%24)csv', asyncWrap(csvHandler));
+
+// Agent $push operation
+protectedRoutes.post('/Agent/([$]|%24)push', agentPushHandler);
+protectedRoutes.post('/Agent/:id/([$]|%24)push', agentPushHandler);
 
 // Bot $execute operation
 // Allow extra path content after the "$execute" to support external callers who append path info
@@ -130,6 +154,9 @@ protectedRoutes.get('/Patient/:id/([$]|%24)everything', asyncWrap(patientEveryth
 // $expunge operation
 protectedRoutes.post('/:resourceType/:id/([$]|%24)expunge', asyncWrap(expungeHandler));
 
+// $get-ws-binding-token operation
+protectedRoutes.get('/Subscription/:id/([$]|%24)get-ws-binding-token', asyncWrap(getWsBindingTokenHandler));
+
 // Validate create resource
 protectedRoutes.post(
   '/:resourceType/([$])validate',
@@ -147,9 +174,9 @@ protectedRoutes.post(
 protectedRoutes.post(
   '/:resourceType/:id/([$])reindex',
   asyncWrap(async (req: Request, res: Response) => {
+    const ctx = getAuthenticatedContext();
     const { resourceType, id } = req.params;
-    const repo = res.locals.repo as Repository;
-    await repo.reindexResource(resourceType, id);
+    await ctx.repo.reindexResource(resourceType, id);
     sendOutcome(res, allOk);
   })
 );
@@ -158,9 +185,9 @@ protectedRoutes.post(
 protectedRoutes.post(
   '/:resourceType/:id/([$])resend',
   asyncWrap(async (req: Request, res: Response) => {
+    const ctx = getAuthenticatedContext();
     const { resourceType, id } = req.params;
-    const repo = res.locals.repo as Repository;
-    await repo.resendSubscriptions(resourceType, id);
+    await ctx.repo.resendSubscriptions(resourceType, id);
     sendOutcome(res, allOk);
   })
 );
@@ -169,10 +196,10 @@ protectedRoutes.post(
 protectedRoutes.use(
   '*',
   asyncWrap(async (req: Request, res: Response) => {
+    const ctx = getAuthenticatedContext();
     if (!internalFhirRouter) {
       internalFhirRouter = new FhirRouter({ introspectionEnabled: getConfig().introspectionEnabled });
     }
-    const repo = res.locals.repo as Repository;
     const request: FhirRequest = {
       method: req.method as HttpMethod,
       pathname: req.originalUrl.replace('/fhir/R4', '').split('?').shift() as string,
@@ -181,7 +208,7 @@ protectedRoutes.use(
       body: req.body,
     };
 
-    const result = await internalFhirRouter.handleRequest(request, repo);
+    const result = await internalFhirRouter.handleRequest(request, ctx.repo);
     if (result.length === 1) {
       if (!isOk(result[0])) {
         throw new OperationOutcomeError(result[0]);
@@ -194,16 +221,19 @@ protectedRoutes.use(
 );
 
 export function isFhirJsonContentType(req: Request): boolean {
-  return !!(req.is('application/json') || req.is('application/fhir+json'));
+  return !!(req.is(ContentType.JSON) || req.is(ContentType.FHIR_JSON));
 }
 
 export async function sendResponse(res: Response, outcome: OperationOutcome, body: Resource): Promise<void> {
-  const repo = res.locals.repo as Repository;
+  const ctx = getAuthenticatedContext();
   if (body.meta?.versionId) {
-    res.set('ETag', `"${body.meta.versionId}"`);
+    res.set('ETag', `W/"${body.meta.versionId}"`);
   }
   if (body.meta?.lastUpdated) {
     res.set('Last-Modified', new Date(body.meta.lastUpdated).toUTCString());
   }
-  res.status(getStatus(outcome)).json(await rewriteAttachments(RewriteMode.PRESIGNED_URL, repo, body));
+  if (isCreated(outcome)) {
+    res.set('Location', getFullUrl(body.resourceType, body.id as string));
+  }
+  res.status(getStatus(outcome)).json(await rewriteAttachments(RewriteMode.PRESIGNED_URL, ctx.repo, body));
 }

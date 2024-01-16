@@ -3,6 +3,9 @@ title: User
 sidebar_position: 2
 ---
 
+import Link from '@docusaurus/Link';
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 import definition from '@site/static/data/medplumDefinitions/user.json';
 import { ResourcePropertiesTable, SearchParamsTable } from '@site/src/components/ResourceTables';
 
@@ -10,16 +13,23 @@ import { ResourcePropertiesTable, SearchParamsTable } from '@site/src/components
 
 Representation of a human user of the system.
 
-## Properties
+<Tabs queryString="section">
+  <TabItem value="schema" label="Schema" default>
 
-<ResourcePropertiesTable properties={definition.properties.filter((p) => !(p.inherited && p.base.includes('Resource')))} />
+## Elements
+
+<ResourcePropertiesTable
+  properties={definition.properties.filter((p) => !(p.inherited && p.base.includes('Resource')))}
+/>
 
 ## Search Parameters
 
 <SearchParamsTable searchParams={definition.searchParameters} />
 
-## Inherited Properties
+## Inherited Elements
 
 <ResourcePropertiesTable properties={definition.properties.filter((p) => p.inherited && p.base.includes('Resource'))} />
 
+  </TabItem>
 
+</Tabs>

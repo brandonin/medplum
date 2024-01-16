@@ -13,6 +13,7 @@
       "name" : "Project",
       "url" : "https://medplum.com/fhir/StructureDefinition/Project",
       "status" : "active",
+      "description": "Encapsulation of resources for a specific project or organization.",
       "kind" : "resource",
       "abstract" : false,
       "type" : "Project",
@@ -25,7 +26,12 @@
             "short" : "Encapsulation of resources for a specific project or organization.",
             "definition" : "Encapsulation of resources for a specific project or organization.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base": {
+              "min" : 0,
+              "max" : "*",
+              "path" : "Project"
+            }
           },
           {
             "id" : "Project.id",
@@ -96,7 +102,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.name",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Project.description",
@@ -106,7 +117,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.description",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Project.superAdmin",
@@ -117,7 +133,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.superAdmin",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Project.strictMode",
@@ -128,7 +149,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.strictMode",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Project.checkReferencesOnWrite",
@@ -139,7 +165,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.checkReferencesOnWrite",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Project.owner",
@@ -150,7 +181,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/User"]
-            }]
+            }],
+            "base" : {
+              "path" : "Project.owner",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Project.features",
@@ -160,7 +196,16 @@
             "max" : "*",
             "type" : [{
               "code" : "code"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.features",
+              "min" : 0,
+              "max" : "*"
+            },
+            "binding" : {
+              "strength" : "required",
+              "valueSet" : "https://medplum.com/fhir/ValueSet/project-feature|4.0.1"
+            }
           },
           {
             "id" : "Project.defaultPatientAccessPolicy",
@@ -171,7 +216,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/AccessPolicy"]
-            }]
+            }],
+            "base" : {
+              "path" : "Project.defaultPatientAccessPolicy",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Project.secret",
@@ -181,7 +231,12 @@
             "max" : "*",
             "type" : [{
               "code" : "BackboneElement"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.secret",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "Project.secret.name",
@@ -191,7 +246,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.secret.name",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "Project.secret.value[x]",
@@ -210,7 +270,12 @@
             },
             {
               "code" : "integer"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.secret.value[x]",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "Project.site",
@@ -220,7 +285,12 @@
             "max" : "*",
             "type" : [{
               "code" : "BackboneElement"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.site",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "Project.site.name",
@@ -230,7 +300,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.site.name",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "Project.site.domain",
@@ -240,7 +315,12 @@
             "max" : "*",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.site.domain",
+              "min" : 1,
+              "max" : "*"
+            }
           },
           {
             "id" : "Project.site.googleClientId",
@@ -250,7 +330,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.site.googleClientId",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Project.site.googleClientSecret",
@@ -260,7 +345,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.site.googleClientSecret",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Project.site.recaptchaSiteKey",
@@ -270,7 +360,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.site.recaptchaSiteKey",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Project.site.recaptchaSecretKey",
@@ -280,7 +375,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Project.site.recaptchaSecretKey",
+              "min" : 0,
+              "max" : "1"
+            }
           }
         ]
       }
@@ -294,6 +394,7 @@
       "name" : "ClientApplication",
       "url" : "https://medplum.com/fhir/StructureDefinition/ClientApplication",
       "status" : "active",
+      "description": "Medplum client application for automated access.",
       "kind" : "resource",
       "abstract" : false,
       "type" : "ClientApplication",
@@ -306,7 +407,12 @@
             "short" : "Medplum client application for automated access.",
             "definition" : "Medplum client application for automated access.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base": {
+              "path" : "ClientApplication",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "ClientApplication.id",
@@ -370,6 +476,26 @@
             }]
           },
           {
+            "id" : "ClientApplication.status",
+            "path" : "ClientApplication.status",
+            "short" : "active | error | off",
+            "definition" : "The client application status. The status is active by default. The status can be set to error to indicate that the client application is not working properly. The status can be set to off to indicate that the client application is no longer in use.",
+            "min" : 0,
+            "max" : "1",
+            "base" : {
+              "path" : "ClientApplication.status",
+              "min" : 1,
+              "max" : "1"
+            },
+            "type" : [{
+              "code" : "code"
+            }],
+            "binding" : {
+              "strength" : "required",
+              "valueSet" : "https://medplum.com/fhir/CodeSystem/client-application-status"
+            }
+          },
+          {
             "id" : "ClientApplication.name",
             "path" : "ClientApplication.name",
             "definition" : "A name associated with the ClientApplication.",
@@ -377,7 +503,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base": {
+              "path" : "ClientApplication.name",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "ClientApplication.description",
@@ -387,7 +518,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base": {
+              "path" : "ClientApplication.description",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "ClientApplication.secret",
@@ -397,7 +533,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base": {
+              "path" : "ClientApplication.secret",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "ClientApplication.jwksUri",
@@ -407,7 +548,12 @@
             "max" : "1",
             "type" : [{
               "code" : "uri"
-            }]
+            }],
+            "base": {
+              "path" : "ClientApplication.jwksUri",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "ClientApplication.redirectUri",
@@ -417,7 +563,12 @@
             "max" : "1",
             "type" : [{
               "code" : "uri"
-            }]
+            }],
+            "base": {
+              "path" : "ClientApplication.redirectUri",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "ClientApplication.launchUri",
@@ -427,7 +578,12 @@
             "max" : "1",
             "type" : [{
               "code" : "uri"
-            }]
+            }],
+            "base": {
+              "path" : "ClientApplication.launchUri",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "ClientApplication.pkceOptional",
@@ -437,7 +593,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base": {
+              "path" : "ClientApplication.pkceOptional",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "ClientApplication.identityProvider",
@@ -447,7 +608,12 @@
             "max" : "1",
             "type" : [{
               "code" : "IdentityProvider"
-            }]
+            }],
+            "base": {
+              "path" : "ClientApplication.identityProvider",
+              "min" : 0,
+              "max" : "1"
+            }
           }
         ]
       }
@@ -474,7 +640,12 @@
             "short" : "Representation of a human user of the system",
             "definition" : "Representation of a human user of the system.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base" : {
+              "path" : "User",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "User.id",
@@ -545,7 +716,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base": {
+              "path" : "User.firstName",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "User.lastName",
@@ -555,7 +731,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base": {
+              "path" : "User.lastName",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "User.externalId",
@@ -565,7 +746,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base": {
+              "path" : "User.externalId",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "User.email",
@@ -575,7 +761,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base": {
+              "path" : "User.email",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "User.emailVerified",
@@ -585,7 +776,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base": {
+              "path" : "User.emailVerified",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "User.admin",
@@ -596,7 +792,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base": {
+              "path" : "User.admin",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "User.passwordHash",
@@ -606,7 +807,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base": {
+              "path" : "User.passwordHash",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "User.mfaSecret",
@@ -616,7 +822,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base": {
+              "path" : "User.mfaSecret",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "User.mfaEnrolled",
@@ -626,7 +837,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base": {
+              "path" : "User.mfaEnrolled",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "User.project",
@@ -637,7 +853,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/Project"]
-            }]
+            }],
+            "base": {
+              "path" : "User.project",
+              "min" : 0,
+              "max" : "1"
+            }
           }
         ]
       }
@@ -664,7 +885,12 @@
             "short" : "Medplum project membership. A project membership grants a user access to a project.",
             "definition" : "Medplum project membership. A project membership grants a user access to a project.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base": {
+              "path" : "ProjectMembership",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "ProjectMembership.id",
@@ -736,7 +962,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/Project"]
-            }]
+            }],
+            "base": {
+              "path" : "ProjectMembership.project",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "ProjectMembership.invitedBy",
@@ -747,7 +978,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/User"]
-            }]
+            }],
+            "base": {
+              "path" : "ProjectMembership.invitedBy",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "ProjectMembership.user",
@@ -760,7 +996,12 @@
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/Bot",
                 "https://medplum.com/fhir/StructureDefinition/ClientApplication",
                 "https://medplum.com/fhir/StructureDefinition/User"]
-            }]
+            }],
+            "base": {
+              "path" : "ProjectMembership.user",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "ProjectMembership.profile",
@@ -775,7 +1016,12 @@
                 "http://hl7.org/fhir/StructureDefinition/Patient",
                 "http://hl7.org/fhir/StructureDefinition/Practitioner",
                 "http://hl7.org/fhir/StructureDefinition/RelatedPerson"]
-            }]
+            }],
+            "base": {
+              "path" : "ProjectMembership.profile",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "ProjectMembership.externalId",
@@ -785,7 +1031,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base": {
+              "path" : "ProjectMembership.externalId",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "ProjectMembership.accessPolicy",
@@ -796,7 +1047,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/AccessPolicy"]
-            }]
+            }],
+            "base": {
+              "path" : "ProjectMembership.accessPolicy",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "ProjectMembership.access",
@@ -806,7 +1062,12 @@
             "max" : "*",
             "type" : [{
               "code" : "BackboneElement"
-            }]
+            }],
+            "base": {
+              "path" : "ProjectMembership.access",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "ProjectMembership.access.policy",
@@ -819,7 +1080,12 @@
                 "code" : "Reference",
                 "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/AccessPolicy"]
               }
-            ]
+            ],
+            "base": {
+              "path" : "ProjectMembership.access.policy",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "ProjectMembership.access.parameter",
@@ -829,7 +1095,12 @@
             "max" : "*",
             "type" : [{
               "code" : "BackboneElement"
-            }]
+            }],
+            "base": {
+              "path" : "ProjectMembership.access.parameter",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "ProjectMembership.access.parameter.name",
@@ -839,7 +1110,12 @@
             "max" : "1",
             "type" : [{
               "code" : "code"
-            }]
+            }],
+            "base": {
+              "path" : "ProjectMembership.access.parameter.name",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "ProjectMembership.access.parameter.value[x]",
@@ -854,7 +1130,12 @@
             },
             {
               "code" : "Reference"
-            }]
+            }],
+            "base": {
+              "path" : "ProjectMembership.access.parameter.value[x]",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "ProjectMembership.userConfiguration",
@@ -865,7 +1146,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/UserConfiguration"]
-            }]
+            }],
+            "base": {
+              "path" : "ProjectMembership.userConfiguration",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "ProjectMembership.admin",
@@ -876,7 +1162,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base": {
+              "path" : "ProjectMembership.admin",
+              "min" : 0,
+              "max" : "1"
+            }
           }
         ]
       }
@@ -903,7 +1194,12 @@
             "short" : "Bot account for automated actions.",
             "definition" : "Bot account for automated actions.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base" : {
+              "path" : "Bot",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "Bot.id",
@@ -975,7 +1271,12 @@
             "max" : "*",
             "type" : [{
               "code" : "Identifier"
-            }]
+            }],
+            "base" : {
+              "path" : "Bot.identifier",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "Bot.name",
@@ -985,7 +1286,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Bot.name",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Bot.description",
@@ -995,7 +1301,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Bot.description",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Bot.runtimeVersion",
@@ -1004,8 +1315,17 @@
             "min" : 0,
             "max" : "1",
             "type" : [{
-              "code" : "string"
-            }]
+              "code" : "code"
+            }],
+            "base" : {
+              "path" : "Bot.runtimeVersion",
+              "min" : 0,
+              "max" : "1"
+            },
+            "binding" : {
+              "strength" : "required",
+              "valueSet" : "https://medplum.com/fhir/ValueSet/bot-runtime-version|4.0.1"
+            }
           },
           {
             "id" : "Bot.photo",
@@ -1015,7 +1335,12 @@
             "max" : "1",
             "type" : [{
               "code" : "Attachment"
-            }]
+            }],
+            "base" : {
+              "path" : "Bot.photo",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id": "Bot.cron[x]",
@@ -1027,17 +1352,12 @@
               "code": "Timing"
             }, {
               "code": "string"
-            }]
-          },
-          {
-            "id" : "Bot.code",
-            "path" : "Bot.code",
-            "definition" : "Bot logic script.",
-            "min" : 0,
-            "max" : "1",
-            "type" : [{
-              "code" : "string"
-            }]
+            }],
+            "base": {
+              "path": "Bot.cron[x]",
+              "min": 0,
+              "max": "1"
+            }
           },
           {
             "id" : "Bot.category",
@@ -1049,7 +1369,12 @@
             "max" : "*",
             "type" : [{
               "code" : "CodeableConcept"
-            }]
+            }],
+            "base" : {
+              "path" : "Bot.category",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "Bot.runAsUser",
@@ -1059,7 +1384,95 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
+            }],
+            "base" : {
+              "path" : "Bot.runAsUser",
+              "min" : 0,
+              "max" : "1"
+            }
+          },
+          {
+            "id" : "Bot.auditEventTrigger",
+            "path" : "Bot.auditEventTrigger",
+            "definition" : "Criteria for creating an AuditEvent as a result of the bot invocation. Possible values are 'always', 'never', 'on-error', or 'on-output'. Default value is 'always'.",
+            "min" : 0,
+            "max" : "1",
+            "base" : {
+              "path" : "Bot.auditEventTrigger",
+              "min" : 0,
+              "max" : "1"
+            },
+            "type" : [{
+              "code" : "code"
+            }],
+            "binding" : {
+              "strength" : "required",
+              "valueSet" : "https://medplum.com/fhir/ValueSet/bot-audit-event-trigger|4.0.1"
+            }
+          },
+          {
+            "id" : "Bot.auditEventDestination",
+            "path" : "Bot.auditEventDestination",
+            "definition" : "The destination system in which the AuditEvent is to be sent. Possible values are 'log' or 'resource'. Default value is 'resource'.",
+            "min" : 0,
+            "max" : "*",
+            "base" : {
+              "path" : "Bot.auditEventDestination",
+              "min" : 0,
+              "max" : "*"
+            },
+            "type" : [{
+              "code" : "code"
+            }],
+            "binding" : {
+              "strength" : "required",
+              "valueSet" : "https://medplum.com/fhir/ValueSet/bot-audit-event-destination|4.0.1"
+            }
+          },
+          {
+            "id" : "Bot.sourceCode",
+            "path" : "Bot.sourceCode",
+            "definition" : "Bot logic in original source code form written by developers.",
+            "min" : 0,
+            "max" : "1",
+            "base" : {
+              "path" : "Bot.sourceCode",
+              "min" : 0,
+              "max" : "1"
+            },
+            "type" : [{
+              "code" : "Attachment"
             }]
+          },
+          {
+            "id" : "Bot.executableCode",
+            "path" : "Bot.executableCode",
+            "definition" : "Bot logic in executable form as a result of compiling and bundling source code.",
+            "min" : 0,
+            "max" : "1",
+            "base" : {
+              "path" : "Bot.executableCode",
+              "min" : 0,
+              "max" : "1"
+            },
+            "type" : [{
+              "code" : "Attachment"
+            }]
+          },
+          {
+            "id" : "Bot.code",
+            "path" : "Bot.code",
+            "definition" : "DEPRECATED Bot logic script. Use Bot.sourceCode or Bot.executableCode instead.",
+            "min" : 0,
+            "max" : "1",
+            "type" : [{
+              "code" : "string"
+            }],
+            "base" : {
+              "path" : "Bot.code",
+              "min" : 0,
+              "max" : "1"
+            }
           }
         ]
       }
@@ -1086,7 +1499,12 @@
             "short" : "Login event and session details.",
             "definition" : "Login event and session details.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base" : {
+              "path" : "Login",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "Login.id",
@@ -1158,7 +1576,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/ClientApplication"]
-            }]
+            }],
+            "base" : {
+              "path" : "Login.client",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.profileType",
@@ -1172,6 +1595,11 @@
             "binding" : {
               "strength" : "required",
               "valueSet" : "http://hl7.org/fhir/ValueSet/resource-types|4.0.1"
+            },
+            "base" : {
+              "path" : "Login.profileType",
+              "min" : 0,
+              "max" : "1"
             }
           },
           {
@@ -1183,7 +1611,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/Project"]
-            }]
+            }],
+            "base" : {
+              "path" : "Login.project",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.user",
@@ -1196,7 +1629,12 @@
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/Bot",
                 "https://medplum.com/fhir/StructureDefinition/ClientApplication",
                 "https://medplum.com/fhir/StructureDefinition/User"]
-            }]
+            }],
+            "base" : {
+              "path" : "Login.user",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.membership",
@@ -1207,7 +1645,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/ProjectMembership"]
-            }]
+            }],
+            "base" : {
+              "path" : "Login.membership",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.scope",
@@ -1217,7 +1660,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.scope",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.authMethod",
@@ -1226,8 +1674,17 @@
             "min" : 1,
             "max" : "1",
             "type" : [{
-              "code" : "string"
-            }]
+              "code" : "code"
+            }],
+            "base" : {
+              "path" : "Login.authMethod",
+              "min" : 1,
+              "max" : "1"
+            },
+            "binding" : {
+              "strength" : "required",
+              "valueSet" : "https://medplum.com/fhir/ValueSet/login-auth-method|4.0.1"
+            }
           },
           {
             "id" : "Login.authTime",
@@ -1237,7 +1694,12 @@
             "max" : "1",
             "type" : [{
               "code" : "instant"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.authTime",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.cookie",
@@ -1247,7 +1709,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.cookie",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.code",
@@ -1257,7 +1724,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.code",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.codeChallenge",
@@ -1267,7 +1739,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.codeChallenge",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.codeChallengeMethod",
@@ -1276,8 +1753,17 @@
             "min" : 0,
             "max" : "1",
             "type" : [{
-              "code" : "string"
-            }]
+              "code" : "code"
+            }],
+            "base" : {
+              "path" : "Login.codeChallengeMethod",
+              "min" : 0,
+              "max" : "1"
+            },
+            "binding" : {
+              "strength" : "required",
+              "valueSet" : "https://medplum.com/fhir/ValueSet/login-code-challenge-method|4.0.1"
+            }
           },
           {
             "id" : "Login.refreshSecret",
@@ -1287,7 +1773,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.refreshSecret",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.nonce",
@@ -1297,7 +1788,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.nonce",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.mfaVerified",
@@ -1307,7 +1803,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.mfaVerified",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.granted",
@@ -1317,7 +1818,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.granted",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.revoked",
@@ -1327,7 +1833,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.revoked",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.admin",
@@ -1337,7 +1848,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.admin",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.superAdmin",
@@ -1347,7 +1863,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.superAdmin",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.launch",
@@ -1358,7 +1879,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/SmartAppLaunch"]
-            }]
+            }],
+            "base" : {
+              "path" : "Login.launch",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.remoteAddress",
@@ -1368,7 +1894,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.remoteAddress",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "Login.userAgent",
@@ -1378,7 +1909,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "Login.userAgent",
+              "min" : 0,
+              "max" : "1"
+            }
           }
         ]
       }
@@ -1405,7 +1941,12 @@
             "short" : "Password change request for the 'forgot password' flow.",
             "definition" : "Password change request for the 'forgot password' flow.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base": {
+              "path" : "PasswordChangeRequest",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "PasswordChangeRequest.id",
@@ -1469,6 +2010,25 @@
             }]
           },
           {
+            "id" : "PasswordChangeRequest.type",
+            "path" : "PasswordChangeRequest.type",
+            "definition" : "The type of password change request (invite or reset).",
+            "min" : 0,
+            "max" : "1",
+            "type" : [{
+              "code" : "code"
+            }],
+            "base" : {
+              "path" : "PasswordChangeRequest.type",
+              "min" : 0,
+              "max" : "1"
+            },
+            "binding" : {
+              "strength" : "required",
+              "valueSet" : "https://medplum.com/fhir/ValueSet/password-change-request-type|4.0.1"
+            }
+          },
+          {
             "id" : "PasswordChangeRequest.user",
             "path" : "PasswordChangeRequest.user",
             "definition" : "The user requesting the password change.",
@@ -1477,7 +2037,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/User"]
-            }]
+            }],
+            "base" : {
+              "path" : "PasswordChangeRequest.user",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "PasswordChangeRequest.secret",
@@ -1487,7 +2052,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "PasswordChangeRequest.secret",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "PasswordChangeRequest.used",
@@ -1497,7 +2067,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base" : {
+              "path" : "PasswordChangeRequest.used",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "PasswordChangeRequest.redirectUri",
@@ -1507,7 +2082,12 @@
             "max" : "1",
             "type" : [{
               "code" : "uri"
-            }]
+            }],
+            "base" : {
+              "path" : "PasswordChangeRequest.redirectUri",
+              "min" : 0,
+              "max" : "1"
+            }
           }
         ]
       }
@@ -1534,7 +2114,12 @@
             "short" : "A JSON object that represents a cryptographic key.",
             "definition" : "A JSON object that represents a cryptographic key. The members of the object represent properties of the key, including its value.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base": {
+              "path" : "JsonWebKey",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "JsonWebKey.id",
@@ -1607,7 +2192,12 @@
               {
                 "code": "boolean"
               }
-            ]
+            ],
+            "base": {
+              "path": "JsonWebKey.active",
+              "min": 0,
+              "max": "1"
+            }
           },
           {
             "id": "JsonWebKey.alg",
@@ -1619,7 +2209,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path": "JsonWebKey.alg",
+              "min": 0,
+              "max": "1"
+            }
           },
           {
             "id": "JsonWebKey.kty",
@@ -1631,7 +2226,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path": "JsonWebKey.kty",
+              "min": 0,
+              "max": "1"
+            }
           },
           {
             "id": "JsonWebKey.use",
@@ -1643,7 +2243,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path" : "JsonWebKey.use",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id": "JsonWebKey.key_ops",
@@ -1655,7 +2260,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path" : "JsonWebKey.key_ops",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id": "JsonWebKey.x5c",
@@ -1667,7 +2277,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path" : "JsonWebKey.x5c",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id": "JsonWebKey.n",
@@ -1679,7 +2294,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path" : "JsonWebKey.n",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id": "JsonWebKey.e",
@@ -1691,7 +2311,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path" : "JsonWebKey.e",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id": "JsonWebKey.kid",
@@ -1703,7 +2328,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path" : "JsonWebKey.kid",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id": "JsonWebKey.x5t",
@@ -1715,7 +2345,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path" : "JsonWebKey.x5t",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id": "JsonWebKey.d",
@@ -1727,7 +2362,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path" : "JsonWebKey.d",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id": "JsonWebKey.p",
@@ -1739,7 +2379,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path" : "JsonWebKey.p",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id": "JsonWebKey.q",
@@ -1751,7 +2396,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path" : "JsonWebKey.q",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id": "JsonWebKey.dp",
@@ -1763,7 +2413,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path" : "JsonWebKey.dp",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id": "JsonWebKey.dq",
@@ -1775,7 +2430,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path" : "JsonWebKey.dq",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id": "JsonWebKey.qi",
@@ -1787,7 +2447,12 @@
               {
                 "code": "string"
               }
-            ]
+            ],
+            "base": {
+              "path" : "JsonWebKey.qi",
+              "min" : 0,
+              "max" : "1"
+            }
           }
         ]
       }
@@ -1814,7 +2479,12 @@
             "short" : "Access Policy for user or user group that defines how entities can or cannot access resources.",
             "definition" : "Access Policy for user or user group that defines how entities can or cannot access resources.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base": {
+              "path" : "AccessPolicy",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "AccessPolicy.id",
@@ -1885,7 +2555,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "AccessPolicy.name",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "AccessPolicy.compartment",
@@ -1895,7 +2570,12 @@
             "max" : "1",
             "type" : [{
               "code" : "Reference"
-            }]
+            }],
+            "base" : {
+              "path" : "AccessPolicy.compartment",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "AccessPolicy.resource",
@@ -1905,7 +2585,12 @@
             "max" : "*",
             "type" : [{
               "code" : "BackboneElement"
-            }]
+            }],
+            "base" : {
+              "path" : "AccessPolicy.resource",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "AccessPolicy.resource.resourceType",
@@ -1915,7 +2600,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "AccessPolicy.resource.resourceType",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "AccessPolicy.resource.compartment",
@@ -1925,7 +2615,12 @@
             "max" : "1",
             "type" : [{
               "code" : "Reference"
-            }]
+            }],
+            "base" : {
+              "path" : "AccessPolicy.resource.compartment",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "AccessPolicy.resource.criteria",
@@ -1936,7 +2631,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "AccessPolicy.resource.criteria",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "AccessPolicy.resource.readonly",
@@ -1946,7 +2646,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base" : {
+              "path" : "AccessPolicy.resource.readonly",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "AccessPolicy.resource.hiddenFields",
@@ -1956,7 +2661,12 @@
             "max" : "*",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "AccessPolicy.resource.hiddenFields",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "AccessPolicy.resource.readonlyFields",
@@ -1966,7 +2676,35 @@
             "max" : "*",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "AccessPolicy.resource.readonlyFields",
+              "min" : 0,
+              "max" : "*"
+            }
+          },
+          {
+            "id" : "AccessPolicy.resource.writeConstraint",
+            "path" : "AccessPolicy.resource.writeConstraint",
+            "definition" : "Invariants that must be satisfied for the resource to be written.  Can include %before and %after placeholders to refer to the resource before and after the updates are applied.",
+            "min" : 0,
+            "max" : "*",
+            "type" : [{
+              "code" : "Expression"
+            }],
+            "base" : {
+              "path" : "AccessPolicy.resource.writeConstraint",
+              "min" : 0,
+              "max" : "*"
+            },
+            "constraint": [
+              {
+                "key": "axp-1",
+                "severity": "error",
+                "human": "Write constraint expressions must be literal text/fhirpath strings",
+                "expression": "expression.exists() and language = 'text/fhirpath'"
+              }
+            ]
           },
           {
             "id" : "AccessPolicy.ipAccessRule",
@@ -1976,7 +2714,12 @@
             "max" : "*",
             "type" : [{
               "code" : "BackboneElement"
-            }]
+            }],
+            "base" : {
+              "path" : "AccessPolicy.ipAccessRule",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "AccessPolicy.ipAccessRule.name",
@@ -1986,7 +2729,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "AccessPolicy.ipAccessRule.name",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "AccessPolicy.ipAccessRule.value",
@@ -1996,7 +2744,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "AccessPolicy.ipAccessRule.value",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "AccessPolicy.ipAccessRule.action",
@@ -2005,8 +2758,17 @@
             "min" : 1,
             "max" : "1",
             "type" : [{
-              "code" : "string"
-            }]
+              "code" : "code"
+            }],
+            "base" : {
+              "path" : "AccessPolicy.ipAccessRule.action",
+              "min" : 1,
+              "max" : "1"
+            },
+            "binding" : {
+              "strength" : "required",
+              "valueSet" : "https://medplum.com/fhir/ValueSet/ip-access-rule-action|4.0.1"
+            }
           }
         ]
       }
@@ -2033,7 +2795,12 @@
             "short" : "User specific configuration for the Medplum application.",
             "definition" : "User specific configuration for the Medplum application.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base": {
+              "path" : "UserConfiguration",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "UserConfiguration.id",
@@ -2104,7 +2871,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "UserConfiguration.name",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "UserConfiguration.menu",
@@ -2114,7 +2886,12 @@
             "max" : "*",
             "type" : [{
               "code" : "BackboneElement"
-            }]
+            }],
+            "base" : {
+              "path" : "UserConfiguration.menu",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "UserConfiguration.menu.title",
@@ -2124,7 +2901,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "UserConfiguration.menu.title",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "UserConfiguration.menu.link",
@@ -2134,7 +2916,12 @@
             "max" : "*",
             "type" : [{
               "code" : "BackboneElement"
-            }]
+            }],
+            "base" : {
+              "path" : "UserConfiguration.menu.link",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "UserConfiguration.menu.link.name",
@@ -2144,7 +2931,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "UserConfiguration.menu.link.name",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "UserConfiguration.menu.link.target",
@@ -2154,7 +2946,12 @@
             "max" : "1",
             "type" : [{
               "code" : "url"
-            }]
+            }],
+            "base" : {
+              "path" : "UserConfiguration.menu.link.target",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "UserConfiguration.search",
@@ -2164,7 +2961,12 @@
             "max" : "*",
             "type" : [{
               "code" : "BackboneElement"
-            }]
+            }],
+            "base" : {
+              "path" : "UserConfiguration.search",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "UserConfiguration.search.name",
@@ -2174,7 +2976,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "UserConfiguration.search.name",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "UserConfiguration.search.criteria",
@@ -2185,7 +2992,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "UserConfiguration.search.criteria",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "UserConfiguration.option",
@@ -2195,7 +3007,12 @@
             "max" : "*",
             "type" : [{
               "code" : "BackboneElement"
-            }]
+            }],
+            "base" : {
+              "path" : "UserConfiguration.option",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "UserConfiguration.option.id",
@@ -2205,7 +3022,12 @@
             "max" : "1",
             "type" : [{
               "code" : "code"
-            }]
+            }],
+            "base" : {
+              "path" : "UserConfiguration.option.id",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "UserConfiguration.option.value[x]",
@@ -2229,7 +3051,12 @@
             },
             {
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "UserConfiguration.option.value[x]",
+              "min" : 1,
+              "max" : "1"
+            }
           }
         ]
       }
@@ -2256,7 +3083,12 @@
             "short" : "User specific configuration for the Medplum application.",
             "definition" : "User specific configuration for the Medplum application.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base": {
+              "path" : "BulkDataExport",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "BulkDataExport.id",
@@ -2327,13 +3159,17 @@
             "min" : 1,
             "max" : "1",
             "base" : {
-              "path" : "ServiceRequest.status",
+              "path" : "BulkDataExport.status",
               "min" : 1,
               "max" : "1"
             },
             "type" : [{
               "code" : "code"
-            }]
+            }],
+            "binding" : {
+              "strength" : "required",
+              "valueSet" : "https://medplum.com/fhir/ValueSet/async-job-status|4.0.1"
+            }
           },
           {
             "id" : "BulkDataExport.requestTime",
@@ -2343,7 +3179,12 @@
             "max" : "1",
             "type" : [{
               "code" : "instant"
-            }]
+            }],
+            "base" : {
+              "path" : "BulkDataExport.requestTime",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "BulkDataExport.transactionTime",
@@ -2353,7 +3194,12 @@
             "max" : "1",
             "type" : [{
               "code" : "instant"
-            }]
+            }],
+            "base" : {
+              "path" : "BulkDataExport.transactionTime",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "BulkDataExport.request",
@@ -2363,7 +3209,12 @@
             "max" : "1",
             "type" : [{
               "code" : "uri"
-            }]
+            }],
+            "base" : {
+              "path" : "BulkDataExport.request",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "BulkDataExport.requiresAccessToken",
@@ -2373,7 +3224,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base" : {
+              "path" : "BulkDataExport.requiresAccessToken",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "BulkDataExport.output",
@@ -2383,7 +3239,12 @@
             "max" : "*",
             "type" : [{
               "code" : "BackboneElement"
-            }]
+            }],
+            "base" : {
+              "path" : "BulkDataExport.output",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "BulkDataExport.output.type",
@@ -2394,15 +3255,12 @@
             "type" : [{
               "code" : "code"
             }],
+            "base" : {
+              "path" : "BulkDataExport.output.type",
+              "min" : 1,
+              "max" : "1"
+            },
             "binding" : {
-              "extension" : [{
-                "url" : "http://hl7.org/fhir/StructureDefinition/elementdefinition-bindingName",
-                "valueString" : "ResourceType"
-              },
-              {
-                "url" : "http://hl7.org/fhir/StructureDefinition/elementdefinition-isCommonBinding",
-                "valueBoolean" : true
-              }],
               "strength" : "required",
               "description" : "One of the resource types defined as part of this version of FHIR.",
               "valueSet" : "http://hl7.org/fhir/ValueSet/resource-types|4.0.1"
@@ -2416,7 +3274,12 @@
             "max" : "1",
             "type" : [{
               "code" : "uri"
-            }]
+            }],
+            "base" : {
+              "path" : "BulkDataExport.output.url",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "BulkDataExport.deleted",
@@ -2426,7 +3289,12 @@
             "max" : "*",
             "type" : [{
               "code" : "BackboneElement"
-            }]
+            }],
+            "base" : {
+              "path" : "BulkDataExport.deleted",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "BulkDataExport.deleted.type",
@@ -2437,15 +3305,12 @@
             "type" : [{
               "code" : "code"
             }],
+            "base" : {
+              "path" : "BulkDataExport.deleted.type",
+              "min" : 1,
+              "max" : "1"
+            },
             "binding" : {
-              "extension" : [{
-                "url" : "http://hl7.org/fhir/StructureDefinition/elementdefinition-bindingName",
-                "valueString" : "ResourceType"
-              },
-              {
-                "url" : "http://hl7.org/fhir/StructureDefinition/elementdefinition-isCommonBinding",
-                "valueBoolean" : true
-              }],
               "strength" : "required",
               "description" : "One of the resource types defined as part of this version of FHIR.",
               "valueSet" : "http://hl7.org/fhir/ValueSet/resource-types|4.0.1"
@@ -2459,7 +3324,12 @@
             "max" : "1",
             "type" : [{
               "code" : "uri"
-            }]
+            }],
+            "base" : {
+              "path" : "BulkDataExport.deleted.url",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "BulkDataExport.error",
@@ -2469,7 +3339,12 @@
             "max" : "*",
             "type" : [{
               "code" : "BackboneElement"
-            }]
+            }],
+            "base" : {
+              "path" : "BulkDataExport.error",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "BulkDataExport.error.type",
@@ -2480,15 +3355,12 @@
             "type" : [{
               "code" : "code"
             }],
+            "base" : {
+              "path" : "BulkDataExport.error.type",
+              "min" : 1,
+              "max" : "1"
+            },
             "binding" : {
-              "extension" : [{
-                "url" : "http://hl7.org/fhir/StructureDefinition/elementdefinition-bindingName",
-                "valueString" : "ResourceType"
-              },
-              {
-                "url" : "http://hl7.org/fhir/StructureDefinition/elementdefinition-isCommonBinding",
-                "valueBoolean" : true
-              }],
               "strength" : "required",
               "description" : "One of the resource types defined as part of this version of FHIR.",
               "valueSet" : "http://hl7.org/fhir/ValueSet/resource-types|4.0.1"
@@ -2502,7 +3374,12 @@
             "max" : "1",
             "type" : [{
               "code" : "uri"
-            }]
+            }],
+            "base" : {
+              "path" : "BulkDataExport.error.url",
+              "min" : 1,
+              "max" : "1"
+            }
           }
         ]
       }
@@ -2529,7 +3406,12 @@
             "short" : "This resource contains context details for a SMART App Launch.",
             "definition" : "This resource contains context details for a SMART App Launch.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base": {
+              "path" : "SmartAppLaunch",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "SmartAppLaunch.id",
@@ -2585,7 +3467,12 @@
             "max" : "1",
             "type" : [{
               "code" : "code"
-            }]
+            }],
+            "base" : {
+              "path" : "SmartAppLaunch.language",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "SmartAppLaunch.patient",
@@ -2596,7 +3483,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["http://hl7.org/fhir/StructureDefinition/Patient"]
-            }]
+            }],
+            "base" : {
+              "path" : "SmartAppLaunch.patient",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "SmartAppLaunch.encounter",
@@ -2607,7 +3499,12 @@
             "type" : [{
               "code" : "Reference",
               "targetProfile" : ["http://hl7.org/fhir/StructureDefinition/Encounter"]
-            }]
+            }],
+            "base" : {
+              "path" : "SmartAppLaunch.encounter",
+              "min" : 0,
+              "max" : "1"
+            }
           }
         ]
       }
@@ -2634,7 +3531,12 @@
             "short" : "Domain specific configuration for the Medplum application.",
             "definition" : "Domain specific configuration for the Medplum application.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base": {
+              "path" : "DomainConfiguration",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "DomainConfiguration.id",
@@ -2690,7 +3592,12 @@
             "max" : "1",
             "type" : [{
               "code" : "code"
-            }]
+            }],
+            "base" : {
+              "path" : "DomainConfiguration.language",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "DomainConfiguration.domain",
@@ -2700,7 +3607,12 @@
             "max" : "1",
             "type" : [{
               "code" : "uri"
-            }]
+            }],
+            "base" : {
+              "path" : "DomainConfiguration.domain",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "DomainConfiguration.identityProvider",
@@ -2710,7 +3622,12 @@
             "max" : "1",
             "type" : [{
               "code" : "IdentityProvider"
-            }]
+            }],
+            "base" : {
+              "path" : "DomainConfiguration.identityProvider",
+              "min" : 0,
+              "max" : "1"
+            }
           }
         ]
       }
@@ -2737,7 +3654,12 @@
             "short" : "External Identity Provider (IdP) configuration details.",
             "definition" : "External Identity Provider (IdP) configuration details.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base": {
+              "path" : "IdentityProvider",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "IdentityProvider.authorizeUrl",
@@ -2747,7 +3669,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "IdentityProvider.authorizeUrl",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "IdentityProvider.tokenUrl",
@@ -2757,7 +3684,31 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "IdentityProvider.tokenUrl",
+              "min" : 1,
+              "max" : "1"
+            }
+          },
+          {
+            "id" : "IdentityProvider.tokenAuthMethod",
+            "path" : "IdentityProvider.tokenAuthMethod",
+            "definition" : "Client Authentication method used by Clients to authenticate to the Authorization Server when using the Token Endpoint. If no method is registered, the default method is client_secret_basic.",
+            "min" : 0,
+            "max" : "1",
+            "base" : {
+              "path" : "IdentityProvider.tokenAuthMethod",
+              "min" : 0,
+              "max" : "1"
+            },
+            "type" : [{
+              "code" : "code"
+            }],
+            "binding" : {
+              "strength" : "required",
+              "valueSet" : "https://medplum.com/fhir/ValueSet/token-endpoint-auth-methods-supported|4.0.1"
+            }
           },
           {
             "id" : "IdentityProvider.userInfoUrl",
@@ -2767,7 +3718,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "IdentityProvider.userInfoUrl",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "IdentityProvider.clientId",
@@ -2777,7 +3733,12 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "IdentityProvider.clientId",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "IdentityProvider.clientSecret",
@@ -2787,7 +3748,28 @@
             "max" : "1",
             "type" : [{
               "code" : "string"
-            }]
+            }],
+            "base" : {
+              "path" : "IdentityProvider.clientSecret",
+              "min" : 1,
+              "max" : "1"
+            }
+          },
+          {
+            "id" : "IdentityProvider.usePkce",
+            "path" : "IdentityProvider.usePkce",
+            "short" : "Optional flag to use PKCE in the token request.",
+            "definition" : "Optional flag to use PKCE in the token request.",
+            "min" : 0,
+            "max" : "1",
+            "type" : [{
+              "code" : "boolean"
+            }],
+            "base" : {
+              "path" : "IdentityProvider.usePkce",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "IdentityProvider.useSubject",
@@ -2798,7 +3780,12 @@
             "max" : "1",
             "type" : [{
               "code" : "boolean"
-            }]
+            }],
+            "base" : {
+              "path" : "IdentityProvider.useSubject",
+              "min" : 0,
+              "max" : "1"
+            }
           }
         ]
       }
@@ -2825,7 +3812,12 @@
             "short" : "Contains details of long running asynchronous/background jobs.",
             "definition" : "Contains details of long running asynchronous/background jobs.",
             "min" : 0,
-            "max" : "*"
+            "max" : "*",
+            "base": {
+              "path" : "AsyncJob",
+              "min" : 0,
+              "max" : "*"
+            }
           },
           {
             "id" : "AsyncJob.id",
@@ -2896,13 +3888,17 @@
             "min" : 1,
             "max" : "1",
             "base" : {
-              "path" : "ServiceRequest.status",
+              "path" : "AsyncJob.status",
               "min" : 1,
               "max" : "1"
             },
             "type" : [{
               "code" : "code"
-            }]
+            }],
+            "binding" : {
+              "strength" : "required",
+              "valueSet" : "https://medplum.com/fhir/ValueSet/async-job-status|4.0.1"
+            }
           },
           {
             "id" : "AsyncJob.requestTime",
@@ -2912,7 +3908,12 @@
             "max" : "1",
             "type" : [{
               "code" : "instant"
-            }]
+            }],
+            "base" : {
+              "path" : "AsyncJob.requestTime",
+              "min" : 1,
+              "max" : "1"
+            }
           },
           {
             "id" : "AsyncJob.transactionTime",
@@ -2922,7 +3923,12 @@
             "max" : "1",
             "type" : [{
               "code" : "instant"
-            }]
+            }],
+            "base" : {
+              "path" : "AsyncJob.transactionTime",
+              "min" : 0,
+              "max" : "1"
+            }
           },
           {
             "id" : "AsyncJob.request",
@@ -2932,7 +3938,292 @@
             "max" : "1",
             "type" : [{
               "code" : "uri"
+            }],
+            "base" : {
+              "path" : "AsyncJob.request",
+              "min" : 1,
+              "max" : "1"
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fullUrl" : "https://medplum.com/fhir/StructureDefinition/Agent",
+    "resource" : {
+      "resourceType" : "StructureDefinition",
+      "id" : "Agent",
+      "name" : "Agent",
+      "url" : "https://medplum.com/fhir/StructureDefinition/Agent",
+      "status" : "active",
+      "kind" : "resource",
+      "abstract" : false,
+      "type" : "Agent",
+      "baseDefinition" : "http://hl7.org/fhir/StructureDefinition/DomainResource",
+      "description" : "Configuration details for an instance of the Medplum agent application.",
+      "snapshot" : {
+        "element" : [
+          {
+            "id" : "Agent",
+            "path" : "Agent",
+            "short" : "Configuration details for an instance of the Medplum agent application.",
+            "definition" : "Configuration details for an instance of the Medplum agent application.",
+            "min" : 0,
+            "max" : "*",
+            "base": {
+              "path" : "Agent",
+              "min" : 0,
+              "max" : "*"
+            }
+          },
+          {
+            "id" : "Agent.id",
+            "path" : "Agent.id",
+            "short" : "Logical id of this artifact",
+            "definition" : "The logical id of the resource, as used in the URL for the resource. Once assigned, this value never changes.",
+            "min" : 0,
+            "max" : "1",
+            "base" : {
+              "path" : "Resource.id",
+              "min" : 0,
+              "max" : "1"
+            },
+            "type" : [{
+              "code" : "string"
             }]
+          },
+          {
+            "id" : "Agent.meta",
+            "path" : "Agent.meta",
+            "definition" : "The metadata about the resource. This is content that is maintained by the infrastructure. Changes to the content might not always be associated with version changes to the resource.",
+            "min" : 0,
+            "max" : "1",
+            "base" : {
+              "path" : "Resource.meta",
+              "min" : 0,
+              "max" : "1"
+            },
+            "type" : [{
+              "code" : "Meta"
+            }]
+          },
+          {
+            "id" : "Agent.implicitRules",
+            "path" : "Agent.implicitRules",
+            "definition" : "A reference to a set of rules that were followed when the resource was constructed, and which must be understood when processing the content. Often, this is a reference to an implementation guide that defines the special rules along with other profiles etc.",
+            "min" : 0,
+            "max" : "1",
+            "base" : {
+              "path" : "Resource.implicitRules",
+              "min" : 0,
+              "max" : "1"
+            },
+            "type" : [{
+              "code" : "uri"
+            }]
+          },
+          {
+            "id" : "Agent.language",
+            "path" : "Agent.language",
+            "definition" : "The base language in which the resource is written.",
+            "min" : 0,
+            "max" : "1",
+            "base" : {
+              "path" : "Resource.language",
+              "min" : 0,
+              "max" : "1"
+            },
+            "type" : [{
+              "code" : "code"
+            }]
+          },
+          {
+            "id" : "Agent.identifier",
+            "path" : "Agent.identifier",
+            "short" : "An identifier for this agent",
+            "definition" : "An identifier for this agent.",
+            "min" : 0,
+            "max" : "*",
+            "type" : [{
+              "code" : "Identifier"
+            }],
+            "base" : {
+              "path" : "Agent.identifier",
+              "min" : 0,
+              "max" : "*"
+            }
+          },
+          {
+            "id" : "Agent.name",
+            "path" : "Agent.name",
+            "short" : "The human readable friendly name of the agent.",
+            "definition" : "The human readable friendly name of the agent.",
+            "min" : 1,
+            "max" : "1",
+            "base" : {
+              "path" : "Agent.name",
+              "min" : 1,
+              "max" : "1"
+            },
+            "type" : [{
+              "code" : "string"
+            }]
+          },
+          {
+            "id" : "Agent.status",
+            "path" : "Agent.status",
+            "short" : "active | off | error",
+            "definition" : "The status of the agent.",
+            "min" : 1,
+            "max" : "1",
+            "base" : {
+              "path" : "Agent.status",
+              "min" : 1,
+              "max" : "1"
+            },
+            "type" : [{
+              "code" : "code"
+            }],
+            "binding" : {
+              "strength" : "required",
+              "valueSet" : "https://medplum.com/fhir/ValueSet/agent-status|4.0.1"
+            }
+          },
+          {
+            "id" : "Agent.device",
+            "path" : "Agent.device",
+            "definition" : "Optional device resource representing the device running the agent.",
+            "min" : 0,
+            "max" : "1",
+            "type" : [{
+              "code" : "Reference",
+              "targetProfile" : ["http://hl7.org/fhir/StructureDefinition/Device"]
+            }],
+            "base" : {
+              "path" : "Agent.device",
+              "min" : 0,
+              "max" : "1"
+            }
+          },
+          {
+            "id" : "Agent.setting",
+            "path" : "Agent.setting",
+            "definition" : "The settings for the agent.",
+            "min" : 0,
+            "max" : "*",
+            "type" : [{
+              "code" : "BackboneElement"
+            }],
+            "base" : {
+              "path" : "Agent.setting",
+              "min" : 0,
+              "max" : "*"
+            }
+          },
+          {
+            "id" : "Agent.setting.name",
+            "path" : "Agent.setting.name",
+            "definition" : "The setting name.",
+            "min" : 1,
+            "max" : "1",
+            "type" : [{
+              "code" : "string"
+            }],
+            "base" : {
+              "path" : "Agent.setting.name",
+              "min" : 1,
+              "max" : "1"
+            }
+          },
+          {
+            "id" : "Agent.setting.value[x]",
+            "path" : "Agent.setting.value[x]",
+            "definition" : "The setting value.",
+            "min" : 1,
+            "max" : "1",
+            "type" : [{
+              "code" : "string"
+            },
+            {
+              "code" : "boolean"
+            },
+            {
+              "code" : "decimal"
+            },
+            {
+              "code" : "integer"
+            }],
+            "base" : {
+              "path" : "Agent.setting.value[x]",
+              "min" : 1,
+              "max" : "1"
+            }
+          },
+          {
+            "id" : "Agent.channel",
+            "path" : "Agent.channel",
+            "short" : "The channel on which to report matches to the criteria",
+            "definition" : "Details where to send notifications when resources are received that meet the criteria.",
+            "min" : 0,
+            "max" : "*",
+            "base" : {
+              "path" : "Agent.channel",
+              "min" : 1,
+              "max" : "*"
+            },
+            "type" : [{
+              "code" : "BackboneElement"
+            }]
+          },
+          {
+            "id" : "Agent.channel.name",
+            "path" : "Agent.channel.name",
+            "definition" : "The channel name.",
+            "min" : 1,
+            "max" : "1",
+            "type" : [{
+              "code" : "string"
+            }],
+            "base" : {
+              "path" : "Agent.channel.name",
+              "min" : 1,
+              "max" : "1"
+            }
+          },
+          {
+            "id" : "Agent.channel.endpoint",
+            "path" : "Agent.channel.endpoint",
+            "definition" : "The channel endpoint definition including protocol and network binding details.",
+            "min" : 1,
+            "max" : "1",
+            "type" : [{
+              "code" : "Reference",
+              "targetProfile" : ["http://hl7.org/fhir/StructureDefinition/Endpoint"]
+            }],
+            "base" : {
+              "path" : "Agent.channel.endpoint",
+              "min" : 1,
+              "max" : "1"
+            }
+          },
+          {
+            "id" : "Agent.channel.target[x]",
+            "path" : "Agent.channel.target[x]",
+            "definition" : "The target resource where channel messages will be delivered.",
+            "min" : 1,
+            "max" : "1",
+            "type" : [{
+              "code" : "Reference",
+              "targetProfile" : ["https://medplum.com/fhir/StructureDefinition/Bot"]
+            }, {
+              "code" : "url"
+            }],
+            "base" : {
+              "path" : "Agent.channel.target[x]",
+              "min" : 1,
+              "max" : "1"
+            }
           }
         ]
       }

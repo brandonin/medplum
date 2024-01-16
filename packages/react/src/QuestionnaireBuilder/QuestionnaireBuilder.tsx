@@ -1,15 +1,39 @@
-import { Anchor, Button, createStyles, NativeSelect, Textarea, TextInput, Title } from '@mantine/core';
-import { globalSchema, IndexedStructureDefinition, isResource as isResourceType } from '@medplum/core';
-import { Questionnaire, QuestionnaireItem, QuestionnaireItemAnswerOption, Reference } from '@medplum/fhirtypes';
-import React, { useEffect, useRef, useState } from 'react';
+import {
+  Anchor,
+  Box,
+  Button,
+  createStyles,
+  Group,
+  NativeSelect,
+  Space,
+  Textarea,
+  TextInput,
+  Title,
+} from '@mantine/core';
+import { getElementDefinition, isResource as isResourceType } from '@medplum/core';
+import {
+  Extension,
+  Questionnaire,
+  QuestionnaireItem,
+  QuestionnaireItemAnswerOption,
+  Reference,
+  ResourceType,
+} from '@medplum/fhirtypes';
+import { useMedplum, useResource } from '@medplum/react-hooks';
+import { IconArrowDown, IconArrowUp } from '@tabler/icons-react';
+import { MouseEvent, SyntheticEvent, useEffect, useRef, useState } from 'react';
 import { Form } from '../Form/Form';
-import { useMedplum } from '../MedplumProvider/MedplumProvider';
-import { QuestionnaireFormItem } from '../QuestionnaireForm/QuestionnaireForm';
-import { getValueAndType } from '../ResourcePropertyDisplay/ResourcePropertyDisplay';
+import { QuestionnaireFormItem } from '../QuestionnaireForm/QuestionnaireFormItem/QuestionnaireFormItem';
+import { getValueAndType } from '../ResourcePropertyDisplay/ResourcePropertyDisplay.utils';
 import { ResourcePropertyInput } from '../ResourcePropertyInput/ResourcePropertyInput';
-import { useResource } from '../useResource/useResource';
+import { ResourceTypeInput } from '../ResourceTypeInput/ResourceTypeInput';
 import { killEvent } from '../utils/dom';
-import { isChoiceQuestion, QuestionnaireItemType } from '../utils/questionnaire';
+import {
+  getQuestionnaireItemReferenceTargetTypes,
+  isChoiceQuestion,
+  QuestionnaireItemType,
+  setQuestionnaireItemReferenceTargetTypes,
+} from '../utils/questionnaire';
 
 const useStyles = createStyles((theme) => ({
   section: {
@@ -36,7 +60,7 @@ const useStyles = createStyles((theme) => ({
 
   topActions: {
     position: 'absolute',
-    right: 4,
+    right: 32,
     top: 1,
     padding: 4,
     color: theme.colors.gray[5],
@@ -54,6 +78,27 @@ const useStyles = createStyles((theme) => ({
     },
   },
 
+  movementActions: {
+    position: 'absolute',
+    right: 8,
+    top: 0,
+    paddingTop: 8,
+    fontSize: theme.fontSizes.xs,
+
+    '& a': {
+      marginLeft: 8,
+    },
+  },
+
+  movementIcons: {
+    color: theme.colors.gray[5],
+  },
+
+  columnAlignment: {
+    display: 'flex',
+    flexDirection: 'column',
+  },
+
   linkIdInput: {
     width: 100,
     marginBottom: 4,
@@ -67,12 +112,13 @@ const useStyles = createStyles((theme) => ({
 export interface QuestionnaireBuilderProps {
   questionnaire: Questionnaire | Reference<Questionnaire>;
   onSubmit: (result: Questionnaire) => void;
+  autoSave?: boolean;
 }
 
 export function QuestionnaireBuilder(props: QuestionnaireBuilderProps): JSX.Element | null {
   const medplum = useMedplum();
   const defaultValue = useResource(props.questionnaire);
-  const [schema, setSchema] = useState<IndexedStructureDefinition | undefined>();
+  const [schemaLoaded, setSchemaLoaded] = useState(false);
   const [value, setValue] = useState<Questionnaire>();
   const [selectedKey, setSelectedKey] = useState<string>();
   const [hoverKey, setHoverKey] = useState<string>();
@@ -86,7 +132,10 @@ export function QuestionnaireBuilder(props: QuestionnaireBuilderProps): JSX.Elem
   }
 
   useEffect(() => {
-    medplum.requestSchema('Questionnaire').then(setSchema).catch(console.log);
+    medplum
+      .requestSchema('Questionnaire')
+      .then(() => setSchemaLoaded(true))
+      .catch(console.log);
   }, [medplum]);
 
   useEffect(() => {
@@ -99,7 +148,14 @@ export function QuestionnaireBuilder(props: QuestionnaireBuilderProps): JSX.Elem
     };
   }, [defaultValue]);
 
-  if (!schema || !value) {
+  const handleChange = (questionnaire: Questionnaire, disableSubmit?: boolean): void => {
+    setValue(questionnaire);
+    if (props.autoSave && !disableSubmit && props.onSubmit) {
+      props.onSubmit(questionnaire);
+    }
+  };
+
+  if (!schemaLoaded || !value) {
     return null;
   }
 
@@ -112,7 +168,7 @@ export function QuestionnaireBuilder(props: QuestionnaireBuilderProps): JSX.Elem
           setSelectedKey={setSelectedKey}
           hoverKey={hoverKey}
           setHoverKey={setHoverKey}
-          onChange={setValue}
+          onChange={handleChange}
         />
         <Button type="submit">Save</Button>
       </Form>
@@ -125,9 +181,14 @@ interface ItemBuilderProps<T extends Questionnaire | QuestionnaireItem> {
   selectedKey: string | undefined;
   setSelectedKey: (key: string | undefined) => void;
   hoverKey: string | undefined;
+  isFirst?: boolean;
+  isLast?: boolean;
   setHoverKey: (key: string | undefined) => void;
-  onChange: (item: T) => void;
+  onChange: (item: T, disableSubmit?: boolean) => void;
   onRemove?: () => void;
+  onRepeatable?: (item: QuestionnaireItem) => void;
+  onMoveUp?(): void;
+  onMoveDown?(): void;
 }
 
 function ItemBuilder<T extends Questionnaire | QuestionnaireItem>(props: ItemBuilderProps<T>): JSX.Element {
@@ -143,12 +204,12 @@ function ItemBuilder<T extends Questionnaire | QuestionnaireItem>(props: ItemBui
   const itemRef = useRef<T>();
   itemRef.current = props.item;
 
-  function onClick(e: React.SyntheticEvent): void {
+  function onClick(e: SyntheticEvent): void {
     killEvent(e);
     props.setSelectedKey(props.item.id);
   }
 
-  function onHover(e: React.SyntheticEvent): void {
+  function onHover(e: SyntheticEvent): void {
     killEvent(e);
     props.setHoverKey(props.item.id);
   }
@@ -161,11 +222,14 @@ function ItemBuilder<T extends Questionnaire | QuestionnaireItem>(props: ItemBui
     } as T);
   }
 
-  function addItem(addedItem: QuestionnaireItem): void {
-    props.onChange({
-      ...props.item,
-      item: [...(props.item.item ?? []), addedItem],
-    });
+  function addItem(addedItem: QuestionnaireItem, disableSubmit?: boolean): void {
+    props.onChange(
+      {
+        ...props.item,
+        item: [...(props.item.item ?? []), addedItem],
+      },
+      disableSubmit
+    );
   }
 
   function removeItem(removedItem: QuestionnaireItem): void {
@@ -182,13 +246,36 @@ function ItemBuilder<T extends Questionnaire | QuestionnaireItem>(props: ItemBui
     } as T);
   }
 
+  function updateItem(updatedItem: QuestionnaireItem): void {
+    props.onChange({
+      ...props.item,
+      ...updatedItem,
+    });
+  }
+
+  function toggleRepeatable(item: QuestionnaireItem): void {
+    props.onChange({
+      ...props.item,
+      item: props.item.item?.map((i) => (i === item ? { ...i, repeats: !i.repeats } : i)),
+    });
+  }
+
+  function moveItem(itemIndex: number, delta: number): void {
+    const updatedItems = reorderItems(props.item.item, itemIndex, delta);
+
+    props.onChange({
+      ...props.item,
+      item: updatedItems,
+    });
+  }
+
   const className = cx(classes.section, {
     [classes.editing]: editing,
     [classes.hovering]: hovering && !editing,
   });
 
   return (
-    <div data-testid={item.linkId} className={className} onClick={onClick} onMouseOver={onHover}>
+    <div data-testid={item.linkId} className={className} onClick={onClick} onMouseOver={onHover} onFocus={onHover}>
       <div className={classes.questionBody}>
         {editing ? (
           <>
@@ -196,7 +283,7 @@ function ItemBuilder<T extends Questionnaire | QuestionnaireItem>(props: ItemBui
               <TextInput
                 size="xl"
                 defaultValue={resource.title}
-                onChange={(e) => changeProperty('title', e.currentTarget.value)}
+                onBlur={(e) => changeProperty('title', e.currentTarget.value)}
               />
             )}
             {!isResource && (
@@ -204,34 +291,35 @@ function ItemBuilder<T extends Questionnaire | QuestionnaireItem>(props: ItemBui
                 autosize
                 minRows={2}
                 defaultValue={item.text}
-                onChange={(e) => changeProperty('text', e.currentTarget.value)}
+                onBlur={(e) => changeProperty('text', e.currentTarget.value)}
               />
             )}
-            {isChoiceQuestion(item) && (
-              <AnswerBuilder
-                options={item.answerOption}
-                onChange={(newOptions) => changeProperty('answerOption', newOptions)}
-              />
-            )}
+            {item.type === 'reference' && <ReferenceProfiles item={item} onChange={updateItem} />}
+            {isChoiceQuestion(item) && <AnswerBuilder item={item} onChange={(item) => updateItem(item)} />}
           </>
         ) : (
           <>
             {resource.title && <Title>{resource.title}</Title>}
             {item.text && <div>{item.text}</div>}
-            {!isContainer && <QuestionnaireFormItem item={item} answers={{}} onChange={() => undefined} />}
+            {!isContainer && <QuestionnaireFormItem item={item} index={0} onChange={() => undefined} response={{}} />}
           </>
         )}
       </div>
-      {item.item?.map((i) => (
-        <div key={i.id}>
+      {item.item?.map((item, i) => (
+        <div key={item.id}>
           <ItemBuilder
-            item={i}
+            item={item}
             selectedKey={props.selectedKey}
             setSelectedKey={props.setSelectedKey}
             hoverKey={props.hoverKey}
+            isFirst={i === 0}
+            isLast={i === (props.item.item ?? []).length - 1}
             setHoverKey={props.setHoverKey}
             onChange={changeItem}
-            onRemove={() => removeItem(i)}
+            onRemove={() => removeItem(item)}
+            onRepeatable={toggleRepeatable}
+            onMoveUp={() => moveItem(i, -1)}
+            onMoveDown={() => moveItem(i, 1)}
           />
         </div>
       ))}
@@ -243,7 +331,7 @@ function ItemBuilder<T extends Questionnaire | QuestionnaireItem>(props: ItemBui
                 size="xs"
                 className={classes.linkIdInput}
                 defaultValue={item.linkId}
-                onChange={(e) => changeProperty('linkId', e.currentTarget.value)}
+                onBlur={(e) => changeProperty('linkId', e.currentTarget.value)}
               />
               {!isContainer && (
                 <NativeSelect
@@ -276,12 +364,44 @@ function ItemBuilder<T extends Questionnaire | QuestionnaireItem>(props: ItemBui
           )}
         </div>
       )}
+      {!isResource && (
+        <Box className={classes.movementActions}>
+          <Box className={classes.columnAlignment}>
+            {!props.isFirst && (
+              <Anchor
+                href="#"
+                onClick={(e: MouseEvent) => {
+                  e.preventDefault();
+                  if (props.onMoveUp) {
+                    props.onMoveUp();
+                  }
+                }}
+              >
+                <IconArrowUp data-testid="up-button" size={15} className={classes.movementIcons} />
+              </Anchor>
+            )}
+            {!props.isLast && (
+              <Anchor
+                href="#"
+                onClick={(e: MouseEvent) => {
+                  e.preventDefault();
+                  if (props.onMoveDown) {
+                    props.onMoveDown();
+                  }
+                }}
+              >
+                <IconArrowDown data-testid="down-button" size={15} className={classes.movementIcons} />
+              </Anchor>
+            )}
+          </Box>
+        </Box>
+      )}
       <div className={classes.bottomActions}>
         {isContainer && (
           <>
             <Anchor
               href="#"
-              onClick={(e: React.MouseEvent) => {
+              onClick={(e: MouseEvent) => {
                 e.preventDefault();
                 addItem({
                   id: generateId(),
@@ -295,32 +415,59 @@ function ItemBuilder<T extends Questionnaire | QuestionnaireItem>(props: ItemBui
             </Anchor>
             <Anchor
               href="#"
-              onClick={(e: React.MouseEvent) => {
+              onClick={(e: MouseEvent) => {
                 e.preventDefault();
-                addItem({
-                  id: generateId(),
-                  linkId: generateLinkId('g'),
-                  type: 'group',
-                  text: 'Group',
-                } as QuestionnaireItem);
+                addItem(
+                  {
+                    id: generateId(),
+                    linkId: generateLinkId('g'),
+                    type: 'group',
+                    text: 'Group',
+                  } as QuestionnaireItem,
+                  true
+                );
               }}
             >
               Add group
             </Anchor>
           </>
         )}
-        {editing && !isResource && (
+        {isResource && (
           <Anchor
             href="#"
-            onClick={(e: React.MouseEvent) => {
+            onClick={(e: MouseEvent) => {
               e.preventDefault();
-              if (props.onRemove) {
-                props.onRemove();
-              }
+              addItem(createPage(), true);
             }}
           >
-            Remove
+            Add Page
           </Anchor>
+        )}
+        {editing && !isResource && (
+          <>
+            <Anchor
+              href="#"
+              onClick={(e: MouseEvent) => {
+                e.preventDefault();
+                if (props.onRepeatable) {
+                  props.onRepeatable(item);
+                }
+              }}
+            >
+              {item.repeats ? 'Remove Repeatable' : 'Make Repeatable'}
+            </Anchor>
+            <Anchor
+              href="#"
+              onClick={(e: MouseEvent) => {
+                e.preventDefault();
+                if (props.onRemove) {
+                  props.onRemove();
+                }
+              }}
+            >
+              Remove
+            </Anchor>
+          </>
         )}
       </div>
     </div>
@@ -328,16 +475,73 @@ function ItemBuilder<T extends Questionnaire | QuestionnaireItem>(props: ItemBui
 }
 
 interface AnswerBuilderProps {
-  options?: QuestionnaireItemAnswerOption[];
-  onChange: (newOptions: QuestionnaireItemAnswerOption[]) => void;
+  item: QuestionnaireItem;
+  onChange: (item: QuestionnaireItem) => void;
 }
 
 function AnswerBuilder(props: AnswerBuilderProps): JSX.Element {
-  const property = globalSchema.types['QuestionnaireItemAnswerOption'].properties['value[x]'];
-  const options = props.options ?? [];
+  const property = getElementDefinition('QuestionnaireItemAnswerOption', 'value[x]');
+  const options = props.item.answerOption ?? [];
   return (
     <div>
-      {options.map((option: QuestionnaireItemAnswerOption) => {
+      {props.item.answerValueSet !== undefined ? (
+        <TextInput
+          placeholder="Enter Value Set"
+          defaultValue={props.item.answerValueSet}
+          onChange={(e) => props.onChange({ ...props.item, answerValueSet: e.target.value })}
+        />
+      ) : (
+        <AnswerOptionsInput options={options} property={property} item={props.item} onChange={props.onChange} />
+      )}
+      <Box display="flex">
+        <Anchor
+          href="#"
+          onClick={(e: SyntheticEvent) => {
+            killEvent(e);
+            props.onChange({
+              ...props.item,
+              answerValueSet: undefined,
+              answerOption: [
+                ...options,
+                {
+                  id: generateId(),
+                },
+              ],
+            });
+          }}
+        >
+          Add choice
+        </Anchor>
+        <Space w="lg" />
+        <Anchor
+          href="#"
+          onClick={(e: SyntheticEvent) => {
+            killEvent(e);
+            props.onChange({
+              ...props.item,
+              answerOption: [],
+              answerValueSet: '',
+            });
+          }}
+        >
+          Add value set
+        </Anchor>
+      </Box>
+    </div>
+  );
+}
+
+interface AnswerOptionsInputProps {
+  options: QuestionnaireItemAnswerOption[];
+  property: any;
+  item: QuestionnaireItem;
+  onChange: (item: QuestionnaireItem) => void;
+}
+
+function AnswerOptionsInput(props: AnswerOptionsInputProps): JSX.Element {
+  return (
+    <div>
+      {props.options.map((option: QuestionnaireItemAnswerOption) => {
         const [propertyValue, propertyType] = getValueAndType(
           { type: 'QuestionnaireItemAnswerOption', value: option },
           'value'
@@ -357,23 +561,31 @@ function AnswerBuilder(props: AnswerBuilderProps): JSX.Element {
               <ResourcePropertyInput
                 key={option.id}
                 name="value[x]"
-                property={property}
+                property={props.property}
                 defaultPropertyType={propertyType}
                 defaultValue={propertyValue}
                 onChange={(newValue: any, propName?: string) => {
-                  const newOptions = [...options];
+                  const newOptions = [...props.options];
                   const index = newOptions.findIndex((o) => o.id === option.id);
                   newOptions[index] = { id: option.id, [propName as string]: newValue };
-                  props.onChange(newOptions);
+                  props.onChange({
+                    ...props.item,
+                    answerOption: newOptions,
+                  });
                 }}
+                outcome={undefined}
               />
             </div>
+
             <div>
               <Anchor
                 href="#"
-                onClick={(e: React.SyntheticEvent) => {
+                onClick={(e: SyntheticEvent) => {
                   killEvent(e);
-                  props.onChange(options.filter((o) => o.id !== option.id));
+                  props.onChange({
+                    ...props.item,
+                    answerOption: props.options.filter((o) => o.id !== option.id),
+                  });
                 }}
               >
                 Remove
@@ -382,21 +594,62 @@ function AnswerBuilder(props: AnswerBuilderProps): JSX.Element {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+interface ReferenceTypeProps {
+  item: QuestionnaireItem;
+  onChange: (updatedItem: QuestionnaireItem) => void;
+}
+
+function ReferenceProfiles(props: ReferenceTypeProps): JSX.Element {
+  const targetTypes = getQuestionnaireItemReferenceTargetTypes(props.item) ?? [];
+  return (
+    <>
+      {targetTypes.map((targetType: ResourceType, index: number) => {
+        return (
+          <Group key={`${targetType}-${index}`}>
+            <ResourceTypeInput
+              name="resourceType"
+              placeholder="Resource Type"
+              defaultValue={targetType}
+              onChange={(newValue: ResourceType | undefined) => {
+                props.onChange(
+                  setQuestionnaireItemReferenceTargetTypes(
+                    props.item,
+                    targetTypes.map((t) => (t === targetType ? (newValue as ResourceType) : t))
+                  )
+                );
+              }}
+            />
+            <Anchor
+              href="#"
+              onClick={(e: SyntheticEvent) => {
+                killEvent(e);
+                props.onChange(
+                  setQuestionnaireItemReferenceTargetTypes(
+                    props.item,
+                    targetTypes.filter((t) => t !== targetType)
+                  )
+                );
+              }}
+            >
+              Remove
+            </Anchor>
+          </Group>
+        );
+      })}
       <Anchor
         href="#"
-        onClick={(e: React.SyntheticEvent) => {
+        onClick={(e: SyntheticEvent) => {
           killEvent(e);
-          props.onChange([
-            ...options,
-            {
-              id: generateId(),
-            },
-          ]);
+          props.onChange(setQuestionnaireItemReferenceTargetTypes(props.item, [...targetTypes, '' as ResourceType]));
         }}
       >
-        Add choice
+        Add Resource Type
       </Anchor>
-    </div>
+    </>
   );
 }
 
@@ -406,7 +659,7 @@ let nextId = 1;
 /**
  * Generates a link ID for an item.
  * Link IDs are required properties on QuestionnaireItem objects.
- * @param prefix The link ID prefix string.
+ * @param prefix - The link ID prefix string.
  * @returns A unique link ID.
  */
 function generateLinkId(prefix: string): string {
@@ -462,4 +715,39 @@ function ensureQuestionnaireOptionKeys(
     ...option,
     id: option.id || generateId(),
   }));
+}
+
+function createPage(): QuestionnaireItem {
+  return {
+    id: generateId(),
+    linkId: generateLinkId('s'),
+    type: 'group',
+    text: `New Page`,
+    extension: [
+      {
+        url: 'http://hl7.org/fhir/StructureDefinition/questionnaire-itemControl',
+        valueCodeableConcept: {
+          coding: [
+            {
+              system: 'http://hl7.org/fhir/questionnaire-item-control',
+              code: 'page',
+            },
+          ],
+        },
+      } as Extension,
+    ],
+  } as QuestionnaireItem;
+}
+
+function reorderItems(items: QuestionnaireItem[] | undefined, itemIndex: number, delta: number): QuestionnaireItem[] {
+  const currentItems = items ?? [];
+  const newIndex = itemIndex + delta;
+  if (newIndex < 0 || newIndex >= currentItems.length) {
+    return currentItems;
+  }
+
+  const updatedItems = [...currentItems];
+  [updatedItems[itemIndex], updatedItems[newIndex]] = [updatedItems[newIndex], updatedItems[itemIndex]];
+
+  return updatedItems;
 }

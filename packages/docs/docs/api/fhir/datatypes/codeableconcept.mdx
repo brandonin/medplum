@@ -3,16 +3,25 @@ title: CodeableConcept
 sidebar_position: 4
 ---
 
+import Link from '@docusaurus/Link';
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 import definition from '@site/static/data/datatypeDefinitions/codeableconcept.json';
 import { ResourcePropertiesTable, SearchParamsTable } from '@site/src/components/ResourceTables';
 
 # CodeableConcept
 
-Base StructureDefinition for CodeableConcept Type: A concept that may be defined by a formal reference to a terminology or ontology or may be provided by text.
+Base <Link to="/docs/api/fhir/resources/structuredefinition">StructureDefinition</Link> for <Link to="/docs/api/fhir/datatypes/codeableconcept">CodeableConcept</Link> Type: A concept that may be defined by a formal reference to a terminology or ontology or may be provided by text.
 
-## Properties
+<Tabs queryString="section">
+  <TabItem value="schema" label="Schema" default>
 
-<ResourcePropertiesTable properties={definition.properties.filter((p) => !(p.inherited && p.base.includes('Resource')))} />
+## Elements
 
+<ResourcePropertiesTable
+  properties={definition.properties.filter((p) => !(p.inherited && p.base.includes('Resource')))}
+/>
 
+  </TabItem>
 
+</Tabs>

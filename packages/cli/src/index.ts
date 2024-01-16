@@ -5,6 +5,8 @@ import { login, whoami } from './auth';
 import { aws } from './aws/index';
 import { bot, createBotDeprecate, deployBotDeprecate, saveBotDeprecate } from './bots';
 import { bulk } from './bulk';
+import { hl7 } from './hl7';
+import { profile } from './profiles';
 import { project } from './project';
 import { deleteObject, get, patch, post, put } from './rest';
 
@@ -38,11 +40,17 @@ export async function main(argv: string[]): Promise<void> {
     index.addCommand(deployBotDeprecate);
     index.addCommand(createBotDeprecate);
 
+    // Profile Commands
+    index.addCommand(profile);
+
     // AWS commands
     index.addCommand(aws);
 
+    // HL7 commands
+    index.addCommand(hl7);
+
     await index.parseAsync(argv);
-  } catch (err) {
+  } catch (err: any) {
     console.error('Error: ' + normalizeErrorString(err));
   }
 }

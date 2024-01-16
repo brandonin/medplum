@@ -1,9 +1,10 @@
 import { readJson } from '@medplum/definitions';
 import { Bundle, Observation } from '@medplum/fhirtypes';
-import { indexStructureDefinitionBundle, PropertyType } from '../types';
+import { AtomContext } from '../fhirlexer/parse';
+import { PropertyType } from '../types';
+import { indexStructureDefinitionBundle } from '../typeschema/types';
 import { LiteralAtom, SymbolAtom } from './atoms';
 import { evalFhirPath, parseFhirPath } from './parse';
-import { AtomContext } from '../fhirlexer';
 
 let context: AtomContext;
 
@@ -50,6 +51,34 @@ describe('Atoms', () => {
   test('UnionAtom', () => {
     expect(evalFhirPath('{} | {}', [])).toEqual([]);
     expect(evalFhirPath('x | y', [])).toEqual([]);
+  });
+
+  test.each([
+    ['true or true', [true]],
+    ['true or false', [true]],
+    ['true or {}', [true]],
+    ['false or true', [true]],
+    ['false or false', [false]],
+    ['false or {}', []],
+    ['{} or true', [true]],
+    ['{} or false', []],
+    ['{} or {}', []],
+  ])('OrAtom: %s to equal %s', (input: any, expected: any) => {
+    expect(evalFhirPath(input, [])).toEqual(expected);
+  });
+
+  test.each([
+    ['true implies true', [true]],
+    ['true implies false', [false]],
+    ['true implies {}', []],
+    ['false implies true', [true]],
+    ['false implies false', [true]],
+    ['false implies {}', [true]],
+    ['{} implies true', [true]],
+    ['{} implies false', []],
+    ['{} implies {}', []],
+  ])('ImpliesAtom: %s to equal %s', (input: any, expected: any) => {
+    expect(evalFhirPath(input, [])).toEqual(expected);
   });
 
   test('AsAtom', () => {

@@ -1,6 +1,11 @@
-import { Column, Condition, Negation, Operator, SelectQuery, SqlBuilder } from './sql';
+import { Client } from 'pg';
+import { Column, Condition, Negation, SelectQuery, SqlBuilder } from './sql';
 
 describe('SqlBuilder', () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
   test('Select', () => {
     const sql = new SqlBuilder();
     new SelectQuery('MyTable').column('id').column('name').buildSql(sql);
@@ -9,50 +14,53 @@ describe('SqlBuilder', () => {
 
   test('Select where', () => {
     const sql = new SqlBuilder();
-    new SelectQuery('MyTable').column('id').where('name', Operator.EQUALS, 'x').buildSql(sql);
-    expect(sql.toString()).toBe('SELECT "MyTable"."id" FROM "MyTable" WHERE "MyTable"."name"=$1');
+    new SelectQuery('MyTable').column('id').where('name', '=', 'x').buildSql(sql);
+    expect(sql.toString()).toBe('SELECT "MyTable"."id" FROM "MyTable" WHERE "MyTable"."name" = $1');
   });
 
   test('Select where expression', () => {
     const sql = new SqlBuilder();
-    new SelectQuery('MyTable').column('id').whereExpr(new Condition('name', Operator.EQUALS, 'x')).buildSql(sql);
-    expect(sql.toString()).toBe('SELECT "MyTable"."id" FROM "MyTable" WHERE "name"=$1');
+    new SelectQuery('MyTable')
+      .column('id')
+      .whereExpr(new Condition('name', '=', 'x'))
+      .buildSql(sql);
+    expect(sql.toString()).toBe('SELECT "MyTable"."id" FROM "MyTable" WHERE "name" = $1');
   });
 
   test('Select where negation', () => {
     const sql = new SqlBuilder();
     new SelectQuery('MyTable')
       .column('id')
-      .whereExpr(new Negation(new Condition('name', Operator.EQUALS, 'x')))
+      .whereExpr(new Negation(new Condition('name', '=', 'x')))
       .buildSql(sql);
-    expect(sql.toString()).toBe('SELECT "MyTable"."id" FROM "MyTable" WHERE NOT ("name"=$1)');
+    expect(sql.toString()).toBe('SELECT "MyTable"."id" FROM "MyTable" WHERE NOT ("name" = $1)');
   });
 
   test('Select where array contains', () => {
     const sql = new SqlBuilder();
-    new SelectQuery('MyTable').column('id').where('name', Operator.ARRAY_CONTAINS, 'x').buildSql(sql);
+    new SelectQuery('MyTable').column('id').where('name', 'ARRAY_CONTAINS', 'x').buildSql(sql);
     expect(sql.toString()).toBe(
-      'SELECT "MyTable"."id" FROM "MyTable" WHERE ("MyTable"."name" IS NOT NULL AND "MyTable"."name"&&ARRAY[$1])'
+      'SELECT "MyTable"."id" FROM "MyTable" WHERE ("MyTable"."name" IS NOT NULL AND "MyTable"."name" && ARRAY[$1])'
     );
   });
 
   test('Select where array contains array', () => {
     const sql = new SqlBuilder();
-    new SelectQuery('MyTable').column('id').where('name', Operator.ARRAY_CONTAINS, ['x', 'y']).buildSql(sql);
+    new SelectQuery('MyTable').column('id').where('name', 'ARRAY_CONTAINS', ['x', 'y']).buildSql(sql);
     expect(sql.toString()).toBe(
-      'SELECT "MyTable"."id" FROM "MyTable" WHERE ("MyTable"."name" IS NOT NULL AND "MyTable"."name"&&ARRAY[$1,$2])'
+      'SELECT "MyTable"."id" FROM "MyTable" WHERE ("MyTable"."name" IS NOT NULL AND "MyTable"."name" && ARRAY[$1,$2])'
     );
   });
 
   test('Select where is null', () => {
     const sql = new SqlBuilder();
-    new SelectQuery('MyTable').column('id').where('name', Operator.EQUALS, null).buildSql(sql);
+    new SelectQuery('MyTable').column('id').where('name', '=', null).buildSql(sql);
     expect(sql.toString()).toBe('SELECT "MyTable"."id" FROM "MyTable" WHERE "MyTable"."name" IS NULL');
   });
 
   test('Select where is not null', () => {
     const sql = new SqlBuilder();
-    new SelectQuery('MyTable').column('id').where('name', Operator.NOT_EQUALS, null).buildSql(sql);
+    new SelectQuery('MyTable').column('id').where('name', '!=', null).buildSql(sql);
     expect(sql.toString()).toBe('SELECT "MyTable"."id" FROM "MyTable" WHERE "MyTable"."name" IS NOT NULL');
   });
 
@@ -60,7 +68,7 @@ describe('SqlBuilder', () => {
     const sql = new SqlBuilder();
     new SelectQuery('MyTable')
       .column('id')
-      .where('name', Operator.IN_SUBQUERY, new SelectQuery('MyLookup').column('values'), 'TEXT[]')
+      .where('name', 'IN_SUBQUERY', new SelectQuery('MyLookup').column('values'), 'TEXT[]')
       .buildSql(sql);
     expect(sql.toString()).toBe(
       'SELECT "MyTable"."id" FROM "MyTable" WHERE "MyTable"."name"=ANY((SELECT "MyLookup"."values" FROM "MyLookup")::TEXT[])'
@@ -71,7 +79,7 @@ describe('SqlBuilder', () => {
     const sql = new SqlBuilder();
     new SelectQuery('MyTable')
       .column('id')
-      .where('name', Operator.IN_SUBQUERY, new SelectQuery('MyLookup').column('values'))
+      .where('name', 'IN_SUBQUERY', new SelectQuery('MyLookup').column('values'))
       .buildSql(sql);
     expect(sql.toString()).toBe(
       'SELECT "MyTable"."id" FROM "MyTable" WHERE "MyTable"."name"=ANY(SELECT "MyLookup"."values" FROM "MyLookup")'
@@ -110,5 +118,39 @@ describe('SqlBuilder', () => {
     expect(sql.toString()).toBe(
       'SELECT DISTINCT ON ("MyTable"."id", "MyTable"."name") "MyTable"."id", "MyTable"."name", "MyTable"."email" FROM "MyTable" ORDER BY "MyTable"."id", "MyTable"."name", "MyTable"."email"'
     );
+  });
+
+  test('Select where not equals', () => {
+    const sql = new SqlBuilder();
+    new SelectQuery('MyTable').column('id').where('name', '!=', 'x').buildSql(sql);
+    expect(sql.toString()).toBe('SELECT "MyTable"."id" FROM "MyTable" WHERE "MyTable"."name" <> $1');
+  });
+
+  test('Select where like', () => {
+    const sql = new SqlBuilder();
+    new SelectQuery('MyTable').column('id').where('name', 'LIKE', 'x').buildSql(sql);
+    expect(sql.toString()).toBe('SELECT "MyTable"."id" FROM "MyTable" WHERE LOWER("MyTable"."name") LIKE $1');
+  });
+
+  test('Select where not like', () => {
+    const sql = new SqlBuilder();
+    new SelectQuery('MyTable').column('id').where('name', 'NOT_LIKE', 'x').buildSql(sql);
+    expect(sql.toString()).toBe('SELECT "MyTable"."id" FROM "MyTable" WHERE LOWER("MyTable"."name") NOT LIKE $1');
+  });
+
+  test('Debug mode', async () => {
+    console.log = jest.fn();
+
+    const sql = new SqlBuilder();
+    sql.debug = 'true';
+    new SelectQuery('MyTable').column('id').buildSql(sql);
+    expect(sql.toString()).toBe('SELECT "MyTable"."id" FROM "MyTable"');
+
+    const conn = {
+      query: jest.fn(() => ({ rows: [] })),
+    } as unknown as Client;
+
+    await sql.execute(conn);
+    expect(console.log).toHaveBeenCalledWith('sql', 'SELECT "MyTable"."id" FROM "MyTable"');
   });
 });

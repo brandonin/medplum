@@ -1,7 +1,6 @@
 import { MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { AppRoutes } from './AppRoutes';
 
@@ -37,7 +36,7 @@ describe('FormPage', () => {
     await waitFor(() => screen.getByText('First question'));
 
     await act(async () => {
-      fireEvent.click(screen.getByText('OK'));
+      fireEvent.click(screen.getByText('Submit'));
     });
 
     expect(screen.queryByText('First question')).not.toBeInTheDocument();
@@ -51,7 +50,7 @@ describe('FormPage', () => {
     expect(screen.getByText('Homer Simpson')).toBeInTheDocument();
 
     await act(async () => {
-      fireEvent.click(screen.getByText('OK'));
+      fireEvent.click(screen.getByText('Submit'));
     });
   });
 

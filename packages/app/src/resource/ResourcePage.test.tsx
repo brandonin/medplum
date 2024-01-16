@@ -5,7 +5,7 @@ import { Bot, Practitioner } from '@medplum/fhirtypes';
 import { MockClient } from '@medplum/mock';
 import { ErrorBoundary, Loading, MedplumProvider } from '@medplum/react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import React, { Suspense } from 'react';
+import { Suspense } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { AppRoutes } from '../AppRoutes';
 
@@ -67,10 +67,6 @@ describe('ResourcePage', () => {
     await act(async () => {
       fireEvent.click(screen.getByText('Delete'));
     });
-    // cannot be awaited
-    jest.runAllTimersAsync().catch(() => {
-      return undefined;
-    });
 
     try {
       await medplum.readResource('Practitioner', practitioner.id as string);
@@ -121,7 +117,11 @@ describe('ResourcePage', () => {
     expect(screen.getByText('Preview')).toBeInTheDocument();
 
     window.alert = jest.fn();
-    fireEvent.click(screen.getByText('OK'));
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Submit'));
+    });
+
     expect(window.alert).toHaveBeenCalledWith('You submitted the preview');
   });
 
@@ -140,7 +140,7 @@ describe('ResourcePage', () => {
 
     // Select "Test Bot" in the bot input field
 
-    const input = screen.getByRole('combobox') as HTMLInputElement;
+    const input = screen.getByRole('searchbox') as HTMLInputElement;
 
     // Enter "Simpson"
     await act(async () => {

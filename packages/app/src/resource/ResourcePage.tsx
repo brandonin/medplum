@@ -1,9 +1,9 @@
-import { Button, Paper, ScrollArea, Tabs, Title } from '@mantine/core';
+import { Badge, Button, Group, Paper, ScrollArea, Tabs, Title, useMantineTheme } from '@mantine/core';
 import { showNotification } from '@mantine/notifications';
 import { getReferenceString, isGone, normalizeErrorString } from '@medplum/core';
 import { OperationOutcome, Resource, ResourceType, ServiceRequest } from '@medplum/fhirtypes';
 import { Document, OperationOutcomeAlert, useMedplum, useResource } from '@medplum/react';
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Outlet, useNavigate, useParams } from 'react-router-dom';
 import { PatientHeader } from '../components/PatientHeader';
 import { QuickServiceRequests } from '../components/QuickServiceRequests';
@@ -28,7 +28,7 @@ function getTabs(resourceType: string): string[] {
     result.push('Preview', 'Builder', 'Bots', 'Responses');
   }
 
-  if (resourceType === 'DiagnosticReport') {
+  if (resourceType === 'DiagnosticReport' || resourceType === 'MeasureReport') {
     result.push('Report');
   }
 
@@ -40,9 +40,11 @@ function getTabs(resourceType: string): string[] {
     result.push('Ranges');
   }
 
-  result.push('Details', 'Edit', 'Event', 'History', 'Blame', 'JSON', 'Apps');
+  result.push('Details', 'Edit', 'Event', 'History', 'Blame', 'JSON', 'Apps', 'Profiles');
   return result;
 }
+
+const BETA_TABS = ['Profiles'];
 
 export function ResourcePage(): JSX.Element | null {
   const medplum = useMedplum();
@@ -52,9 +54,11 @@ export function ResourcePage(): JSX.Element | null {
   const [outcome, setOutcome] = useState<OperationOutcome | undefined>();
   const value = useResource(reference, setOutcome);
   const tabs = getTabs(resourceType);
-  const defaultTab = tabs[0].toLowerCase();
-  const tab = window.location.pathname.split('/').pop();
-  const [currentTab, setCurrentTab] = useState<string>(tab || defaultTab);
+  const [currentTab, setCurrentTab] = useState<string>(() => {
+    const tab = window.location.pathname.split('/').pop();
+    return tab && tabs.map((t) => t.toLowerCase()).includes(tab) ? tab : tabs[0].toLowerCase();
+  });
+  const theme = useMantineTheme();
 
   async function restoreResource(): Promise<void> {
     const historyBundle = await medplum.readHistory(resourceType, id);
@@ -62,7 +66,7 @@ export function ResourcePage(): JSX.Element | null {
     if (restoredResource) {
       onSubmit(restoredResource);
     } else {
-      showNotification({ color: 'red', message: 'No history to restore' });
+      showNotification({ color: 'red', message: 'No history to restore', autoClose: false });
     }
   }
 
@@ -74,7 +78,7 @@ export function ResourcePage(): JSX.Element | null {
         showNotification({ color: 'green', message: 'Success' });
       })
       .catch((err) => {
-        showNotification({ color: 'red', message: normalizeErrorString(err) });
+        showNotification({ color: 'red', message: normalizeErrorString(err), autoClose: false });
       });
   }
 
@@ -95,7 +99,7 @@ export function ResourcePage(): JSX.Element | null {
 
   /**
    * Handles a tab change event.
-   * @param newTabName The new tab name.
+   * @param newTabName - The new tab name.
    */
   function onTabChange(newTabName: string): void {
     setCurrentTab(newTabName);
@@ -122,9 +126,9 @@ export function ResourcePage(): JSX.Element | null {
     <>
       {value?.resourceType === 'ServiceRequest' && statusValueSet && (
         <QuickStatus
-          key={getReferenceString(value) + '-' + (value as ServiceRequest | undefined)?.orderDetail?.[0]?.text}
+          key={getReferenceString(value) + '-' + value.orderDetail?.[0]?.text}
           valueSet={{ reference: statusValueSet }}
-          defaultValue={(value as ServiceRequest | undefined)?.orderDetail?.[0]?.text}
+          defaultValue={value.orderDetail?.[0]?.text}
           onChange={onStatusChange}
         />
       )}
@@ -139,7 +143,16 @@ export function ResourcePage(): JSX.Element | null {
               <Tabs.List style={{ whiteSpace: 'nowrap', flexWrap: 'nowrap' }}>
                 {tabs.map((t) => (
                   <Tabs.Tab key={t} value={t.toLowerCase()}>
-                    {t}
+                    {BETA_TABS.includes(t) ? (
+                      <Group spacing={2} noWrap>
+                        {t}
+                        <Badge color={theme.primaryColor} size="sm">
+                          Beta
+                        </Badge>
+                      </Group>
+                    ) : (
+                      t
+                    )}
                   </Tabs.Tab>
                 ))}
               </Tabs.List>

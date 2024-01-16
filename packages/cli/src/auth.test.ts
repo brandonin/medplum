@@ -1,17 +1,18 @@
-import { MedplumClient } from '@medplum/core';
+import { ContentType, MedplumClient } from '@medplum/core';
 import { MockClient } from '@medplum/mock';
 import cp from 'child_process';
 import fs from 'fs';
 import http from 'http';
 import { main } from '.';
-import { createMedplumClient } from './util/client';
 import { FileSystemStorage } from './storage';
+import { createMedplumClient } from './util/client';
 
 jest.mock('child_process');
 jest.mock('http');
 jest.mock('./util/client');
 jest.mock('fs', () => ({
   existsSync: jest.fn(),
+  mkdirSync: jest.fn(),
   readFileSync: jest.fn(),
   writeFileSync: jest.fn(),
   constants: {
@@ -63,20 +64,47 @@ describe('CLI auth', () => {
     const req1 = { url: '/favicon.ico' };
     const res1 = { writeHead: jest.fn(), end: jest.fn() };
     await handler(req1, res1);
-    expect(res1.writeHead).toBeCalledWith(404, { 'Content-Type': 'text/plain' });
+    expect(res1.writeHead).toBeCalledWith(404, { 'Content-Type': ContentType.TEXT });
     expect(res1.end).toBeCalledWith('Not found');
 
     // Simulate the redirect
     const req2 = { url: '/?code=123' };
     const res2 = { writeHead: jest.fn(), end: jest.fn() };
     await handler(req2, res2);
-    expect(res2.writeHead).toBeCalledWith(200, { 'Content-Type': 'text/plain' });
+    expect(res2.writeHead).toBeCalledWith(200, { 'Content-Type': ContentType.TEXT });
     expect(res2.end).toBeCalledWith('Signed in as Alice Smith. You may close this window.');
     expect(medplum.getActiveLogin()).toBeDefined();
   });
 
+  test('Login unsupported auth type', async () => {
+    await main(['node', 'index.js', 'login', '--auth-type', 'foo']);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Error: Allowed choices are'));
+  });
+
+  test('Login basic auth', async () => {
+    expect(medplum.getActiveLogin()).toBeUndefined();
+    await main(['node', 'index.js', 'login', '--auth-type', 'basic']);
+    expect(console.log).toHaveBeenCalledWith('Login successful');
+  });
+
+  test('Login client credentials', async () => {
+    expect(medplum.getActiveLogin()).toBeUndefined();
+    await main([
+      'node',
+      'index.js',
+      'login',
+      '--auth-type',
+      'client-credentials',
+      '--client-id',
+      '123',
+      '--client-secret',
+      'abc',
+    ]);
+    expect(console.log).toHaveBeenCalledWith('Login successful');
+  });
+
   test('Load credentials from disk', async () => {
-    medplum = new MockClient({ storage: new FileSystemStorage() });
+    medplum = new MockClient({ storage: new FileSystemStorage('default') });
 
     (fs.existsSync as unknown as jest.Mock).mockReturnValue(true);
     (fs.readFileSync as unknown as jest.Mock).mockReturnValue(

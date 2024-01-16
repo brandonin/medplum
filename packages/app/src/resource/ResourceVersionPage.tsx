@@ -1,7 +1,7 @@
 import { Paper, Tabs, Text, Title } from '@mantine/core';
 import { Bundle, BundleEntry, OperationOutcome, Resource, ResourceType } from '@medplum/fhirtypes';
 import { Container, Document, Loading, MedplumLink, ResourceDiff, useMedplum } from '@medplum/react';
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 export function ResourceVersionPage(): JSX.Element {
@@ -13,7 +13,7 @@ export function ResourceVersionPage(): JSX.Element {
     tab: string;
   };
   const medplum = useMedplum();
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState(true);
   const [historyBundle, setHistoryBundle] = useState<Bundle | undefined>();
   const [error, setError] = useState<OperationOutcome | undefined>();
 

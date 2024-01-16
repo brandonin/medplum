@@ -1,8 +1,8 @@
 import { calculateAgeString } from '@medplum/core';
 import { Patient, Reference } from '@medplum/fhirtypes';
 import { HumanNameDisplay, MedplumLink, ResourceAvatar, useResource } from '@medplum/react';
-import React from 'react';
 import { InfoBar } from './InfoBar';
+import { getDefaultColor } from './PatientHeader.utils';
 
 export interface PatientHeaderProps {
   patient: Patient | Reference<Patient>;
@@ -48,22 +48,12 @@ export function PatientHeader(props: PatientHeaderProps): JSX.Element | null {
           <InfoBar.Value>{patient.address[0]?.state}</InfoBar.Value>
         </InfoBar.Entry>
       )}
-      {patient.identifier?.map((identifier, index) => (
-        <InfoBar.Entry key={`${index}-${patient.identifier?.length}`}>
+      {patient.identifier?.map((identifier) => (
+        <InfoBar.Entry key={`${identifier?.system}-${identifier?.value}`}>
           <InfoBar.Key>{identifier?.system}</InfoBar.Key>
           <InfoBar.Value>{identifier?.value}</InfoBar.Value>
         </InfoBar.Entry>
       ))}
     </InfoBar>
   );
-}
-
-export function getDefaultColor(patient: Patient): string | undefined {
-  if (patient.gender === 'male') {
-    return 'blue';
-  }
-  if (patient.gender === 'female') {
-    return 'pink';
-  }
-  return undefined;
 }

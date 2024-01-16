@@ -1,13 +1,21 @@
-import { badRequest, createReference, OperationOutcomeError, ProfileResource, resolveId } from '@medplum/core';
-import { ContactPoint, Login, Project, ProjectMembership, Reference, User } from '@medplum/fhirtypes';
+import {
+  badRequest,
+  createReference,
+  OperationOutcomeError,
+  Operator,
+  ProfileResource,
+  resolveId,
+} from '@medplum/core';
+import { ContactPoint, Login, OperationOutcome, Project, ProjectMembership, Reference, User } from '@medplum/fhirtypes';
 import bcrypt from 'bcryptjs';
-import { Response } from 'express';
+import { Handler, NextFunction, Request, Response } from 'express';
 import fetch from 'node-fetch';
 import { getConfig } from '../config';
+import { getRequestContext } from '../context';
 import { systemRepo } from '../fhir/repo';
 import { rewriteAttachments, RewriteMode } from '../fhir/rewrite';
-import { logger } from '../logger';
 import { getClient, getMembershipsForLogin } from '../oauth/utils';
+import { sendOutcome } from '../fhir/outcomes';
 
 export async function createProfile(
   project: Project,
@@ -16,7 +24,8 @@ export async function createProfile(
   lastName: string,
   email: string | undefined
 ): Promise<ProfileResource> {
-  logger.info(`Create ${resourceType}: ${firstName} ${lastName}`);
+  const ctx = getRequestContext();
+  ctx.logger.info('Creating profile', { resourceType, firstName, lastName });
   let telecom: ContactPoint[] | undefined = undefined;
   if (email) {
     telecom = [{ system: 'email', use: 'work', value: email }];
@@ -34,7 +43,7 @@ export async function createProfile(
     ],
     telecom,
   });
-  logger.info('Created: ' + result.id);
+  ctx.logger.info('Created profile', { id: result.id });
   return result;
 }
 
@@ -44,7 +53,8 @@ export async function createProjectMembership(
   profile: ProfileResource,
   details?: Partial<ProjectMembership>
 ): Promise<ProjectMembership> {
-  logger.info('Create project membership: ' + project.name);
+  const ctx = getRequestContext();
+  ctx.logger.info('Creating project membership', { name: project.name });
   const result = await systemRepo.createResource<ProjectMembership>({
     ...details,
     resourceType: 'ProjectMembership',
@@ -52,7 +62,7 @@ export async function createProjectMembership(
     user: createReference(user),
     profile: createReference(profile),
   });
-  logger.info('Created: ' + result.id);
+  ctx.logger.info('Created project memberships', { id: result.id });
   return result;
 }
 
@@ -60,8 +70,8 @@ export async function createProjectMembership(
  * Sends a login response to the client.
  * If the user has multiple profiles, sends the list of profiles to choose from.
  * Otherwise, sends the authorization code.
- * @param res The response object.
- * @param login The login details.
+ * @param res - The response object.
+ * @param login - The login details.
  */
 export async function sendLoginResult(res: Response, login: Login): Promise<void> {
   const user = await systemRepo.readReference<User>(login.user as Reference<User>);
@@ -105,8 +115,8 @@ export async function sendLoginResult(res: Response, login: Login): Promise<void
 
 /**
  * Adds a login cookie to the response if this is a OAuth2 client login.
- * @param res The response object.
- * @param login The login details.
+ * @param res - The response object.
+ * @param login - The login details.
  */
 export function sendLoginCookie(res: Response, login: Login): void {
   if (login.client) {
@@ -122,8 +132,8 @@ export function sendLoginCookie(res: Response, login: Login): void {
 
 /**
  * Verifies the recaptcha response from the client.
- * @param secretKey The Recaptcha secret key to use for verification.
- * @param recaptchaToken The Recaptcha response from the client.
+ * @param secretKey - The Recaptcha secret key to use for verification.
+ * @param recaptchaToken - The Recaptcha response from the client.
  * @returns True on success, false on failure.
  */
 export async function verifyRecaptcha(secretKey: string, recaptchaToken: string): Promise<boolean> {
@@ -141,8 +151,8 @@ export async function verifyRecaptcha(secretKey: string, recaptchaToken: string)
 
 /**
  * Returns project ID if clientId is provided.
- * @param clientId clientId from the client
- * @param projectId projectId from the client
+ * @param clientId - clientId from the client
+ * @param projectId - projectId from the client
  * @returns The Project ID
  * @throws OperationOutcomeError
  */
@@ -164,10 +174,82 @@ export async function getProjectIdByClientId(
 }
 
 /**
+ * Returns a project by recaptcha site key.
+ * @param recaptchaSiteKey - reCAPTCHA site key from the client.
+ * @param projectId - Optional project ID from the client.
+ * @returns Project if found, otherwise undefined.
+ */
+export function getProjectByRecaptchaSiteKey(
+  recaptchaSiteKey: string,
+  projectId: string | undefined
+): Promise<Project | undefined> {
+  const filters = [
+    {
+      code: 'recaptcha-site-key',
+      operator: Operator.EQUALS,
+      value: recaptchaSiteKey,
+    },
+  ];
+
+  if (projectId) {
+    filters.push({
+      code: '_id',
+      operator: Operator.EQUALS,
+      value: projectId,
+    });
+  }
+
+  return systemRepo.searchOne<Project>({ resourceType: 'Project', filters });
+}
+
+/**
  * Returns the bcrypt hash of the password.
- * @param password The input password.
+ * @param password - The input password.
  * @returns The bcrypt hash of the password.
  */
 export function bcryptHashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, getConfig().bcryptHashSalt);
+}
+
+export function validateRecaptcha(projectValidation?: (p: Project) => OperationOutcome | undefined): Handler {
+  return async function (req: Request, res: Response, next: NextFunction): Promise<void> {
+    const recaptchaSiteKey = req.body.recaptchaSiteKey;
+    const config = getConfig();
+    let secretKey: string | undefined = config.recaptchaSecretKey;
+
+    if (recaptchaSiteKey && recaptchaSiteKey !== config.recaptchaSiteKey) {
+      // If the recaptcha site key is not the main Medplum recaptcha site key,
+      // then it must be associated with a Project.
+      // The user can only authenticate with that project.
+      const project = await getProjectByRecaptchaSiteKey(recaptchaSiteKey, req.body.projectId);
+      if (!project) {
+        sendOutcome(res, badRequest('Invalid recaptchaSiteKey'));
+        return;
+      }
+      secretKey = project.site?.find((s) => s.recaptchaSiteKey === recaptchaSiteKey)?.recaptchaSecretKey;
+      if (!secretKey) {
+        sendOutcome(res, badRequest('Invalid recaptchaSecretKey'));
+        return;
+      }
+
+      const validationOutcome = projectValidation?.(project);
+      if (validationOutcome) {
+        sendOutcome(res, validationOutcome);
+        return;
+      }
+    }
+
+    if (secretKey) {
+      if (!req.body.recaptchaToken) {
+        sendOutcome(res, badRequest('Recaptcha token is required'));
+        return;
+      }
+
+      if (!(await verifyRecaptcha(secretKey, req.body.recaptchaToken))) {
+        sendOutcome(res, badRequest('Recaptcha failed'));
+        return;
+      }
+    }
+    next();
+  };
 }

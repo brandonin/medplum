@@ -1,15 +1,15 @@
 import { globalSchema } from '@medplum/core';
 import { SearchParameter } from '@medplum/fhirtypes';
 import { MockClient } from '@medplum/mock';
+import { MedplumProvider } from '@medplum/react-hooks';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import React from 'react';
-import { convertIsoToLocal } from '../DateTimeInput/DateTimeInput';
-import { MedplumProvider } from '../MedplumProvider/MedplumProvider';
+import { ReactNode } from 'react';
+import { convertIsoToLocal } from '../DateTimeInput/DateTimeInput.utils';
 import { SearchFilterValueInput } from './SearchFilterValueInput';
 
 const medplum = new MockClient();
 
-function setup(child: React.ReactNode): void {
+function setup(child: ReactNode): void {
   render(<MedplumProvider medplum={medplum}>{child}</MedplumProvider>);
 }
 
@@ -142,12 +142,10 @@ describe('SearchFilterValueInput', () => {
 
     // Wait for the resource to load
     await act(async () => {
-      await waitFor(() => screen.getByDisplayValue('Test Organization'));
+      await waitFor(() => screen.getByText('Test Organization'));
     });
 
-    const input = screen
-      .getAllByRole('combobox')
-      .find((e) => e.getAttribute('name') === 'filter-value-id') as HTMLInputElement;
+    const input = screen.getAllByRole('searchbox')[1] as HTMLInputElement;
     await act(async () => {
       fireEvent.change(input, { target: { value: 'Different' } });
     });

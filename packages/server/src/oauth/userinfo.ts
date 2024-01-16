@@ -7,35 +7,35 @@ import {
   getReferenceString,
   ProfileResource,
 } from '@medplum/core';
-import { Reference } from '@medplum/fhirtypes';
+import { Reference, User } from '@medplum/fhirtypes';
 import { Request, RequestHandler, Response } from 'express';
 import { asyncWrap } from '../async';
-import { Repository } from '../fhir/repo';
+import { getAuthenticatedContext } from '../context';
+import { systemRepo } from '../fhir/repo';
 
 /**
  * Handles the OAuth/OpenID UserInfo Endpoint.
  * See: https://openid.net/specs/openid-connect-core-1_0.html#UserInfo
  */
 export const userInfoHandler: RequestHandler = asyncWrap(async (_req: Request, res: Response) => {
-  const repo = res.locals.repo as Repository;
-  const profile = await repo.readReference(res.locals.profile as Reference<ProfileResource>);
+  const ctx = getAuthenticatedContext();
+  const user = await systemRepo.readReference(ctx.login.user as Reference<User>);
+  const profile = await ctx.repo.readReference(ctx.profile);
   const userInfo: Record<string, any> = {
     sub: profile.id,
   };
 
-  if (res.locals.login.scope.includes('profile')) {
+  const scopes = ctx.login.scope?.split(' ');
+  if (scopes?.includes('profile')) {
     buildProfile(userInfo, profile);
   }
-
-  if (res.locals.login.scope.includes('email')) {
-    buildEmail(userInfo, profile);
+  if (scopes?.includes('email')) {
+    buildEmail(userInfo, profile, user);
   }
-
-  if (res.locals.login.scope.includes('phone')) {
+  if (scopes?.includes('phone')) {
     buildPhone(userInfo, profile);
   }
-
-  if (res.locals.login.scope.includes('address')) {
+  if (scopes?.includes('address')) {
     buildAddress(userInfo, profile);
   }
 
@@ -68,11 +68,11 @@ function buildProfile(userInfo: Record<string, any>, profile: ProfileResource): 
   userInfo.nickname = '';
 }
 
-function buildEmail(userInfo: Record<string, any>, profile: ProfileResource): void {
+function buildEmail(userInfo: Record<string, any>, profile: ProfileResource, user: User): void {
   const contactPoint = profile.telecom?.find((cp) => cp.system === 'email');
   if (contactPoint) {
     userInfo.email = contactPoint.value;
-    userInfo.email_verified = false;
+    userInfo.email_verified = !!(userInfo.email === user.email && user.emailVerified);
   }
 }
 
