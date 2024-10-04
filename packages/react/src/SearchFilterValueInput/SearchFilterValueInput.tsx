@@ -6,11 +6,11 @@ import { QuantityInput } from '../QuantityInput/QuantityInput';
 import { ReferenceInput } from '../ReferenceInput/ReferenceInput';
 
 export interface SearchFilterValueInputProps {
-  resourceType: string;
-  searchParam: SearchParameter;
-  defaultValue?: string;
-  autoFocus?: boolean;
-  onChange: (value: string) => void;
+  readonly resourceType: string;
+  readonly searchParam: SearchParameter;
+  readonly defaultValue?: string;
+  readonly autoFocus?: boolean;
+  readonly onChange: (value: string) => void;
 }
 
 export function SearchFilterValueInput(props: SearchFilterValueInputProps): JSX.Element | null {
@@ -87,6 +87,7 @@ export function SearchFilterValueInput(props: SearchFilterValueInputProps): JSX.
       return (
         <QuantityInput
           name={name}
+          path=""
           defaultValue={tryParseQuantity(props.defaultValue)}
           autoFocus={props.autoFocus}
           onChange={(newQuantity: Quantity | undefined) => {

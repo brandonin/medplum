@@ -146,7 +146,7 @@ The example below shows a resource modeling a prescription (i.e. [`MedicationReq
 
 ## Querying Data: Search
 
-FHIR offers both a [REST API](/docs/search) and [GraphQL API](/docs/graphql) to query, search, sort, and filter resources by specific criteria (see [this blog post](/blog/2023/09/06/graphql-vs-rest) for tradeoffs between REST and GraphQL).
+FHIR offers both a [REST API](/docs/search) and [GraphQL API](/docs/graphql) to query, search, sort, and filter resources by specific criteria (see [this blog post](/blog/graphql-vs-rest) for tradeoffs between REST and GraphQL).
 
 **FHIR resources cannot be searched by arbitrary fields**. Instead, the specification defines specific [search parameters](/docs/search/basic-search#search-parameters) for each resource that can be used for queries.
 
@@ -167,10 +167,13 @@ Because there are multiple code systems for many domains, the same _concept_ can
 
 A [`CodeableConcept`][codeableconcept] consists of two parts:
 
-- A `text` element the describes the concept in plain language
+- A `text` element - describes the concept in plain language
 - A `coding` element - an array of `(system, code)` pairs that provide the standard code for the concept within each code system.
 
 FHIR [`CodeableConcepts`][codeableconcept] use the `system` element to identify each code system within the `coding` array. By convention, FHIR uses absolute URLs to enforce that these systems are a globally unique namespace. _However, these URLs do not always point to hosted web sites._
+
+More detailed information about using coded values with FHIR are available in our
+[Terminology Services documentation](/docs/terminology).
 
 Refer to [this blog post](/blog/demystifying-fhir-systems) for a longer discussion of `system` strings.
 

@@ -6,6 +6,7 @@ import {
   Agent,
   Attachment,
   Binary,
+  Bot,
   BulkDataExport,
   Bundle,
   BundleEntry,
@@ -21,12 +22,13 @@ import {
   Project,
   ProjectMembership,
   ProjectMembershipAccess,
-  ProjectSecret,
+  ProjectSetting,
   Reference,
   Resource,
   ResourceType,
   SearchParameter,
   StructureDefinition,
+  Subscription,
   UserConfiguration,
   ValueSet,
 } from '@medplum/fhirtypes';
@@ -37,7 +39,7 @@ import { encodeBase64 } from './base64';
 import { LRUCache } from './cache';
 import { ContentType } from './contenttype';
 import { encryptSHA256, getRandomString } from './crypto';
-import { EventTarget } from './eventtarget';
+import { TypedEventTarget } from './eventtarget';
 import {
   CurrentContext,
   FhircastConnection,
@@ -55,6 +57,7 @@ import {
 } from './fhircast';
 import { Hl7Message } from './hl7';
 import { isJwt, isMedplumAccessToken, parseJWTPayload, tryGetJwtExpiration } from './jwt';
+import { MedplumKeyValueClient } from './keyvalue';
 import {
   OperationOutcomeError,
   badRequest,
@@ -62,31 +65,49 @@ import {
   isOperationOutcome,
   normalizeOperationOutcome,
   notFound,
+  unauthorized,
+  unauthorizedTokenAudience,
+  unauthorizedTokenExpired,
   validationError,
 } from './outcomes';
 import { ReadablePromise } from './readablepromise';
 import { ClientStorage, IClientStorage } from './storage';
+import { SubscriptionEmitter, SubscriptionManager } from './subscriptions';
 import { indexSearchParameter } from './types';
-import { indexStructureDefinitionBundle, isDataTypeLoaded, isProfileLoaded } from './typeschema/types';
+import { indexStructureDefinitionBundle, isDataTypeLoaded, isProfileLoaded, loadDataType } from './typeschema/types';
 import {
   CodeChallengeMethod,
   ProfileResource,
+  QueryTypes,
   arrayBufferToBase64,
+  concatUrls,
   createReference,
+  ensureTrailingSlash,
+  getQueryString,
   getReferenceString,
+  getWebSocketUrl,
+  isObject,
   resolveId,
   sleep,
+  sortStringArray,
 } from './utils';
 
-export const MEDPLUM_VERSION = import.meta.env.MEDPLUM_VERSION ?? '';
+export const MEDPLUM_VERSION: string = import.meta.env.MEDPLUM_VERSION ?? '';
+export const MEDPLUM_CLI_CLIENT_ID = 'medplum-cli';
 export const DEFAULT_ACCEPT = ContentType.FHIR_JSON + ', */*; q=0.1';
 
 const DEFAULT_BASE_URL = 'https://api.medplum.com/';
 const DEFAULT_RESOURCE_CACHE_SIZE = 1000;
-const DEFAULT_CACHE_TIME = 60000; // 60 seconds
+const DEFAULT_BROWSER_CACHE_TIME = 60000; // 60 seconds
+const DEFAULT_NODE_CACHE_TIME = 0;
+const DEFAULT_REFRESH_GRACE_PERIOD = 300000; // 5 minutes
 const BINARY_URL_PREFIX = 'Binary/';
 
-const system: Device = { resourceType: 'Device', id: 'system', deviceName: [{ name: 'System' }] };
+const system: Device = {
+  resourceType: 'Device',
+  id: 'system',
+  deviceName: [{ type: 'model-name', name: 'System' }],
+};
 
 /**
  * The MedplumClientOptions interface defines configuration options for MedplumClient.
@@ -200,6 +221,15 @@ export interface MedplumClientOptions {
   autoBatchTime?: number;
 
   /**
+   * The refresh grace period in milliseconds.
+   *
+   * This is the amount of time before the access token expires that the client will attempt to refresh the token.
+   *
+   * Default value is 300000 (5 minutes).
+   */
+  refreshGracePeriod?: number;
+
+  /**
    * Fetch implementation.
    *
    * Default is window.fetch (if available).
@@ -282,19 +312,34 @@ export interface MedplumClientOptions {
   verbose?: boolean;
 }
 
-export type FetchLike = (url: string, options?: any) => Promise<any>;
+export interface MedplumRequestOptions extends RequestInit {
+  /**
+   * Optional flag to follow "Location" or "Content-Location" URL on successful HTTP 200 "OK" responses.
+   */
+  followRedirectOnOk?: boolean;
 
-/**
- * QueryTypes defines the different ways to specify FHIR search parameters.
- *
- * Can be any valid input to the URLSearchParams() constructor.
- *
- * TypeScript definitions for URLSearchParams do not match runtime behavior.
- * The official spec only accepts string values.
- * Web browsers and Node.js automatically coerce values to strings.
- * See: https://github.com/microsoft/TypeScript/issues/32951
- */
-export type QueryTypes = URLSearchParams | string[][] | Record<string, any> | string | undefined;
+  /**
+   * Optional flag to follow "Location" or "Content-Location" URL on successful HTTP 201 "Created" responses.
+   */
+  followRedirectOnCreated?: boolean;
+
+  /**
+   * Optional flag to poll the status URL on successful HTTP 202 "Accepted" responses.
+   */
+  pollStatusOnAccepted?: boolean;
+
+  /**
+   * Optional polling time interval in milliseconds.
+   * Default value is 1000 (1 second).
+   */
+  pollStatusPeriod?: number;
+  /**
+   * Optional max number of retries that should be made in the case of a failed request. Default is `2`.
+   */
+  maxRetries?: number;
+}
+
+export type FetchLike = (url: string, options?: any) => Promise<any>;
 
 /**
  * ResourceArray is an array of resources with a bundle property.
@@ -306,8 +351,8 @@ export type ResourceArray<T extends Resource = Resource> = T[] & { bundle: Bundl
 export interface CreatePdfFunction {
   (
     docDefinition: TDocumentDefinitions,
-    tableLayouts?: Record<string, CustomTableLayout> | undefined,
-    fonts?: TFontDictionary | undefined
+    tableLayouts?: Record<string, CustomTableLayout>,
+    fonts?: TFontDictionary
   ): Promise<any>;
 }
 
@@ -399,9 +444,11 @@ export interface TokenResponse {
 }
 
 export interface BotEvent<T = Resource | Hl7Message | string | Record<string, any>> {
+  readonly bot: Reference<Bot>;
   readonly contentType: string;
   readonly input: T;
-  readonly secrets: Record<string, ProjectSecret>;
+  readonly secrets: Record<string, ProjectSetting>;
+  readonly traceId?: string;
 }
 
 export interface InviteRequest {
@@ -438,6 +485,63 @@ export interface PatchOperation {
 export type BinarySource = string | File | Blob | Uint8Array;
 
 /**
+ * Binary upload options.
+ */
+export interface CreateBinaryOptions {
+  /**
+   * The binary data to upload.
+   */
+  readonly data: BinarySource;
+
+  /**
+   * Content type for the binary.
+   */
+  readonly contentType: string;
+
+  /**
+   * Optional filename for the binary.
+   */
+  readonly filename?: string;
+
+  /**
+   * Optional security context for the binary.
+   */
+  readonly securityContext?: Reference;
+
+  /**
+   * Optional fetch options. **NOTE:** only `requestOptions.signal` is respected when `onProgress` is also provided.
+   */
+  readonly onProgress?: (e: ProgressEvent) => void;
+}
+
+export interface CreateMediaOptions extends CreateBinaryOptions {
+  /**
+   * Optional additional fields for the Media resource.
+   */
+  readonly additionalFields?: Partial<Media>;
+}
+
+/**
+ * PDF upload options.
+ */
+export interface CreatePdfOptions extends Omit<CreateBinaryOptions, 'data' | 'contentType'> {
+  /**
+   * The PDF document definition. See https://pdfmake.github.io/docs/0.1/document-definition-object/
+   */
+  readonly docDefinition: TDocumentDefinitions;
+
+  /**
+   * Optional pdfmake custom table layout.
+   */
+  readonly tableLayouts?: Record<string, CustomTableLayout>;
+
+  /**
+   * Optional pdfmake custom font dictionary.
+   */
+  readonly fonts?: TFontDictionary;
+}
+
+/**
  * Email address definition.
  * Compatible with nodemailer Mail.Address.
  */
@@ -456,7 +560,7 @@ export type MailDestination = string | MailAddress | string[] | MailAddress[];
  * Compatible with nodemailer Mail.Options.
  */
 export interface MailAttachment {
-  /** String, Buffer or a Stream contents for the attachmentent */
+  /** String, Buffer or a Stream contents for the attachment */
   readonly content?: string;
   /** path to a file or an URL (data uris are allowed as well) if you want to stream the file instead of including it (better for larger attachments) */
   readonly path?: string;
@@ -508,9 +612,14 @@ interface RequestCacheEntry {
 interface AutoBatchEntry<T = any> {
   readonly method: string;
   readonly url: string;
-  readonly options: RequestInit;
+  readonly options: MedplumRequestOptions;
   readonly resolve: (value: T) => void;
   readonly reject: (reason: any) => void;
+}
+
+interface RequestState {
+  statusUrl?: string;
+  pollCount?: number;
 }
 
 /**
@@ -585,6 +694,23 @@ export interface ValueSetExpandParams {
   count?: number;
 }
 
+export interface RequestProfileSchemaOptions {
+  /** (optional) Whether to include nested profiles, e.g. from extensions. Defaults to false. */
+  expandProfile?: boolean;
+}
+
+/**
+ * This map enumerates all the lifecycle events that `MedplumClient` emits and what the shape of the `Event` is.
+ */
+export type MedplumClientEventMap = {
+  change: { type: 'change' };
+  offline: { type: 'offline' };
+  profileRefreshing: { type: 'profileRefreshing' };
+  profileRefreshed: { type: 'profileRefreshed' };
+  storageInitialized: { type: 'storageInitialized' };
+  storageInitFailed: { type: 'storageInitFailed'; payload: { error: Error } };
+};
+
 /**
  * The MedplumClient class provides a client for the Medplum FHIR server.
  *
@@ -598,6 +724,8 @@ export interface ValueSetExpandParams {
  *   5. Deleting resources
  *   6. Searching
  *   7. Making GraphQL queries
+ *
+ * The client can also be used to integrate with other FHIR servers. For an example, see the Epic Connection Demo Bot [here](https://github.com/medplum/medplum/tree/main/examples/medplum-demo-bots/src/epic).
  *
  * @example
  * Here is a quick example of how to use the client:
@@ -640,7 +768,7 @@ export interface ValueSetExpandParams {
  *    <meta name="algolia:pageRank" content="100" />
  *  </head>
  */
-export class MedplumClient extends EventTarget {
+export class MedplumClient extends TypedEventTarget<MedplumClientEventMap> {
   private readonly options: MedplumClientOptions;
   private readonly fetch: FetchLike;
   private readonly createPdfImpl?: CreatePdfFunction;
@@ -655,6 +783,8 @@ export class MedplumClient extends EventTarget {
   private readonly onUnauthenticated?: () => void;
   private readonly autoBatchTime: number;
   private readonly autoBatchQueue: AutoBatchEntry[] | undefined;
+  private readonly refreshGracePeriod: number;
+  private subscriptionManager?: SubscriptionManager;
   private medplumServer?: boolean;
   private clientId?: string;
   private clientSecret?: string;
@@ -668,6 +798,7 @@ export class MedplumClient extends EventTarget {
   private basicAuth?: string;
   private initPromise: Promise<void>;
   private initComplete = true;
+  private keyValueClient?: MedplumKeyValueClient;
 
   constructor(options?: MedplumClientOptions) {
     super();
@@ -683,15 +814,17 @@ export class MedplumClient extends EventTarget {
     this.storage = options?.storage ?? new ClientStorage();
     this.createPdfImpl = options?.createPdf;
     this.baseUrl = ensureTrailingSlash(options?.baseUrl ?? DEFAULT_BASE_URL);
-    this.fhirBaseUrl = ensureTrailingSlash(concatUrls(this.baseUrl, options?.fhirUrlPath ?? 'fhir/R4/'));
+    this.fhirBaseUrl = concatUrls(this.baseUrl, options?.fhirUrlPath ?? 'fhir/R4');
     this.authorizeUrl = concatUrls(this.baseUrl, options?.authorizeUrl ?? 'oauth2/authorize');
     this.tokenUrl = concatUrls(this.baseUrl, options?.tokenUrl ?? 'oauth2/token');
     this.logoutUrl = concatUrls(this.baseUrl, options?.logoutUrl ?? 'oauth2/logout');
     this.clientId = options?.clientId ?? '';
     this.clientSecret = options?.clientSecret ?? '';
     this.onUnauthenticated = options?.onUnauthenticated;
+    this.refreshGracePeriod = options?.refreshGracePeriod ?? DEFAULT_REFRESH_GRACE_PERIOD;
 
-    this.cacheTime = options?.cacheTime ?? DEFAULT_CACHE_TIME;
+    this.cacheTime =
+      options?.cacheTime ?? (typeof window === 'undefined' ? DEFAULT_NODE_CACHE_TIME : DEFAULT_BROWSER_CACHE_TIME);
     if (this.cacheTime > 0) {
       this.requestCache = new LRUCache(options?.resourceCacheSize ?? DEFAULT_RESOURCE_CACHE_SIZE);
     } else {
@@ -708,21 +841,30 @@ export class MedplumClient extends EventTarget {
 
     if (options?.accessToken) {
       this.setAccessToken(options.accessToken);
+    }
+
+    if (this.storage.getInitPromise === undefined) {
+      if (!options?.accessToken) {
+        this.attemptResumeActiveLogin().catch(console.error);
+      }
       this.initPromise = Promise.resolve();
-    } else if (this.storage.getInitPromise !== undefined) {
-      const storageInitPromise = this.storage.getInitPromise();
-      const initPromise = new Promise<void>((resolve) => {
-        storageInitPromise
-          .then(() => {
-            this.attemptResumeActiveLogin().then(resolve).catch(console.error);
-            this.initComplete = true;
-          })
-          .catch(console.error);
-      });
-      this.initPromise = initPromise;
-      this.initComplete = false;
+      this.dispatchEvent({ type: 'storageInitialized' });
     } else {
-      this.initPromise = this.attemptResumeActiveLogin().catch(console.error);
+      this.initComplete = false;
+      this.initPromise = this.storage.getInitPromise();
+      this.initPromise
+        .then(() => {
+          if (!options?.accessToken) {
+            this.attemptResumeActiveLogin().catch(console.error);
+          }
+          this.initComplete = true;
+          this.dispatchEvent({ type: 'storageInitialized' });
+        })
+        .catch((err: Error) => {
+          console.error(err);
+          this.initComplete = true;
+          this.dispatchEvent({ type: 'storageInitFailed', payload: { error: err } });
+        });
     }
 
     this.setupStorageListener();
@@ -802,7 +944,9 @@ export class MedplumClient extends EventTarget {
    */
   clear(): void {
     this.storage.clear();
-    sessionStorage.clear();
+    if (typeof window !== 'undefined') {
+      sessionStorage.clear();
+    }
     this.clearActiveLogin();
   }
 
@@ -847,7 +991,7 @@ export class MedplumClient extends EventTarget {
    * @param resourceType - The resource type to invalidate.
    */
   invalidateSearches<K extends ResourceType>(resourceType: K): void {
-    const url = this.fhirBaseUrl + resourceType;
+    const url = concatUrls(this.fhirBaseUrl, resourceType);
     if (this.requestCache) {
       for (const key of this.requestCache.keys()) {
         if (key.endsWith(url) || key.includes(url + '?')) {
@@ -868,7 +1012,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns Promise to the response content.
    */
-  get<T = any>(url: URL | string, options: RequestInit = {}): ReadablePromise<T> {
+  get<T = any>(url: URL | string, options: MedplumRequestOptions = {}): ReadablePromise<T> {
     url = url.toString();
     const cached = this.getCacheEntry(url, options);
     if (cached) {
@@ -912,7 +1056,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns Promise to the response content.
    */
-  post(url: URL | string, body: any, contentType?: string, options: RequestInit = {}): Promise<any> {
+  post(url: URL | string, body: any, contentType?: string, options: MedplumRequestOptions = {}): Promise<any> {
     url = url.toString();
     this.setRequestBody(options, body);
     if (contentType) {
@@ -935,7 +1079,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns Promise to the response content.
    */
-  put(url: URL | string, body: any, contentType?: string, options: RequestInit = {}): Promise<any> {
+  put(url: URL | string, body: any, contentType?: string, options: MedplumRequestOptions = {}): Promise<any> {
     url = url.toString();
     this.setRequestBody(options, body);
     if (contentType) {
@@ -957,7 +1101,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns Promise to the response content.
    */
-  patch(url: URL | string, operations: PatchOperation[], options: RequestInit = {}): Promise<any> {
+  patch(url: URL | string, operations: PatchOperation[], options: MedplumRequestOptions = {}): Promise<any> {
     url = url.toString();
     this.setRequestBody(options, operations);
     this.setRequestContentType(options, ContentType.JSON_PATCH);
@@ -977,7 +1121,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns Promise to the response content.
    */
-  delete(url: URL | string, options?: RequestInit): Promise<any> {
+  delete(url: URL | string, options?: MedplumRequestOptions): Promise<any> {
     url = url.toString();
     this.invalidateUrl(url);
     return this.request('DELETE', url, options);
@@ -994,7 +1138,10 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns Promise to the authentication response.
    */
-  async startNewUser(newUserRequest: NewUserRequest, options?: RequestInit): Promise<LoginAuthenticationResponse> {
+  async startNewUser(
+    newUserRequest: NewUserRequest,
+    options?: MedplumRequestOptions
+  ): Promise<LoginAuthenticationResponse> {
     const { codeChallengeMethod, codeChallenge } = await this.startPkce();
     return this.post(
       'auth/newuser',
@@ -1019,7 +1166,7 @@ export class MedplumClient extends EventTarget {
    */
   async startNewProject(
     newProjectRequest: NewProjectRequest,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): Promise<LoginAuthenticationResponse> {
     return this.post('auth/newproject', newProjectRequest, undefined, options) as Promise<LoginAuthenticationResponse>;
   }
@@ -1034,7 +1181,7 @@ export class MedplumClient extends EventTarget {
    */
   async startNewPatient(
     newPatientRequest: NewPatientRequest,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): Promise<LoginAuthenticationResponse> {
     return this.post('auth/newpatient', newPatientRequest, undefined, options) as Promise<LoginAuthenticationResponse>;
   }
@@ -1048,7 +1195,7 @@ export class MedplumClient extends EventTarget {
    */
   async startLogin(
     loginRequest: EmailPasswordLoginRequest,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): Promise<LoginAuthenticationResponse> {
     return this.post(
       'auth/login',
@@ -1073,7 +1220,7 @@ export class MedplumClient extends EventTarget {
    */
   async startGoogleLogin(
     loginRequest: GoogleLoginRequest,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): Promise<LoginAuthenticationResponse> {
     return this.post(
       'auth/google',
@@ -1226,13 +1373,13 @@ export class MedplumClient extends EventTarget {
 
   /**
    * Builds a FHIR URL from a collection of URL path components.
-   * For example, `buildUrl('/Patient', '123')` returns `fhir/R4/Patient/123`.
+   * For example, `fhirUrl('Patient', '123')` returns `fhir/R4/Patient/123`.
    * @category HTTP
    * @param path - The path component of the URL.
    * @returns The well-formed FHIR URL.
    */
   fhirUrl(...path: string[]): URL {
-    return new URL(path.join('/'), this.fhirBaseUrl);
+    return new URL(concatUrls(this.fhirBaseUrl, path.join('/')));
   }
 
   /**
@@ -1246,7 +1393,7 @@ export class MedplumClient extends EventTarget {
   fhirSearchUrl(resourceType: ResourceType, query: QueryTypes): URL {
     const url = this.fhirUrl(resourceType);
     if (query) {
-      url.search = new URLSearchParams(query).toString();
+      url.search = getQueryString(query);
     }
     return url;
   }
@@ -1304,7 +1451,7 @@ export class MedplumClient extends EventTarget {
   search<K extends ResourceType>(
     resourceType: K,
     query?: QueryTypes,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): ReadablePromise<Bundle<ExtractResource<K>>> {
     const url = this.fhirSearchUrl(resourceType, query);
     const cacheKey = 'search-' + url.toString();
@@ -1352,7 +1499,7 @@ export class MedplumClient extends EventTarget {
   searchOne<K extends ResourceType>(
     resourceType: K,
     query?: QueryTypes,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): ReadablePromise<ExtractResource<K> | undefined> {
     const url = this.fhirSearchUrl(resourceType, query);
     url.searchParams.set('_count', '1');
@@ -1394,7 +1541,7 @@ export class MedplumClient extends EventTarget {
   searchResources<K extends ResourceType>(
     resourceType: K,
     query?: QueryTypes,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): ReadablePromise<ResourceArray<ExtractResource<K>>> {
     const url = this.fhirSearchUrl(resourceType, query);
     const cacheKey = 'searchResources-' + url.toString();
@@ -1411,7 +1558,9 @@ export class MedplumClient extends EventTarget {
    * Creates an
    * [async generator](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncGenerator)
    * over a series of FHIR search requests for paginated search results. Each iteration of the generator yields
-   * the array of resources on each page.
+   * the array of resources on each page. Searches using _offset based pagination are limited to 10,000 records.
+   * For larger result sets, _cursor based pagination should be used instead.
+   * See: https://www.medplum.com/docs/search/paginated-search#cursor-based-pagination
    *
    * @example
    *
@@ -1432,7 +1581,7 @@ export class MedplumClient extends EventTarget {
   async *searchResourcePages<K extends ResourceType>(
     resourceType: K,
     query?: QueryTypes,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): AsyncGenerator<ResourceArray<ExtractResource<K>>> {
     let url: URL | undefined = this.fhirSearchUrl(resourceType, query);
 
@@ -1459,7 +1608,7 @@ export class MedplumClient extends EventTarget {
    * @returns Promise to expanded ValueSet.
    * @deprecated Use `valueSetExpand()` instead.
    */
-  searchValueSet(system: string, filter: string, options?: RequestInit): ReadablePromise<ValueSet> {
+  searchValueSet(system: string, filter: string, options?: MedplumRequestOptions): ReadablePromise<ValueSet> {
     return this.valueSetExpand({ url: system, filter }, options);
   }
 
@@ -1471,7 +1620,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns Promise to expanded ValueSet.
    */
-  valueSetExpand(params: ValueSetExpandParams, options?: RequestInit): ReadablePromise<ValueSet> {
+  valueSetExpand(params: ValueSetExpandParams, options?: MedplumRequestOptions): ReadablePromise<ValueSet> {
     const url = this.fhirUrl('ValueSet', '$expand');
     url.search = new URLSearchParams(params as Record<string, string>).toString();
     return this.get(url.toString(), options);
@@ -1526,13 +1675,16 @@ export class MedplumClient extends EventTarget {
    * @param resourceType - The FHIR resource type.
    * @param id - The resource ID.
    * @param options - Optional fetch options.
-   * @returns The resource if available; undefined otherwise.
+   * @returns The resource if available.
    */
   readResource<K extends ResourceType>(
     resourceType: K,
     id: string,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): ReadablePromise<ExtractResource<K>> {
+    if (!id) {
+      throw new Error('The "id" parameter cannot be null, undefined, or an empty string.');
+    }
     return this.get<ExtractResource<K>>(this.fhirUrl(resourceType, id), options);
   }
 
@@ -1554,9 +1706,9 @@ export class MedplumClient extends EventTarget {
    * @category Read
    * @param reference - The FHIR reference object.
    * @param options - Optional fetch options.
-   * @returns The resource if available; undefined otherwise.
+   * @returns The resource if available.
    */
-  readReference<T extends Resource>(reference: Reference<T>, options?: RequestInit): ReadablePromise<T> {
+  readReference<T extends Resource>(reference: Reference<T>, options?: MedplumRequestOptions): ReadablePromise<T> {
     const refString = reference.reference;
     if (!refString) {
       return new ReadablePromise(Promise.reject(new Error('Missing reference')));
@@ -1598,6 +1750,7 @@ export class MedplumClient extends EventTarget {
         kind,
         description,
         type,
+        url,
         snapshot {
           element {
             id,
@@ -1650,14 +1803,15 @@ export class MedplumClient extends EventTarget {
    * If the schema is already cached, the promise is resolved immediately.
    * @category Schema
    * @param profileUrl - The FHIR URL of the profile
-   * @returns Promise to a schema with the requested profile.
+   * @param options - (optional) Additional options
+   * @returns Promise for schema request.
    */
-  requestProfileSchema(profileUrl: string): Promise<void> {
-    if (isProfileLoaded(profileUrl)) {
+  requestProfileSchema(profileUrl: string, options?: RequestProfileSchemaOptions): Promise<void> {
+    if (!options?.expandProfile && isProfileLoaded(profileUrl)) {
       return Promise.resolve();
     }
 
-    const cacheKey = profileUrl + '-requestSchema';
+    const cacheKey = profileUrl + '-requestSchema' + (options?.expandProfile ? '-nested' : '');
     const cached = this.getCacheEntry(cacheKey, undefined);
     if (cached) {
       return cached.value;
@@ -1665,17 +1819,25 @@ export class MedplumClient extends EventTarget {
 
     const promise = new ReadablePromise<void>(
       (async () => {
-        // Just sort by lastUpdated. Ideally, it would also be based on a logical sort of version
-        // See https://hl7.org/fhir/references.html#canonical-matching for more discussion
-        const sd = await this.searchOne('StructureDefinition', {
-          url: profileUrl,
-          _sort: '-_lastUpdated',
-        });
-
-        if (!sd) {
-          console.warn(`No StructureDefinition found for ${profileUrl}!`);
+        if (options?.expandProfile) {
+          const url = this.fhirUrl('StructureDefinition', '$expand-profile');
+          url.search = new URLSearchParams({ url: profileUrl }).toString();
+          const sdBundle = (await this.post(url.toString(), {})) as Bundle<StructureDefinition>;
+          indexStructureDefinitionBundle(sdBundle);
         } else {
-          indexStructureDefinitionBundle([sd], profileUrl);
+          // Just sort by lastUpdated. Ideally, it would also be based on a logical sort of version
+          // See https://hl7.org/fhir/references.html#canonical-matching for more discussion
+          const sd = await this.searchOne('StructureDefinition', {
+            url: profileUrl,
+            _sort: '-_lastUpdated',
+          });
+
+          if (!sd) {
+            console.warn(`No StructureDefinition found for ${profileUrl}!`);
+            return;
+          }
+
+          loadDataType(sd);
         }
       })()
     );
@@ -1706,7 +1868,7 @@ export class MedplumClient extends EventTarget {
   readHistory<K extends ResourceType>(
     resourceType: K,
     id: string,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): ReadablePromise<Bundle<ExtractResource<K>>> {
     return this.get(this.fhirUrl(resourceType, id, '_history'), options);
   }
@@ -1728,13 +1890,13 @@ export class MedplumClient extends EventTarget {
    * @param id - The resource ID.
    * @param vid - The version ID.
    * @param options - Optional fetch options.
-   * @returns The resource if available; undefined otherwise.
+   * @returns The resource if available.
    */
   readVersion<K extends ResourceType>(
     resourceType: K,
     id: string,
     vid: string,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): ReadablePromise<ExtractResource<K>> {
     return this.get(this.fhirUrl(resourceType, id, '_history', vid), options);
   }
@@ -1756,7 +1918,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns A Bundle of all Resources related to the Patient
    */
-  readPatientEverything(id: string, options?: RequestInit): ReadablePromise<Bundle> {
+  readPatientEverything(id: string, options?: MedplumRequestOptions): ReadablePromise<Bundle> {
     return this.get(this.fhirUrl('Patient', id, '$everything'), options);
   }
 
@@ -1785,7 +1947,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns The result of the create operation.
    */
-  createResource<T extends Resource>(resource: T, options?: RequestInit): Promise<T> {
+  createResource<T extends Resource>(resource: T, options?: MedplumRequestOptions): Promise<T> {
     if (!resource.resourceType) {
       throw new Error('Missing resourceType');
     }
@@ -1834,9 +1996,41 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns The result of the create operation.
    */
-  async createResourceIfNoneExist<T extends Resource>(resource: T, query: string, options?: RequestInit): Promise<T> {
+  async createResourceIfNoneExist<T extends Resource>(
+    resource: T,
+    query: string,
+    options?: MedplumRequestOptions
+  ): Promise<T> {
     return ((await this.searchOne(resource.resourceType, query, options)) ??
       this.createResource(resource, options)) as Promise<T>;
+  }
+
+  /**
+   * Upsert a resource: update it in place if it exists, otherwise create it.  This is done in a single, transactional
+   * request to guarantee data consistency.
+   * @param resource - The resource to update or create.
+   * @param query - A FHIR search query to uniquely identify the resource if it already exists.
+   * @param options  - Optional fetch options.
+   * @returns The updated/created resource.
+   */
+  async upsertResource<T extends Resource>(
+    resource: T,
+    query: QueryTypes,
+    options?: MedplumRequestOptions
+  ): Promise<T> {
+    // Build conditional update URL, e.g. `PUT /ResourceType?search-param=value`
+    const url = this.fhirSearchUrl(resource.resourceType, query);
+
+    let result = await this.put(url, resource, undefined, options);
+    if (!result) {
+      // On 304 not modified, result will be undefined
+      // Return the user input instead
+      result = resource;
+    }
+    this.cacheResource(result);
+    this.invalidateUrl(this.fhirUrl(resource.resourceType, resource.id as string, '_history'));
+    this.invalidateSearches(resource.resourceType);
+    return result;
   }
 
   /**
@@ -1858,25 +2052,47 @@ export class MedplumClient extends EventTarget {
    *
    * See the FHIR "create" operation for full details: https://www.hl7.org/fhir/http.html#create
    * @category Create
+   * @param createBinaryOptions -The binary options. See `CreateBinaryOptions` for full details.
+   * @param requestOptions - Optional fetch options. **NOTE:** only `options.signal` is respected when `onProgress` is also provided.
+   * @returns The result of the create operation.
+   */
+  createAttachment(
+    createBinaryOptions: CreateBinaryOptions,
+    requestOptions?: MedplumRequestOptions
+  ): Promise<Attachment>;
+
+  /**
+   * @category Create
    * @param data - The binary data to upload.
    * @param filename - Optional filename for the binary.
    * @param contentType - Content type for the binary.
    * @param onProgress - Optional callback for progress events. **NOTE:** only `options.signal` is respected when `onProgress` is also provided.
    * @param options - Optional fetch options. **NOTE:** only `options.signal` is respected when `onProgress` is also provided.
    * @returns The result of the create operation.
+   * @deprecated Use `createAttachment` with `CreateBinaryOptions` instead. To be removed in Medplum 4.0.
    */
-  async createAttachment(
+  createAttachment(
     data: BinarySource,
     filename: string | undefined,
     contentType: string,
     onProgress?: (e: ProgressEvent) => void,
-    options?: RequestInit
+    options?: MedplumRequestOptions
+  ): Promise<Attachment>;
+
+  async createAttachment(
+    arg1: BinarySource | CreateBinaryOptions,
+    arg2: string | undefined | MedplumRequestOptions,
+    arg3?: string,
+    arg4?: (e: ProgressEvent) => void,
+    arg5?: MedplumRequestOptions
   ): Promise<Attachment> {
-    const binary = await this.createBinary(data, filename, contentType, onProgress, options);
+    const createBinaryOptions = normalizeCreateBinaryOptions(arg1, arg2, arg3, arg4);
+    const requestOptions = arg5 ?? (typeof arg2 === 'object' ? arg2 : {});
+    const binary = await this.createBinary(createBinaryOptions, requestOptions);
     return {
-      contentType,
+      contentType: createBinaryOptions.contentType,
       url: binary.url,
-      title: filename,
+      title: createBinaryOptions.filename,
     };
   }
 
@@ -1898,6 +2114,15 @@ export class MedplumClient extends EventTarget {
    * ```
    *
    * See the FHIR "create" operation for full details: https://www.hl7.org/fhir/http.html#create
+   *
+   * @category Create
+   * @param createBinaryOptions -The binary options. See `CreateBinaryOptions` for full details.
+   * @param requestOptions - Optional fetch options. **NOTE:** only `options.signal` is respected when `onProgress` is also provided.
+   * @returns The result of the create operation.
+   */
+  createBinary(createBinaryOptions: CreateBinaryOptions, requestOptions?: MedplumRequestOptions): Promise<Binary>;
+
+  /**
    * @category Create
    * @param data - The binary data to upload.
    * @param filename - Optional filename for the binary.
@@ -1905,23 +2130,41 @@ export class MedplumClient extends EventTarget {
    * @param onProgress - Optional callback for progress events. **NOTE:** only `options.signal` is respected when `onProgress` is also provided.
    * @param options - Optional fetch options. **NOTE:** only `options.signal` is respected when `onProgress` is also provided.
    * @returns The result of the create operation.
+   * @deprecated Use `createBinary` with `CreateBinaryOptions` instead. To be removed in Medplum 4.0.
    */
   createBinary(
     data: BinarySource,
     filename: string | undefined,
     contentType: string,
     onProgress?: (e: ProgressEvent) => void,
-    options?: RequestInit
+    options?: MedplumRequestOptions
+  ): Promise<Binary>;
+
+  createBinary(
+    arg1: BinarySource | CreateBinaryOptions,
+    arg2: string | undefined | MedplumRequestOptions,
+    arg3?: string,
+    arg4?: (e: ProgressEvent) => void,
+    arg5?: MedplumRequestOptions
   ): Promise<Binary> {
+    const createBinaryOptions = normalizeCreateBinaryOptions(arg1, arg2, arg3, arg4);
+    const requestOptions = arg5 ?? (typeof arg2 === 'object' ? arg2 : {});
+
+    const { data, contentType, filename, securityContext, onProgress } = createBinaryOptions;
+
     const url = this.fhirUrl('Binary');
     if (filename) {
       url.searchParams.set('_filename', filename);
     }
 
-    if (onProgress) {
-      return this.uploadwithProgress(url, data, contentType, onProgress, options);
+    if (securityContext?.reference) {
+      this.setRequestHeader(requestOptions, 'X-Security-Context', securityContext.reference);
     }
-    return this.post(url, data, contentType, options);
+
+    if (onProgress) {
+      return this.uploadwithProgress(url, data, contentType, onProgress, requestOptions);
+    }
+    return this.post(url, data, contentType, requestOptions);
   }
 
   uploadwithProgress(
@@ -1929,7 +2172,7 @@ export class MedplumClient extends EventTarget {
     data: BinarySource,
     contentType: string,
     onProgress: (e: ProgressEvent) => void,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): Promise<any> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
@@ -1949,7 +2192,7 @@ export class MedplumClient extends EventTarget {
       };
 
       xhr.responseType = 'json';
-      xhr.onabort = () => sendResult(new Error('Request aborted'));
+      xhr.onabort = () => sendResult(new DOMException('Request aborted', 'AbortError'));
       xhr.onerror = () => sendResult(new Error('Request error'));
 
       if (onProgress) {
@@ -1971,6 +2214,14 @@ export class MedplumClient extends EventTarget {
       xhr.setRequestHeader('Cache-Control', 'no-cache, no-store, max-age=0');
       xhr.setRequestHeader('Content-Type', contentType);
       xhr.setRequestHeader('X-Medplum', 'extended');
+
+      if (options?.headers) {
+        const headers = options.headers as Record<string, string>;
+        for (const [key, value] of Object.entries(headers)) {
+          xhr.setRequestHeader(key, value);
+        }
+      }
+
       xhr.send(data);
     });
   }
@@ -1994,36 +2245,56 @@ export class MedplumClient extends EventTarget {
    *
    * See the pdfmake document definition for full details: https://pdfmake.github.io/docs/0.1/document-definition-object/
    * @category Media
+   * @param createPdfOptions - The PDF creation options. See `CreatePdfOptions` for full details.
+   * @param requestOptions - Optional fetch options.
+   * @returns The result of the create operation.
+   */
+  createPdf(createPdfOptions: CreatePdfOptions, requestOptions?: MedplumRequestOptions): Promise<Binary>;
+
+  /**
+   * @category Media
    * @param docDefinition - The PDF document definition.
    * @param filename - Optional filename for the PDF binary resource.
    * @param tableLayouts - Optional pdfmake custom table layout.
    * @param fonts - Optional pdfmake custom font dictionary.
    * @returns The result of the create operation.
+   * @deprecated Use `createPdf` with `CreatePdfOptions` instead. To be removed in Medplum 4.0.
    */
-  async createPdf(
+  createPdf(
     docDefinition: TDocumentDefinitions,
-    filename?: string,
+    filename: string | undefined,
     tableLayouts?: Record<string, CustomTableLayout>,
     fonts?: TFontDictionary
+  ): Promise<Binary>;
+
+  async createPdf(
+    arg1: TDocumentDefinitions | CreatePdfOptions,
+    arg2?: string | MedplumRequestOptions,
+    arg3?: Record<string, CustomTableLayout>,
+    arg4?: TFontDictionary
   ): Promise<Binary> {
     if (!this.createPdfImpl) {
       throw new Error('PDF creation not enabled');
     }
+    const createPdfOptions = normalizeCreatePdfOptions(arg1, arg2, arg3, arg4);
+    const requestOptions = typeof arg2 === 'object' ? arg2 : {};
+    const { docDefinition, tableLayouts, fonts, ...rest } = createPdfOptions;
     const blob = await this.createPdfImpl(docDefinition, tableLayouts, fonts);
-    return this.createBinary(blob, filename, 'application/pdf');
+    const createBinaryOptions = { ...rest, data: blob, contentType: 'application/pdf' };
+    return this.createBinary(createBinaryOptions, requestOptions);
   }
 
   /**
    * Creates a FHIR `Communication` resource with the provided data content.
    *
-   * This is a convenience method to handle commmon cases where a `Communication` resource is created with a `payload`.
+   * This is a convenience method to handle common cases where a `Communication` resource is created with a `payload`.
    * @category Create
    * @param resource - The FHIR resource to comment on.
    * @param text - The text of the comment.
    * @param options - Optional fetch options.
    * @returns The result of the create operation.
    */
-  createComment(resource: Resource, text: string, options?: RequestInit): Promise<Communication> {
+  createComment(resource: Resource, text: string, options?: MedplumRequestOptions): Promise<Communication> {
     const profile = this.getProfile();
     let encounter: Reference<Encounter> | undefined = undefined;
     let subject: Reference<Patient> | undefined = undefined;
@@ -2045,6 +2316,7 @@ export class MedplumClient extends EventTarget {
     return this.createResource<Communication>(
       {
         resourceType: 'Communication',
+        status: 'completed',
         basedOn: [createReference(resource)],
         encounter,
         subject,
@@ -2082,7 +2354,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns The result of the update operation.
    */
-  async updateResource<T extends Resource>(resource: T, options?: RequestInit): Promise<T> {
+  async updateResource<T extends Resource>(resource: T, options?: MedplumRequestOptions): Promise<T> {
     if (!resource.resourceType) {
       throw new Error('Missing resourceType');
     }
@@ -2126,14 +2398,17 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns The result of the patch operations.
    */
-  patchResource<K extends ResourceType>(
+  async patchResource<K extends ResourceType>(
     resourceType: K,
     id: string,
     operations: PatchOperation[],
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): Promise<ExtractResource<K>> {
+    const result = await this.patch(this.fhirUrl(resourceType, id), operations, options);
+    this.cacheResource(result);
+    this.invalidateUrl(this.fhirUrl(resourceType, id, '_history'));
     this.invalidateSearches(resourceType);
-    return this.patch(this.fhirUrl(resourceType, id), operations, options);
+    return result;
   }
 
   /**
@@ -2153,7 +2428,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns The result of the delete operation.
    */
-  deleteResource(resourceType: ResourceType, id: string, options?: RequestInit): Promise<any> {
+  deleteResource(resourceType: ResourceType, id: string, options?: MedplumRequestOptions): Promise<any> {
     this.deleteCacheEntry(this.fhirUrl(resourceType, id).toString());
     this.invalidateSearches(resourceType);
     return this.delete(this.fhirUrl(resourceType, id), options);
@@ -2177,7 +2452,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns The validate operation outcome.
    */
-  validateResource<T extends Resource>(resource: T, options?: RequestInit): Promise<OperationOutcome> {
+  validateResource<T extends Resource>(resource: T, options?: MedplumRequestOptions): Promise<OperationOutcome> {
     return this.post(this.fhirUrl(resource.resourceType, '$validate'), resource, undefined, options);
   }
 
@@ -2193,15 +2468,16 @@ export class MedplumClient extends EventTarget {
     idOrIdentifier: string | Identifier,
     body: any,
     contentType?: string,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): Promise<any> {
-    let url;
+    let url: URL;
     if (typeof idOrIdentifier === 'string') {
       const id = idOrIdentifier;
       url = this.fhirUrl('Bot', id, '$execute');
     } else {
       const identifier = idOrIdentifier;
-      url = this.fhirUrl('Bot', '$execute') + `?identifier=${identifier.system}|${identifier.value}`;
+      url = this.fhirUrl('Bot', '$execute');
+      url.searchParams.set('identifier', identifier.system + '|' + identifier.value);
     }
     return this.post(url, body, contentType, options);
   }
@@ -2255,8 +2531,8 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns The FHIR batch/transaction response bundle.
    */
-  executeBatch(bundle: Bundle, options?: RequestInit): Promise<Bundle> {
-    return this.post(this.fhirBaseUrl.slice(0, -1), bundle, undefined, options);
+  executeBatch(bundle: Bundle, options?: MedplumRequestOptions): Promise<Bundle> {
+    return this.post(this.fhirBaseUrl, bundle, undefined, options);
   }
 
   /**
@@ -2299,7 +2575,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns Promise to the operation outcome.
    */
-  sendEmail(email: MailOptions, options?: RequestInit): Promise<OperationOutcome> {
+  sendEmail(email: MailOptions, options?: MedplumRequestOptions): Promise<OperationOutcome> {
     return this.post('email/v1/send', email, ContentType.JSON, options);
   }
 
@@ -2352,7 +2628,12 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns The GraphQL result.
    */
-  graphql(query: string, operationName?: string | null, variables?: any, options?: RequestInit): Promise<any> {
+  graphql(
+    query: string,
+    operationName?: string | null,
+    variables?: any,
+    options?: MedplumRequestOptions
+  ): Promise<any> {
     return this.post(this.fhirUrl('$graphql'), { query, operationName, variables }, ContentType.JSON, options);
   }
 
@@ -2370,7 +2651,7 @@ export class MedplumClient extends EventTarget {
     resourceType: K,
     id: string,
     graphName: string,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): ReadablePromise<Bundle> {
     return this.get<Bundle>(`${this.fhirUrl(resourceType, id)}/$graph?graph=${graphName}`, options);
   }
@@ -2388,16 +2669,16 @@ export class MedplumClient extends EventTarget {
    */
   pushToAgent(
     agent: Agent | Reference<Agent>,
-    destination: Device | Reference<Device>,
+    destination: Device | Reference<Device> | string,
     body: any,
     contentType?: string,
     waitForResponse?: boolean,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): Promise<any> {
     return this.post(
       this.fhirUrl('Agent', resolveId(agent) as string, '$push'),
       {
-        destination: getReferenceString(destination),
+        destination: typeof destination === 'string' ? destination : getReferenceString(destination),
         body,
         contentType,
         waitForResponse,
@@ -2449,7 +2730,6 @@ export class MedplumClient extends EventTarget {
   setAccessToken(accessToken: string, refreshToken?: string): void {
     this.accessToken = accessToken;
     this.refreshToken = refreshToken;
-    this.sessionDetails = undefined;
     this.accessTokenExpires = tryGetJwtExpiration(accessToken);
     this.medplumServer = isMedplumAccessToken(accessToken);
   }
@@ -2473,8 +2753,9 @@ export class MedplumClient extends EventTarget {
     if (!this.medplumServer) {
       return Promise.resolve(undefined);
     }
+
     this.profilePromise = new Promise((resolve, reject) => {
-      this.get('auth/me')
+      this.get('auth/me', { cache: 'no-cache' })
         .then((result: SessionDetails) => {
           this.profilePromise = undefined;
           const profileChanged = this.sessionDetails?.profile?.id !== result.profile.id;
@@ -2483,20 +2764,22 @@ export class MedplumClient extends EventTarget {
             this.dispatchEvent({ type: 'change' });
           }
           resolve(result.profile);
+          this.dispatchEvent({ type: 'profileRefreshed' });
         })
         .catch(reject);
     });
 
+    this.dispatchEvent({ type: 'profileRefreshing' });
     return this.profilePromise;
   }
 
   /**
-   * Returns true if the client is waiting for authentication.
-   * @returns True if the client is waiting for authentication.
+   * Returns true if the client is waiting for initial authentication.
+   * @returns True if the client is waiting for initial authentication.
    * @category Authentication
    */
   isLoading(): boolean {
-    return !!this.profilePromise;
+    return !this.isInitialized || (Boolean(this.profilePromise) && !this.sessionDetails?.profile);
   }
 
   /**
@@ -2586,7 +2869,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch request init options.
    * @returns Promise to the response body as a blob.
    */
-  async download(url: URL | string, options: RequestInit = {}): Promise<Blob> {
+  async download(url: URL | string, options: MedplumRequestOptions = {}): Promise<Blob> {
     if (this.refreshPromise) {
       await this.refreshPromise;
     }
@@ -2594,38 +2877,82 @@ export class MedplumClient extends EventTarget {
     if (urlString.startsWith(BINARY_URL_PREFIX)) {
       url = this.fhirUrl(urlString);
     }
+
+    let headers = options.headers as Record<string, string> | undefined;
+    if (!headers) {
+      headers = {};
+      options.headers = headers;
+    }
+
+    if (!headers['Accept']) {
+      headers['Accept'] = '*/*';
+    }
+
     this.addFetchOptionsDefaults(options);
     const response = await this.fetchWithRetry(url.toString(), options);
     return response.blob();
   }
 
   /**
+   * Creates a FHIR Media resource with the provided data content.
+   *
+   * @category Create
+   * @param createMediaOptions - The media creation options. See `CreateMediaOptions` for full details.
+   * @param requestOptions - Optional fetch options.
+   * @returns The new media resource.
+   */
+  async createMedia(createMediaOptions: CreateMediaOptions, requestOptions?: MedplumRequestOptions): Promise<Media> {
+    const { additionalFields, ...createBinaryOptions } = createMediaOptions;
+
+    // First, create the media:
+    const media = await this.createResource({
+      resourceType: 'Media',
+      status: 'preparation',
+      content: {
+        contentType: createMediaOptions.contentType,
+      },
+      ...additionalFields,
+    });
+
+    // If the caller did not specify a security context, use the media reference:
+    if (!createBinaryOptions.securityContext) {
+      createBinaryOptions.securityContext = createReference(media);
+    }
+
+    // Next, upload the binary:
+    const content = await this.createAttachment(createBinaryOptions, requestOptions);
+
+    // Update the media with the binary content:
+    return this.updateResource({
+      ...media,
+      status: 'completed',
+      content,
+    });
+  }
+
+  /**
    * Upload media to the server and create a Media instance for the uploaded content.
    * @param contents - The contents of the media file, as a string, Uint8Array, File, or Blob.
    * @param contentType - The media type of the content.
-   * @param filename - The name of the file to be uploaded, or undefined if not applicable.
+   * @param filename - Optional filename for the binary, or extended upload options (see `BinaryUploadOptions`).
    * @param additionalFields - Additional fields for Media.
    * @param options - Optional fetch options.
    * @returns Promise that resolves to the created Media
+   * @deprecated Use `createMedia` with `CreateMediaOptions` instead. To be removed in Medplum 4.0.
    */
   async uploadMedia(
     contents: string | Uint8Array | File | Blob,
     contentType: string,
     filename: string | undefined,
     additionalFields?: Partial<Media>,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): Promise<Media> {
-    const binary = await this.createBinary(contents, filename, contentType);
-    return this.createResource(
+    return this.createMedia(
       {
-        resourceType: 'Media',
-        status: 'completed',
-        content: {
-          contentType: contentType,
-          url: BINARY_URL_PREFIX + binary.id,
-          title: filename,
-        },
-        ...additionalFields,
+        data: contents,
+        contentType,
+        filename,
+        additionalFields,
       },
       options
     );
@@ -2644,7 +2971,7 @@ export class MedplumClient extends EventTarget {
     exportLevel = '',
     resourceTypes?: string,
     since?: string,
-    options?: RequestInit
+    options?: MedplumRequestOptions
   ): Promise<Partial<BulkDataExport>> {
     const fhirPath = exportLevel ? `${exportLevel}/` : exportLevel;
     const url = this.fhirUrl(`${fhirPath}$export`);
@@ -2666,22 +2993,24 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options.
    * @returns The response body.
    */
-  async startAsyncRequest<T>(url: string, options: RequestInit = {}): Promise<T> {
+  async startAsyncRequest<T>(url: string, options: MedplumRequestOptions = {}): Promise<T> {
     this.addFetchOptionsDefaults(options);
 
     const headers = options.headers as Record<string, string>;
     headers['Prefer'] = 'respond-async';
 
-    const response = await this.fetchWithRetry(url, options);
+    return this.request('POST', url, options);
+  }
 
-    if (response.status === 202) {
-      const contentLocation = await tryGetContentLocation(response);
-      if (contentLocation) {
-        return this.pollStatus(contentLocation);
-      }
+  /**
+   * Returns the key value client.
+   * @returns The key value client.
+   */
+  get keyValue(): MedplumKeyValueClient {
+    if (!this.keyValueClient) {
+      this.keyValueClient = new MedplumKeyValueClient(this);
     }
-
-    return this.parseResponse(response, 'POST', url);
+    return this.keyValueClient;
   }
 
   //
@@ -2694,7 +3023,7 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch options for cache settings.
    * @returns The cached entry if found.
    */
-  private getCacheEntry(key: string, options: RequestInit | undefined): RequestCacheEntry | undefined {
+  private getCacheEntry(key: string, options: MedplumRequestOptions | undefined): RequestCacheEntry | undefined {
     if (!this.requestCache || options?.cache === 'no-cache' || options?.cache === 'reload') {
       return undefined;
     }
@@ -2746,9 +3075,15 @@ export class MedplumClient extends EventTarget {
    * @param method - The HTTP method (GET, POST, etc).
    * @param url - The target URL.
    * @param options - Optional fetch request init options.
+   * @param state - Optional request state.
    * @returns The JSON content body if available.
    */
-  private async request<T>(method: string, url: string, options: RequestInit = {}): Promise<T> {
+  private async request<T>(
+    method: string,
+    url: string,
+    options: MedplumRequestOptions = {},
+    state: RequestState = {}
+  ): Promise<T> {
     await this.refreshIfExpired();
 
     options.method = method;
@@ -2756,15 +3091,6 @@ export class MedplumClient extends EventTarget {
 
     const response = await this.fetchWithRetry(url, options);
 
-    return this.parseResponse(response, method, url, options);
-  }
-
-  private async parseResponse<T>(
-    response: Response,
-    method: string,
-    url: string,
-    options: RequestInit = {}
-  ): Promise<T> {
     if (response.status === 401) {
       // Refresh and try again
       return this.handleUnauthenticated(method, url, options);
@@ -2779,16 +3105,40 @@ export class MedplumClient extends EventTarget {
     const isJson = contentType?.includes('json');
 
     if (response.status === 404 && !isJson) {
+      // Special case for non-JSON 404 responses
+      // In the common case, the 404 response will include an OperationOutcome in JSON with additional details.
+      // In the non-JSON case, we can't parse the response, so we'll just throw a generic "Not Found" error.
       throw new OperationOutcomeError(notFound);
     }
 
-    const contentLocation = response.headers.get('content-location');
-    const redirectMode = options.redirect ?? this.options.redirect;
-    if (response.status === 201 && contentLocation && redirectMode === 'follow') {
-      // Follow redirect
-      return this.request('GET', contentLocation, { ...options, body: undefined });
+    const obj = await this.parseBody(response, isJson);
+
+    if (
+      (response.status === 200 && options.followRedirectOnOk) ||
+      (response.status === 201 && options.followRedirectOnCreated)
+    ) {
+      const contentLocation = await tryGetContentLocation(response, obj);
+      if (contentLocation) {
+        return this.request('GET', contentLocation, { ...options, body: undefined });
+      }
     }
 
+    if (response.status === 202 && options.pollStatusOnAccepted) {
+      const contentLocation = await tryGetContentLocation(response, obj);
+      const statusUrl = contentLocation ?? state.statusUrl;
+      if (statusUrl) {
+        return this.pollStatus(statusUrl, options, state);
+      }
+    }
+
+    if (response.status >= 400) {
+      throw new OperationOutcomeError(normalizeOperationOutcome(obj));
+    }
+
+    return obj;
+  }
+
+  private async parseBody(response: Response, isJson: boolean | undefined): Promise<any> {
     let obj: any = undefined;
     if (isJson) {
       try {
@@ -2800,49 +3150,58 @@ export class MedplumClient extends EventTarget {
     } else {
       obj = await response.text();
     }
-
-    if (response.status >= 400) {
-      throw new OperationOutcomeError(normalizeOperationOutcome(obj));
-    }
-
     return obj;
   }
 
-  private async fetchWithRetry(url: string, options: RequestInit): Promise<Response> {
+  private async fetchWithRetry(url: string, options: MedplumRequestOptions): Promise<Response> {
     if (!url.startsWith('http')) {
-      url = new URL(url, this.baseUrl).href;
+      url = concatUrls(this.baseUrl, url);
     }
 
-    const maxRetries = 3;
+    // Previously default for maxRetries was 3, but we will interpret maxRetries literally and not count first attempt
+    // Default of 2 matches old behavior with the new semantics
+    const maxRetries = options?.maxRetries ?? 2;
     const retryDelay = 200;
-    let response: Response | undefined = undefined;
-    for (let retry = 0; retry < maxRetries; retry++) {
+
+    // We use <= since we want to retry maxRetries times and first retry is when attemptNum === 1
+    for (let attemptNum = 0; attemptNum <= maxRetries; attemptNum++) {
       try {
         if (this.options.verbose) {
           this.logRequest(url, options);
         }
-        response = (await this.fetch(url, options)) as Response;
+        const response = (await this.fetch(url, options)) as Response;
         if (this.options.verbose) {
           this.logResponse(response);
         }
-        if (response.status < 500) {
+        // Handle non-500 response and max retries exceeded
+        // We return immediately for non-500 or 500 that has exceeded max retries
+        if (response.status < 500 || attemptNum === maxRetries) {
           return response;
         }
-      } catch (err: any) {
-        this.retryCatch(retry, maxRetries, err);
+      } catch (err) {
+        // This is for the 1st retry to avoid multiple notifications
+        if ((err as Error).message === 'Failed to fetch' && attemptNum === 0) {
+          this.dispatchEvent({ type: 'offline' });
+        }
+
+        // If we got an abort error or exceeded retries, then throw immediately
+        if ((err as Error).name === 'AbortError' || attemptNum === maxRetries) {
+          throw err;
+        }
       }
+
       await sleep(retryDelay);
     }
-    return response as Response;
+
+    throw new Error('Unreachable');
   }
 
-  private logRequest(url: string, options: RequestInit): void {
+  private logRequest(url: string, options: MedplumRequestOptions): void {
     console.log(`> ${options.method} ${url}`);
     if (options.headers) {
       const headers = options.headers as Record<string, string>;
-      const entries = Object.entries(headers).sort((a, b) => a[0].localeCompare(b[0]));
-      for (const [key, value] of entries) {
-        console.log(`> ${key}: ${value}`);
+      for (const key of sortStringArray(Object.keys(headers))) {
+        console.log(`> ${key}: ${headers[key]}`);
       }
     }
   }
@@ -2854,29 +3213,23 @@ export class MedplumClient extends EventTarget {
     }
   }
 
-  private async pollStatus<T>(statusUrl: string): Promise<T> {
-    let checkStatus = true;
-    let resultResponse;
-    const retryDelay = 2000;
-
-    while (checkStatus) {
-      const fetchOptions = {};
-      this.addFetchOptionsDefaults(fetchOptions);
-      const statusResponse = await this.fetchWithRetry(statusUrl, fetchOptions);
-      if (statusResponse.status !== 202) {
-        checkStatus = false;
-        resultResponse = statusResponse;
-
-        if (statusResponse.status === 201) {
-          const contentLocation = await tryGetContentLocation(statusResponse);
-          if (contentLocation) {
-            resultResponse = await this.fetchWithRetry(contentLocation, fetchOptions);
-          }
-        }
+  private async pollStatus<T>(statusUrl: string, options: MedplumRequestOptions, state: RequestState): Promise<T> {
+    const statusOptions: MedplumRequestOptions = { ...options, method: 'GET', body: undefined, redirect: 'follow' };
+    if (state.pollCount === undefined) {
+      // First request - try request immediately
+      if (options.headers && typeof options.headers === 'object' && 'Prefer' in options.headers) {
+        statusOptions.headers = { ...options.headers };
+        delete statusOptions.headers.Prefer;
       }
+      state.statusUrl = statusUrl;
+      state.pollCount = 1;
+    } else {
+      // Subsequent requests - wait and retry
+      const retryDelay = options.pollStatusPeriod ?? 1000;
       await sleep(retryDelay);
+      state.pollCount++;
     }
-    return this.parseResponse(resultResponse as Response, 'POST', statusUrl);
+    return this.request('GET', statusUrl, statusOptions, state);
   }
 
   /**
@@ -2896,7 +3249,7 @@ export class MedplumClient extends EventTarget {
     if (entries.length === 1) {
       const entry = entries[0];
       try {
-        entry.resolve(await this.request(entry.method, this.fhirBaseUrl + entry.url, entry.options));
+        entry.resolve(await this.request(entry.method, concatUrls(this.fhirBaseUrl, entry.url), entry.options));
       } catch (err) {
         entry.reject(new OperationOutcomeError(normalizeOperationOutcome(err)));
       }
@@ -2920,7 +3273,7 @@ export class MedplumClient extends EventTarget {
     };
 
     // Execute the batch request
-    const response = (await this.post(this.fhirBaseUrl.slice(0, -1), batch)) as Bundle;
+    const response = (await this.post(this.fhirBaseUrl, batch)) as Bundle;
 
     // Process the response
     for (let i = 0; i < entries.length; i++) {
@@ -2938,28 +3291,20 @@ export class MedplumClient extends EventTarget {
    * Adds default options to the fetch options.
    * @param options - The options to add defaults to.
    */
-  private addFetchOptionsDefaults(options: RequestInit): void {
-    let headers = options.headers as Record<string, string> | undefined;
-    if (!headers) {
-      headers = {};
-      options.headers = headers;
-    }
+  private addFetchOptionsDefaults(options: MedplumRequestOptions): void {
+    this.setRequestHeader(options, 'X-Medplum', 'extended');
+    this.setRequestHeader(options, 'Accept', DEFAULT_ACCEPT, true);
 
-    if (!headers['Accept']) {
-      headers['Accept'] = DEFAULT_ACCEPT;
-    }
-
-    headers['X-Medplum'] = 'extended';
-
-    if (options.body && !headers['Content-Type']) {
-      headers['Content-Type'] = ContentType.FHIR_JSON;
+    if (options.body) {
+      this.setRequestHeader(options, 'Content-Type', ContentType.FHIR_JSON, true);
     }
 
     if (this.accessToken) {
-      headers['Authorization'] = 'Bearer ' + this.accessToken;
+      this.setRequestHeader(options, 'Authorization', 'Bearer ' + this.accessToken);
     } else if (this.basicAuth) {
-      headers['Authorization'] = 'Basic ' + this.basicAuth;
+      this.setRequestHeader(options, 'Authorization', 'Basic ' + this.basicAuth);
     }
+
     if (!options.cache) {
       options.cache = 'no-cache';
     }
@@ -2974,12 +3319,26 @@ export class MedplumClient extends EventTarget {
    * @param options - The fetch options.
    * @param contentType - The new content type to set.
    */
-  private setRequestContentType(options: RequestInit, contentType: string): void {
+  private setRequestContentType(options: MedplumRequestOptions, contentType: string): void {
+    this.setRequestHeader(options, 'Content-Type', contentType);
+  }
+
+  /**
+   * Sets a header on fetch options.
+   * @param options - The fetch options.
+   * @param key - The header key.
+   * @param value - The header value.
+   * @param ifNoneExist - Optional flag to only set the header if it doesn't already exist.
+   */
+  private setRequestHeader(options: MedplumRequestOptions, key: string, value: string, ifNoneExist = false): void {
     if (!options.headers) {
       options.headers = {};
     }
     const headers = options.headers as Record<string, string>;
-    headers['Content-Type'] = contentType;
+    if (ifNoneExist && headers[key]) {
+      return;
+    }
+    headers[key] = value;
   }
 
   /**
@@ -2987,12 +3346,12 @@ export class MedplumClient extends EventTarget {
    * @param options - The fetch options.
    * @param data - The new content body.
    */
-  private setRequestBody(options: RequestInit, data: any): void {
+  private setRequestBody(options: MedplumRequestOptions, data: any): void {
     if (
       typeof data === 'string' ||
-      (typeof Blob !== 'undefined' && data instanceof Blob) ||
-      (typeof File !== 'undefined' && data instanceof File) ||
-      (typeof Uint8Array !== 'undefined' && data instanceof Uint8Array)
+      (typeof Blob !== 'undefined' && (data instanceof Blob || data.constructor.name === 'Blob')) ||
+      (typeof File !== 'undefined' && (data instanceof File || data.constructor.name === 'File')) ||
+      (typeof Uint8Array !== 'undefined' && (data instanceof Uint8Array || data.constructor.name === 'Uint8Array'))
     ) {
       options.body = data;
     } else if (data) {
@@ -3009,15 +3368,15 @@ export class MedplumClient extends EventTarget {
    * @param options - Optional fetch request init options.
    * @returns The result of the retry.
    */
-  private handleUnauthenticated(method: string, url: string, options: RequestInit): Promise<any> {
+  private handleUnauthenticated(method: string, url: string, options: MedplumRequestOptions): Promise<any> {
     if (this.refresh()) {
       return this.request(method, url, options);
     }
-    this.clearActiveLogin();
+    this.clear();
     if (this.onUnauthenticated) {
       this.onUnauthenticated();
     }
-    return Promise.reject(new Error('Unauthenticated'));
+    return Promise.reject(new OperationOutcomeError(unauthorized));
   }
 
   /**
@@ -3030,7 +3389,7 @@ export class MedplumClient extends EventTarget {
     const pkceState = getRandomString();
     sessionStorage.setItem('pkceState', pkceState);
 
-    const codeVerifier = getRandomString();
+    const codeVerifier = getRandomString().slice(0, 128);
     sessionStorage.setItem('codeVerifier', codeVerifier);
 
     const arrayHash = await encryptSHA256(codeVerifier);
@@ -3086,12 +3445,20 @@ export class MedplumClient extends EventTarget {
 
   /**
    * Refreshes the access token using the refresh token if available.
+   * @param gracePeriod - Optional grace period in milliseconds. If not specified, uses the client configured grace period (default 5 minutes).
    * @returns Promise to refresh the access token.
    */
-  refreshIfExpired(): Promise<void> {
+  refreshIfExpired(gracePeriod?: number): Promise<void> {
+    if (gracePeriod === undefined) {
+      gracePeriod = this.refreshGracePeriod;
+    }
     // If (1) not already refreshing, (2) we have an access token, and (3) the access token is expired,
     // then start a refresh.
-    if (!this.refreshPromise && this.accessTokenExpires !== undefined && this.accessTokenExpires < Date.now()) {
+    if (
+      !this.refreshPromise &&
+      this.accessTokenExpires !== undefined &&
+      Date.now() > this.accessTokenExpires - gracePeriod
+    ) {
       // The result of the `refresh()` function is cached in `this.refreshPromise`,
       // so we can safely ignore the return value here.
       // eslint-disable-next-line @typescript-eslint/no-floating-promises
@@ -3317,21 +3684,21 @@ export class MedplumClient extends EventTarget {
     event: EventName,
     context: FhircastEventContext<EventName> | FhircastEventContext<EventName>[],
     versionId?: never
-  ): Promise<void>;
+  ): Promise<Record<string, any>>;
 
   async fhircastPublish<RequiredVersionEvent extends FhircastEventVersionRequired>(
     topic: string,
     event: RequiredVersionEvent,
     context: FhircastEventContext<RequiredVersionEvent> | FhircastEventContext<RequiredVersionEvent>[],
     versionId: string
-  ): Promise<void>;
+  ): Promise<Record<string, any>>;
 
   async fhircastPublish<EventName extends FhircastEventVersionRequired | FhircastEventVersionOptional>(
     topic: string,
     event: EventName,
     context: FhircastEventContext<EventName> | FhircastEventContext<EventName>[],
-    versionId?: string | undefined
-  ): Promise<void> {
+    versionId?: string
+  ): Promise<Record<string, any>> {
     if (isContextVersionRequired(event)) {
       return this.post(
         `/fhircast/STU3/${topic}`,
@@ -3375,7 +3742,7 @@ export class MedplumClient extends EventTarget {
    * @returns The user profile resource.
    */
   private async fetchTokens(formBody: URLSearchParams): Promise<ProfileResource> {
-    const options: RequestInit = {
+    const options: MedplumRequestOptions = {
       method: 'POST',
       headers: { 'Content-Type': ContentType.FORM_URL_ENCODED },
       body: formBody.toString(),
@@ -3425,18 +3792,18 @@ export class MedplumClient extends EventTarget {
 
       if (Date.now() >= (tokenPayload.exp as number) * 1000) {
         this.clearActiveLogin();
-        throw new Error('Token expired');
+        throw new OperationOutcomeError(unauthorizedTokenExpired);
       }
 
       // Verify app_client_id
       if (tokenPayload.cid) {
         if (tokenPayload.cid !== this.clientId) {
           this.clearActiveLogin();
-          throw new Error('Token was not issued for this audience');
+          throw new OperationOutcomeError(unauthorizedTokenAudience);
         }
       } else if (this.clientId && tokenPayload.client_id !== this.clientId) {
         this.clearActiveLogin();
-        throw new Error('Token was not issued for this audience');
+        throw new OperationOutcomeError(unauthorizedTokenAudience);
       }
     }
 
@@ -3448,6 +3815,16 @@ export class MedplumClient extends EventTarget {
     });
   }
 
+  private checkSessionDetailsMatchLogin(login?: LoginState): boolean {
+    // We only need to validate if we already have session details
+    if (!(this.sessionDetails && login)) {
+      return true;
+    }
+    // Make sure sessionDetails.profile.id matches the ID in the profile reference we are checking against
+    // Otherwise return false if no profile reference in login
+    return login.profile?.reference?.endsWith(this.sessionDetails.profile.id as string) ?? false;
+  }
+
   /**
    * Sets up a listener for window storage events.
    * This synchronizes state across browser windows and browser tabs.
@@ -3455,26 +3832,117 @@ export class MedplumClient extends EventTarget {
   private setupStorageListener(): void {
     try {
       window.addEventListener('storage', (e: StorageEvent) => {
-        if (e.key === null || e.key === 'activeLogin') {
-          // Storage events fire when different tabs make changes.
-          // On storage clear (key === null) or activeLogin change (key === 'activeLogin')
-          // Refresh the page to ensure the active login is up to date.
+        // Storage events fire when different tabs make changes.
+        // On storage clear (key === null) or profile change (key === 'activeLogin', and profile in 'activeLogin' is different)
+        // Refresh the page to ensure the active login is up to date.
+        if (e.key === null) {
           window.location.reload();
+        } else if (e.key === 'activeLogin') {
+          const oldState = (e.oldValue ? JSON.parse(e.oldValue) : undefined) as LoginState | undefined;
+          const newState = (e.newValue ? JSON.parse(e.newValue) : undefined) as LoginState | undefined;
+          if (
+            oldState?.profile.reference !== newState?.profile.reference ||
+            !this.checkSessionDetailsMatchLogin(newState)
+          ) {
+            window.location.reload();
+          } else if (newState) {
+            this.setAccessToken(newState.accessToken, newState.refreshToken);
+          } else {
+            // Theoretically this should never be called, but we might want to keep it here just in case
+            this.clear();
+          }
         }
       });
-    } catch (err) {
+    } catch (_err) {
       // Silently ignore if this environment does not support storage events
     }
   }
 
-  private retryCatch(retryNumber: number, maxRetries: number, err: Error): void {
-    // This is for the 1st retry to avoid multiple notifications
-    if (err.message === 'Failed to fetch' && retryNumber === 1) {
-      this.dispatchEvent({ type: 'offline' });
+  /**
+   * Gets the `SubscriptionManager` for WebSocket subscriptions.
+   *
+   * @category Subscriptions
+   * @returns the `SubscriptionManager` for this client.
+   */
+  getSubscriptionManager(): SubscriptionManager {
+    if (!this.subscriptionManager) {
+      this.subscriptionManager = new SubscriptionManager(this, getWebSocketUrl(this.baseUrl, '/ws/subscriptions-r4'));
     }
-    if (retryNumber >= maxRetries - 1) {
-      throw err;
+    return this.subscriptionManager;
+  }
+
+  /**
+   * Subscribes to a given criteria, listening to notifications over WebSockets.
+   *
+   * This uses Medplum's `WebSocket Subscriptions` under the hood.
+   *
+   * A `SubscriptionEmitter` is returned from this function, which can be used to listen for updates to resources described by the given criteria.
+   *
+   * When subscribing to the same criteria multiple times, the same `SubscriptionEmitter` will be returned, and a reference count will be incremented.
+   *
+   * -----
+   * @example
+   * ```ts
+   * const emitter = medplum.subscribeToCriteria('Communication');
+   *
+   * emitter.addEventListener('message', (bundle: Bundle) => {
+   *   // Called when a `Communication` resource is created or modified
+   *   console.log(bundle?.entry?.[1]?.resource); // Logs the `Communication` resource that was updated
+   * });
+   * ```
+   *
+   * @category Subscriptions
+   * @param criteria - The criteria to subscribe to.
+   * @param subscriptionProps - Optional properties to add to the created `Subscription` resource.
+   * @returns a `SubscriptionEmitter` that emits `Bundle` resources containing changes to resources based on the given criteria.
+   */
+  subscribeToCriteria(criteria: string, subscriptionProps?: Partial<Subscription>): SubscriptionEmitter {
+    return this.getSubscriptionManager().addCriteria(criteria, subscriptionProps);
+  }
+
+  /**
+   * Unsubscribes from the given criteria.
+   *
+   * When called the same amount of times as proceeding calls to `subscribeToCriteria` on a given `criteria`,
+   * the criteria is fully removed from the `SubscriptionManager`.
+   *
+   * @category Subscriptions
+   * @param criteria - The criteria to unsubscribe from.
+   * @param subscriptionProps - The optional properties that `subscribeToCriteria` was called with.
+   */
+  unsubscribeFromCriteria(criteria: string, subscriptionProps?: Partial<Subscription>): void {
+    if (!this.subscriptionManager) {
+      return;
     }
+    this.subscriptionManager.removeCriteria(criteria, subscriptionProps);
+    if (this.subscriptionManager.getCriteriaCount() === 0) {
+      this.subscriptionManager.closeWebSocket();
+    }
+  }
+
+  /**
+   * Get the master `SubscriptionEmitter` for the `SubscriptionManager`.
+   *
+   * The master `SubscriptionEmitter` gets messages for all subscribed `criteria` as well as WebSocket errors, `connect` and `disconnect` events, and the `close` event.
+   *
+   * It can also be used to listen for `heartbeat` messages.
+   *
+   *------
+   * @example
+   * ### Listening for `heartbeat`:
+   * ```ts
+   * const masterEmitter = medplum.getMasterSubscriptionEmitter();
+   *
+   * masterEmitter.addEventListener('heartbeat', (bundle: Bundle<SubscriptionStatus>) => {
+   *   console.log(bundle?.entry?.[0]?.resource); // A `SubscriptionStatus` of type `heartbeat`
+   * });
+   *
+   * ```
+   * @category Subscriptions
+   * @returns the master `SubscriptionEmitter` from the `SubscriptionManager`.
+   */
+  getMasterSubscriptionEmitter(): SubscriptionEmitter {
+    return this.getSubscriptionManager().getMasterEmitter();
   }
 }
 
@@ -3504,43 +3972,34 @@ function getWindowOrigin(): string {
 }
 
 /**
- * Ensures the given URL has a trailing slash.
- * @param url - The URL to ensure has a trailing slash.
- * @returns The URL with a trailing slash.
- */
-function ensureTrailingSlash(url: string): string {
-  return url.endsWith('/') ? url : url + '/';
-}
-
-/**
- * Concatenates the given base URL and URL.
- *
- * If the URL is absolute, it is returned as-is.
- *
- * @param baseUrl - The base URL.
- * @param url - The URL to concat. Can be relative or absolute.
- * @returns The concatenated URL.
- */
-function concatUrls(baseUrl: string, url: string): string {
-  return new URL(url, baseUrl).toString();
-}
-
-/**
  * Attempts to retrieve the content location from the given HTTP response.
  *
  * This function prioritizes the "Content-Location" HTTP header as the
  * most authoritative source for the content location. If this header is
  * not present, it falls back to the "Location" HTTP header.
  *
+ * Note that the FHIR spec does not follow the traditional HTTP semantics of "Content-Location" and "Location".
+ * "Content-Location" is not typically used with HTTP 202 responses because the content itself isn't available at the time of the response.
+ * However, the FHIR spec explicitly recommends it:
+ *
+ *   3.2.6.1.2 Kick-off Request
+ *   3.2.6.1.2.0.3 Response - Success
+ *   HTTP Status Code of 202 Accepted
+ *   Content-Location header with the absolute URL of an endpoint for subsequent status requests (polling location)
+ *
+ * Source: https://hl7.org/fhir/async-bulk.html
+ *
  * In cases where neither of these headers are available (for instance,
  * due to CORS restrictions), it attempts to retrieve the content location
  * from the 'diagnostics' field of the first issue in an OperationOutcome object
  * present in the response body. If all attempts fail, the function returns 'undefined'.
+ *
  * @async
  * @param response - The HTTP response object from which to extract the content location.
+ * @param body - The response body.
  * @returns A Promise that resolves to the content location string if it is found, or 'undefined' if the content location cannot be determined from the response.
  */
-async function tryGetContentLocation(response: Response): Promise<string | undefined> {
+async function tryGetContentLocation(response: Response, body: any): Promise<string | undefined> {
   // Accepted content location can come from multiple sources
   // The authoritative source is the "Content-Location" HTTP header.
   const contentLocation = response.headers.get('content-location');
@@ -3556,7 +4015,6 @@ async function tryGetContentLocation(response: Response): Promise<string | undef
 
   // However, "Content-Location" may not be available due to CORS limitations.
   // In this case, we use the OperationOutcome.diagnostics field.
-  const body = await response.json();
   if (isOperationOutcome(body) && body.issue?.[0]?.diagnostics) {
     return body.issue[0].diagnostics;
   }
@@ -3574,4 +4032,48 @@ async function tryGetContentLocation(response: Response): Promise<string | undef
 function bundleToResourceArray<T extends Resource>(bundle: Bundle<T>): ResourceArray<T> {
   const array = bundle.entry?.map((e) => e.resource as T) ?? [];
   return Object.assign(array, { bundle });
+}
+
+function isCreateBinaryOptions(input: unknown): input is CreateBinaryOptions {
+  return isObject(input) && 'data' in input && 'contentType' in input;
+}
+
+// This function can be deleted after Medplum 4.0 and we remove the legacy createBinary method
+export function normalizeCreateBinaryOptions(
+  arg1: BinarySource | CreateBinaryOptions,
+  arg2: string | undefined | MedplumRequestOptions,
+  arg3?: string,
+  arg4?: (e: ProgressEvent) => void
+): CreateBinaryOptions {
+  if (isCreateBinaryOptions(arg1)) {
+    return arg1;
+  }
+  return {
+    data: arg1,
+    filename: arg2 as string | undefined,
+    contentType: arg3 as string,
+    onProgress: arg4,
+  };
+}
+
+function isCreatePdfOptions(input: unknown): input is CreatePdfOptions {
+  return isObject(input) && 'docDefinition' in input;
+}
+
+// This function can be deleted after Medplum 4.0 and we remove the legacy createPdf method
+export function normalizeCreatePdfOptions(
+  arg1: TDocumentDefinitions | CreatePdfOptions,
+  arg2: string | undefined | MedplumRequestOptions,
+  arg3: Record<string, CustomTableLayout> | undefined,
+  arg4: TFontDictionary | undefined
+): CreatePdfOptions {
+  if (isCreatePdfOptions(arg1)) {
+    return arg1;
+  }
+  return {
+    docDefinition: arg1,
+    filename: arg2 as string,
+    tableLayouts: arg3,
+    fonts: arg4,
+  };
 }

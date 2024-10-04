@@ -1,8 +1,8 @@
 import { HomerSimpson, MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react-hooks';
-import { act, fireEvent, render, screen } from '@testing-library/react';
 import { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
+import { act, fireEvent, render, screen } from '../test-utils/render';
 import { SmokingStatus } from './SmokingStatus';
 
 const medplum = new MockClient();
@@ -59,8 +59,9 @@ describe('PatientSummary - SmokingStatus', () => {
     });
 
     // Click "Save" button
+    const saveButton = await screen.findByText('Save');
     await act(async () => {
-      fireEvent.click(screen.getByText('Save'));
+      fireEvent.click(saveButton);
     });
   });
 });

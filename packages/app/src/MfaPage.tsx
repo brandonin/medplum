@@ -13,12 +13,7 @@ export function MfaPage(): JSX.Element | null {
     medplum
       .get('auth/mfa/status')
       .then((response) => {
-        const url = new URL('https://chart.googleapis.com/chart');
-        url.searchParams.set('chs', '300x300');
-        url.searchParams.set('cht', 'qr');
-        url.searchParams.set('chl', response.enrollUri);
-        url.searchParams.set('choe', 'UTF-8');
-        setQrCodeUrl(url.toString());
+        setQrCodeUrl(response.enrollQrCode);
         setEnrolled(response.enrolled);
       })
       .catch((err) => showNotification({ color: 'red', message: normalizeErrorString(err), autoClose: false }));
@@ -64,7 +59,7 @@ export function MfaPage(): JSX.Element | null {
           <img src={qrCodeUrl as string} />
         </Center>
         <TextInput name="token" label="Code" />
-        <Group position="right" mt="xl">
+        <Group justify="flex-end" mt="xl">
           <Button type="submit">Enroll</Button>
         </Group>
       </Form>

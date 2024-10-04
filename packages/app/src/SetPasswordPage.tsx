@@ -25,7 +25,6 @@ export function SetPasswordPage(): JSX.Element {
     <Document width={450}>
       <OperationOutcomeAlert issues={issues} />
       <Form
-        style={{ maxWidth: 400 }}
         onSubmit={(formData: Record<string, string>) => {
           if (formData.password !== formData.confirmPassword) {
             setOutcome(badRequest('Passwords do not match', 'confirmPassword'));
@@ -43,7 +42,7 @@ export function SetPasswordPage(): JSX.Element {
             .catch((err) => setOutcome(normalizeOperationOutcome(err)));
         }}
       >
-        <Center sx={{ flexDirection: 'column' }}>
+        <Center style={{ flexDirection: 'column' }}>
           <Logo size={32} />
           <Title>Set password</Title>
         </Center>
@@ -61,7 +60,7 @@ export function SetPasswordPage(): JSX.Element {
               required={true}
               error={getErrorsForInput(outcome, 'confirmPassword')}
             />
-            <Group position="right" mt="xl">
+            <Group justify="flex-end" mt="xl">
               <Button type="submit">Set password</Button>
             </Group>
           </Stack>

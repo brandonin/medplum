@@ -7,6 +7,7 @@ import {
   Hl7Segment,
   LOINC,
   MedplumClient,
+  normalizeErrorString,
   parseHl7DateTime,
   SNOMED,
   streamToBuffer,
@@ -161,9 +162,10 @@ export async function processOruMessage(
   let observations = processObxSegments(message, serviceRequest, performer);
 
   // If there's an existing report, just update it with the new values
-  const report = existingReport || {
+  const report: DiagnosticReport = existingReport ?? {
     resourceType: 'DiagnosticReport',
-    code: serviceRequest.code,
+    status: 'preliminary',
+    code: serviceRequest.code as CodeableConcept,
     subject: serviceRequest.subject,
     basedOn: [createReference(serviceRequest)],
     performer: [createReference(performer)],
@@ -287,10 +289,10 @@ async function readSFTPDirectory(sftp: SftpClient, dir: string, batchSize = 25):
         try {
           stream = sftp.createReadStream(filePath);
           result = await streamToBuffer(stream);
-        } catch (err: any) {
+        } catch (err) {
           // Throw any errors related to file reading
-          console.error(`[${filePath}] Error processing file: ${err.message}`);
-          throw err as Error;
+          console.error(`[${filePath}] Error processing file: ${normalizeErrorString(err)}`);
+          throw err;
         } finally {
           if (stream) {
             stream.destroy();

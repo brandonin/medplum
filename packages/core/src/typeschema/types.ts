@@ -4,7 +4,6 @@ import {
   ElementDefinition,
   ElementDefinitionBinding,
   Resource,
-  ResourceType,
   StructureDefinition,
 } from '@medplum/fhirtypes';
 import { DataTypesMap, inflateBaseSchema } from '../base-schema';
@@ -19,10 +18,11 @@ import { capitalize, getExtension, isEmpty } from '../utils';
  */
 export interface InternalTypeSchema {
   name: string;
+  type: string;
+  path: string;
   title?: string;
   url?: string;
   kind?: string;
-  type?: string;
   description?: string;
   elements: Record<string, InternalSchemaElement>;
   constraints?: Constraint[];
@@ -66,14 +66,10 @@ export interface SlicingRules {
   slices: SliceDefinition[];
 }
 
-export interface SliceDefinition {
+export interface SliceDefinition extends Omit<InternalSchemaElement, 'slicing'> {
   name: string;
-  path: string;
   definition?: string;
-  type?: ElementType[];
   elements: Record<string, InternalSchemaElement>;
-  min: number;
-  max: number;
 }
 
 export interface SliceDiscriminator {
@@ -101,37 +97,39 @@ const PROFILE_SCHEMAS_BY_URL: { [profileUrl: string]: InternalTypeSchema } = Obj
 // is maintained per profile URL
 const PROFILE_DATA_TYPES: { [profileUrl: string]: DataTypesMap } = Object.create(null);
 
-function getDataTypesMap(profileUrl?: string): DataTypesMap {
+// Special case names for StructureDefinitions that are technically "profiles", but are used as base types.
+// This is for backwards compatibility with R4 StructureDefinitions that are used as base types.
+// MoneyQuantity and SimpleQuantity are technically "profiles" on Quantity, but we allow them to be used as base types.
+// ViewDefinition is a special case for SQL-on-FHIR.
+// We can add more types here in the future as necessary, when we want them to be used as base types.
+// For example, exporting new types in "@medplum/fhirtypes".
+const TYPE_SPECIAL_CASES: { [url: string]: string } = {
+  'http://hl7.org/fhir/StructureDefinition/MoneyQuantity': 'MoneyQuantity',
+  'http://hl7.org/fhir/StructureDefinition/SimpleQuantity': 'SimpleQuantity',
+  'http://hl7.org/fhir/uv/sql-on-fhir/StructureDefinition/ViewDefinition': 'ViewDefinition',
+};
+
+function getDataTypesMap(profileUrl: string): DataTypesMap {
   let dataTypes: DataTypesMap;
-
-  if (profileUrl) {
-    dataTypes = PROFILE_DATA_TYPES[profileUrl];
-    if (!dataTypes) {
-      dataTypes = PROFILE_DATA_TYPES[profileUrl] = Object.create(null);
-    }
-  } else {
-    dataTypes = DATA_TYPES;
+  dataTypes = PROFILE_DATA_TYPES[profileUrl];
+  if (!dataTypes) {
+    dataTypes = PROFILE_DATA_TYPES[profileUrl] = Object.create(null);
   }
-
   return dataTypes;
 }
 
 /**
  * Parses and indexes structure definitions
  * @param bundle - Bundle or array of structure definitions to be parsed and indexed
- * @param profileUrl - (optional) URL of the profile the SDs are related to
  */
-export function indexStructureDefinitionBundle(
-  bundle: StructureDefinition[] | Bundle,
-  profileUrl?: string | undefined
-): void {
-  const sds = Array.isArray(bundle) ? bundle : bundle.entry?.map((e) => e.resource as StructureDefinition) ?? [];
+export function indexStructureDefinitionBundle(bundle: StructureDefinition[] | Bundle): void {
+  const sds = Array.isArray(bundle) ? bundle : (bundle.entry?.map((e) => e.resource as StructureDefinition) ?? []);
   for (const sd of sds) {
-    loadDataType(sd, profileUrl);
+    loadDataType(sd);
   }
 }
 
-export function loadDataType(sd: StructureDefinition, profileUrl?: string | undefined): void {
+export function loadDataType(sd: StructureDefinition): void {
   if (!sd?.name) {
     throw new Error(`Failed loading StructureDefinition from bundle`);
   }
@@ -139,19 +137,37 @@ export function loadDataType(sd: StructureDefinition, profileUrl?: string | unde
     return;
   }
   const schema = parseStructureDefinition(sd);
+  const specialCase = TYPE_SPECIAL_CASES[sd.url];
+  let dataTypes: DataTypesMap;
+  let typeName: string;
 
-  const dataTypes = getDataTypesMap(profileUrl);
-
-  dataTypes[sd.name] = schema;
-
-  if (profileUrl && sd.url === profileUrl) {
-    PROFILE_SCHEMAS_BY_URL[profileUrl] = schema;
+  if (specialCase) {
+    // Special cases by "name"
+    // These are StructureDefinitions that are technically "profiles", but are used as base types
+    dataTypes = DATA_TYPES;
+    typeName = specialCase;
+  } else if (
+    // By default, only index by "type" for "official" FHIR types
+    sd.url === `http://hl7.org/fhir/StructureDefinition/${sd.type}` ||
+    sd.url === `https://medplum.com/fhir/StructureDefinition/${sd.type}` ||
+    sd.type?.startsWith('http://') ||
+    sd.type?.startsWith('https://')
+  ) {
+    dataTypes = DATA_TYPES;
+    typeName = sd.type;
+  } else {
+    dataTypes = getDataTypesMap(sd.url);
+    typeName = sd.type;
   }
+
+  dataTypes[typeName] = schema;
 
   for (const inner of schema.innerTypes) {
     inner.parentType = schema;
     dataTypes[inner.name] = inner;
   }
+
+  PROFILE_SCHEMAS_BY_URL[sd.url] = schema;
 }
 
 export function getAllDataTypes(): DataTypesMap {
@@ -163,11 +179,18 @@ export function isDataTypeLoaded(type: string): boolean {
 }
 
 export function tryGetDataType(type: string, profileUrl?: string): InternalTypeSchema | undefined {
-  return getDataTypesMap(profileUrl)[type];
+  if (profileUrl) {
+    const profileType = getDataTypesMap(profileUrl)[type];
+    if (profileType) {
+      return profileType;
+    }
+  }
+  // Fallback to base schema if no result found in profileUrl namespace
+  return DATA_TYPES[type];
 }
 
 export function getDataType(type: string, profileUrl?: string): InternalTypeSchema {
-  const schema = getDataTypesMap(profileUrl)[type];
+  const schema = tryGetDataType(type, profileUrl);
   if (!schema) {
     throw new OperationOutcomeError(badRequest('Unknown data type: ' + type));
   }
@@ -232,7 +255,8 @@ class StructureDefinitionParser {
     this.elementIndex = Object.create(null);
     this.index = 0;
     this.resourceSchema = {
-      name: sd.name as ResourceType,
+      name: sd.name as string,
+      path: this.root.path,
       title: sd.title,
       type: sd.type,
       url: sd.url as string,
@@ -308,6 +332,11 @@ class StructureDefinitionParser {
     if (this.isInnerType(element)) {
       this.enterInnerType(element);
     }
+    if (this.slicingContext && !pathsCompatible(this.slicingContext.path, element?.path as string)) {
+      // Path must be compatible with the sliced field path (i.e. have it as a prefix) to be a part of the
+      // same slice group; otherwise, that group is finished and this is the start of a new field
+      this.slicingContext = undefined;
+    }
     if (element.slicing && !this.slicingContext) {
       this.enterSlice(element, field);
     }
@@ -319,16 +348,19 @@ class StructureDefinitionParser {
       this.innerTypes.push(this.backboneContext.type);
       this.backboneContext = this.backboneContext.parent;
     }
+    const typeName = getElementDefinitionTypeName(element);
     this.backboneContext = {
       type: {
-        name: getElementDefinitionTypeName(element),
+        name: typeName,
+        type: typeName,
+        path: element.path,
         title: element.label,
         description: element.definition,
         elements: {},
         constraints: this.parseElementDefinition(element).constraints,
         innerTypes: [],
       },
-      path: element.path ?? '',
+      path: element.path,
       parent: pathsCompatible(this.backboneContext?.path, element.path)
         ? this.backboneContext
         : this.backboneContext?.parent,
@@ -367,16 +399,8 @@ class StructureDefinitionParser {
         } while (this.backboneContext && !pathsCompatible(this.backboneContext.path, element?.path));
       } else {
         this.innerTypes.push(this.backboneContext.type);
-        delete this.backboneContext;
+        this.backboneContext = undefined;
       }
-    }
-    if (this.slicingContext && !pathsCompatible(this.slicingContext.path, element?.path as string)) {
-      // Path must be compatible with the sliced field path (i.e. have it as a prefix) to be a part of the
-      // same slice group; otherwise, that group is finished and this is the start of a new field
-      if (this.slicingContext?.current) {
-        this.slicingContext.field.slices.push(this.slicingContext.current);
-      }
-      delete this.slicingContext;
     }
   }
 
@@ -394,7 +418,8 @@ class StructureDefinitionParser {
     if (element) {
       this.elementIndex[element.path ?? ''] = element;
       if (element.contentReference) {
-        const ref = this.elementIndex[element.contentReference.slice(element.contentReference.indexOf('#') + 1)];
+        const contentRefPath = element.contentReference.slice(element.contentReference.indexOf('#') + 1);
+        const ref = this.elementIndex[contentRefPath];
         if (!ref) {
           return undefined;
         }
@@ -404,6 +429,11 @@ class StructureDefinitionParser {
           path: element.path,
           min: element.min ?? ref.min,
           max: element.max ?? ref.max,
+          base: {
+            path: ref.base?.path ?? contentRefPath,
+            min: element.base?.min ?? ref.base?.min ?? (ref.min as number),
+            max: element.base?.max ?? ref.base?.max ?? (ref.max as string),
+          },
           contentReference: element.contentReference,
           definition: element.definition,
         };
@@ -423,20 +453,16 @@ class StructureDefinitionParser {
 
   private parseSliceStart(element: ElementDefinition): void {
     if (!this.slicingContext) {
-      throw new Error('Invalid slice start before discriminator: ' + element.sliceName);
+      throw new Error(`Invalid slice start before discriminator: ${element.sliceName} (${element.id})`);
     }
-    if (this.slicingContext.current) {
-      this.slicingContext.field.slices.push(this.slicingContext.current);
-    }
+
     this.slicingContext.current = {
+      ...this.parseElementDefinition(element),
       name: element.sliceName ?? '',
-      path: element.path ?? '',
       definition: element.definition,
-      type: this.parseElementDefinitionType(element),
       elements: {},
-      min: element.min ?? 0,
-      max: element.max === '*' ? Number.POSITIVE_INFINITY : Number.parseInt(element.max as string, 10),
     };
+    this.slicingContext.field.slices.push(this.slicingContext.current);
   }
 
   private parseElementDefinitionType(ed: ElementDefinition): ElementType[] {
@@ -457,7 +483,7 @@ class StructureDefinitionParser {
       }
 
       return {
-        code: code satisfies string,
+        code,
         targetProfile: type.targetProfile,
         profile: type.profile,
       };

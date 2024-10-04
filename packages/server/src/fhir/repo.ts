@@ -1,14 +1,20 @@
 import {
   AccessPolicyInteraction,
+  BackgroundJobInteraction,
+  DEFAULT_MAX_SEARCH_COUNT,
   OperationOutcomeError,
   Operator,
+  PropertyType,
   SearchParameterDetails,
   SearchParameterType,
   SearchRequest,
+  TypedValue,
   allOk,
+  arrayify,
   badRequest,
   canReadResourceType,
   canWriteResourceType,
+  createReference,
   deepEquals,
   evalFhirPath,
   evalFhirPathTyped,
@@ -20,41 +26,46 @@ import {
   gone,
   isGone,
   isNotFound,
+  isObject,
   isOk,
   normalizeErrorString,
   normalizeOperationOutcome,
   notFound,
-  parseCriteriaAsSearchRequest,
+  parseReference,
+  parseSearchRequest,
+  preconditionFailed,
   protectedResourceTypes,
   resolveId,
   satisfiedAccessPolicy,
   serverError,
   stringify,
-  tooManyRequests,
+  toPeriod,
   validateResource,
   validateResourceType,
 } from '@medplum/core';
-import { BaseRepository, FhirRepository } from '@medplum/fhir-router';
+import { CreateResourceOptions, FhirRepository, RepositoryMode, UpdateResourceOptions } from '@medplum/fhir-router';
 import {
   AccessPolicy,
+  Binary,
   Bundle,
   BundleEntry,
   Meta,
   OperationOutcome,
+  Project,
   Reference,
   Resource,
   ResourceType,
   SearchParameter,
   StructureDefinition,
-  Subscription,
 } from '@medplum/fhirtypes';
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { Pool, PoolClient } from 'pg';
 import { Operation, applyPatch } from 'rfc6902';
 import validator from 'validator';
 import { getConfig } from '../config';
-import { getRequestContext } from '../context';
-import { getClient } from '../database';
+import { getLogger, getRequestContext } from '../context';
+import { DatabaseMode, getDatabasePool } from '../database';
 import { getRedis } from '../redis';
 import { r4ProjectId } from '../seed';
 import {
@@ -74,16 +85,29 @@ import { addBackgroundJobs } from '../workers';
 import { addSubscriptionJobs } from '../workers/subscription';
 import { validateResourceWithJsonSchema } from './jsonschema';
 import { AddressTable } from './lookups/address';
+import { CodingTable } from './lookups/coding';
 import { HumanNameTable } from './lookups/humanname';
 import { LookupTable } from './lookups/lookuptable';
 import { ReferenceTable } from './lookups/reference';
 import { TokenTable } from './lookups/token';
 import { ValueSetElementTable } from './lookups/valuesetelement';
 import { getPatients } from './patient';
-import { validateReferences } from './references';
+import { replaceConditionalReferences, validateReferences } from './references';
+import { getFullUrl } from './response';
 import { RewriteMode, rewriteAttachments } from './rewrite';
-import { buildSearchExpression, getFullUrl, searchImpl } from './search';
-import { Condition, DeleteQuery, Disjunction, Expression, InsertQuery, SelectQuery } from './sql';
+import { buildSearchExpression, searchByReferenceImpl, searchImpl } from './search';
+import {
+  Condition,
+  DeleteQuery,
+  Disjunction,
+  Expression,
+  InsertQuery,
+  SelectQuery,
+  TransactionIsolationLevel,
+  normalizeDatabaseError,
+  periodToRangeString,
+} from './sql';
+import { getBinaryStorage } from './storage';
 
 /**
  * The RepositoryContext interface defines standard metadata for repository actions.
@@ -100,14 +124,26 @@ export interface RepositoryContext {
    */
   author: Reference;
 
+  /**
+   * Optional individual, device, or organization for whom the change was made.
+   * This value will be included in every resource as meta.onBehalfOf.
+   */
+  onBehalfOf?: Reference;
+
   remoteAddress?: string;
 
   /**
-   * The current project reference.
-   * This should be the ID/UUID of the current project.
+   * Projects that the Repository is allowed to access.
+   * This should include the ID/UUID of the current project, but may also include other accessory Projects.
+   * If this is undefined, the current user is a server user (e.g. Super Admin)
+   * The usual case has two elements: the user's Project and the base R4 Project
+   * The user's "primary" Project will be the first element in the array (i.e. projects[0])
    * This value will be included in every resource as meta.project.
    */
-  project?: string;
+  projects?: string[];
+
+  /** Current Project of the authenticated user, or none for the system repository. */
+  currentProject?: Project;
 
   /**
    * Optional compartment restriction.
@@ -149,7 +185,7 @@ export interface RepositoryContext {
    * Medplum tracks additional metadata for each resource, such as:
    * 1) "author" - Reference to the last user who modified the resource.
    * 2) "project" - Reference to the project that owns the resource.
-   * 3) "account" - Optional reference to a subaccount that owns the resource.
+   * 3) "compartment" - References to all compartments the resource is in.
    */
   extendedMode?: boolean;
 }
@@ -159,15 +195,29 @@ export interface CacheEntry<T extends Resource = Resource> {
   projectId: string;
 }
 
+export interface InteractionOptions {
+  verbose?: boolean;
+}
+
+export interface ReadResourceOptions extends InteractionOptions {
+  checkCacheOnly?: boolean;
+}
+
+export interface ResendSubscriptionsOptions extends InteractionOptions {
+  interaction?: BackgroundJobInteraction;
+  subscription?: string;
+}
+
 /**
  * The lookup tables array includes a list of special tables for search indexing.
  */
-const lookupTables: LookupTable<unknown>[] = [
+const lookupTables: LookupTable[] = [
   new AddressTable(),
   new HumanNameTable(),
   new TokenTable(),
   new ValueSetElementTable(),
   new ReferenceTable(),
+  new CodingTable(),
 ];
 
 /**
@@ -175,37 +225,70 @@ const lookupTables: LookupTable<unknown>[] = [
  * It is a thin layer on top of the database.
  * Repository instances should be created per author and project.
  */
-export class Repository extends BaseRepository implements FhirRepository {
+export class Repository extends FhirRepository<PoolClient> implements Disposable {
   private readonly context: RepositoryContext;
+  private conn?: PoolClient;
+  private transactionDepth = 0;
+  private closed = false;
+  mode: RepositoryMode;
+
+  private preCommitCallbacks: (() => Promise<void>)[] = [];
+  private postCommitCallbacks: (() => Promise<void>)[] = [];
 
   constructor(context: RepositoryContext) {
     super();
     this.context = context;
+    this.context.projects?.push?.(r4ProjectId);
     if (!this.context.author?.reference) {
       throw new Error('Invalid author reference');
     }
+
+    // Default to writer mode
+    // In the future, as we do more testing and validation, we will explore defaulting to reader mode
+    // However, for now, we default to writer and only use reader mode for requests guaranteed not to have consistency risks
+    this.mode = RepositoryMode.WRITER;
   }
 
-  async createResource<T extends Resource>(resource: T): Promise<T> {
+  clone(): Repository {
+    return new Repository(this.context);
+  }
+
+  setMode(mode: RepositoryMode): void {
+    this.mode = mode;
+  }
+
+  currentProject(): Project | undefined {
+    return this.context.currentProject;
+  }
+
+  async createResource<T extends Resource>(resource: T, options?: CreateResourceOptions): Promise<T> {
+    const resourceWithId = {
+      ...resource,
+      id: options?.assignedId && resource.id ? resource.id : this.generateId(),
+    };
     try {
-      const result = await this.updateResourceImpl(
-        {
-          ...resource,
-          id: randomUUID(),
-        },
-        true
-      );
-      this.logEvent(CreateInteraction, AuditEventOutcome.Success, undefined, result);
+      const result = await this.updateResourceImpl(resourceWithId, true);
+      await this.postCommit(async () => {
+        this.logEvent(CreateInteraction, AuditEventOutcome.Success, undefined, result);
+      });
       return result;
     } catch (err) {
-      this.logEvent(CreateInteraction, AuditEventOutcome.MinorFailure, err, resource);
+      this.logEvent(CreateInteraction, AuditEventOutcome.MinorFailure, err, resourceWithId);
       throw err;
     }
   }
 
-  async readResource<T extends Resource>(resourceType: string, id: string): Promise<T> {
+  generateId(): string {
+    return randomUUID();
+  }
+
+  async readResource<T extends Resource>(
+    resourceType: T['resourceType'],
+    id: string,
+    options?: ReadResourceOptions
+  ): Promise<T> {
     try {
-      const result = this.removeHiddenFields(await this.readResourceImpl<T>(resourceType, id));
+      const result = this.removeHiddenFields(await this.readResourceImpl<T>(resourceType, id, options));
       this.logEvent(ReadInteraction, AuditEventOutcome.Success, undefined, result);
       return result;
     } catch (err) {
@@ -214,7 +297,11 @@ export class Repository extends BaseRepository implements FhirRepository {
     }
   }
 
-  private async readResourceImpl<T extends Resource>(resourceType: string, id: string): Promise<T> {
+  private async readResourceImpl<T extends Resource>(
+    resourceType: T['resourceType'],
+    id: string,
+    options?: ReadResourceOptions
+  ): Promise<T> {
     if (!id || !validator.isUUID(id)) {
       throw new OperationOutcomeError(notFound);
     }
@@ -225,7 +312,7 @@ export class Repository extends BaseRepository implements FhirRepository {
       throw new OperationOutcomeError(forbidden);
     }
 
-    const cacheRecord = await getCacheEntry<T>(resourceType, id);
+    const cacheRecord = await this.getCacheEntry<T>(resourceType, id);
     if (cacheRecord) {
       // This is an optimization to avoid a database query.
       // However, it depends on all values in the cache having "meta.compartment"
@@ -239,16 +326,19 @@ export class Repository extends BaseRepository implements FhirRepository {
       }
     }
 
+    if (options?.checkCacheOnly) {
+      throw new OperationOutcomeError(notFound);
+    }
+
     return this.readResourceFromDatabase(resourceType, id);
   }
 
   private async readResourceFromDatabase<T extends Resource>(resourceType: string, id: string): Promise<T> {
-    const client = getClient();
     const builder = new SelectQuery(resourceType).column('content').column('deleted').where('id', '=', id);
 
     this.addSecurityFilters(builder, resourceType);
 
-    const rows = await builder.execute(client);
+    const rows = await builder.execute(this.getDatabaseClient(DatabaseMode.READER));
     if (rows.length === 0) {
       throw new OperationOutcomeError(notFound);
     }
@@ -258,17 +348,15 @@ export class Repository extends BaseRepository implements FhirRepository {
     }
 
     const resource = JSON.parse(rows[0].content as string) as T;
-    await setCacheEntry(resource);
+    await this.setCacheEntry(resource);
     return resource;
   }
 
   private canReadCacheEntry(cacheEntry: CacheEntry): boolean {
-    if (
-      !this.isSuperAdmin() &&
-      this.context.project !== undefined &&
-      cacheEntry.projectId !== undefined &&
-      cacheEntry.projectId !== this.context.project
-    ) {
+    if (this.isSuperAdmin()) {
+      return true;
+    }
+    if (!this.context.projects?.includes(cacheEntry.projectId)) {
       return false;
     }
     if (!satisfiedAccessPolicy(cacheEntry.resource, AccessPolicyInteraction.READ, this.context.accessPolicy)) {
@@ -278,7 +366,7 @@ export class Repository extends BaseRepository implements FhirRepository {
   }
 
   async readReferences(references: Reference[]): Promise<(Resource | Error)[]> {
-    const cacheEntries = await getCacheEntries(references);
+    const cacheEntries = await this.getCacheEntries(references);
     const result: (Resource | Error)[] = new Array(references.length);
 
     for (let i = 0; i < result.length; i++) {
@@ -325,8 +413,10 @@ export class Repository extends BaseRepository implements FhirRepository {
   }
 
   async readReference<T extends Resource>(reference: Reference<T>): Promise<T> {
-    const parts = reference.reference?.split('/');
-    if (!parts || parts.length !== 2) {
+    let parts: [T['resourceType'], string];
+    try {
+      parts = parseReference(reference);
+    } catch (_err) {
       throw new OperationOutcomeError(badRequest('Invalid reference'));
     }
     return this.readResource(parts[0], parts[1]);
@@ -340,9 +430,10 @@ export class Repository extends BaseRepository implements FhirRepository {
    * See: https://www.hl7.org/fhir/http.html#history
    * @param resourceType - The FHIR resource type.
    * @param id - The FHIR resource ID.
+   * @param limit - The maximum number of results to return.
    * @returns Operation outcome and a history bundle.
    */
-  async readHistory<T extends Resource>(resourceType: string, id: string): Promise<Bundle<T>> {
+  async readHistory<T extends Resource>(resourceType: T['resourceType'], id: string, limit = 100): Promise<Bundle<T>> {
     try {
       let resource: T | undefined = undefined;
       try {
@@ -353,7 +444,6 @@ export class Repository extends BaseRepository implements FhirRepository {
         }
       }
 
-      const client = getClient();
       const rows = await new SelectQuery(resourceType + '_History')
         .column('versionId')
         .column('id')
@@ -361,8 +451,8 @@ export class Repository extends BaseRepository implements FhirRepository {
         .column('lastUpdated')
         .where('id', '=', id)
         .orderBy('lastUpdated', true)
-        .limit(100)
-        .execute(client);
+        .limit(Math.min(limit, DEFAULT_MAX_SEARCH_COUNT))
+        .execute(this.getDatabaseClient(DatabaseMode.READER));
 
       const entries: BundleEntry<T>[] = [];
 
@@ -409,7 +499,7 @@ export class Repository extends BaseRepository implements FhirRepository {
     }
   }
 
-  async readVersion<T extends Resource>(resourceType: string, id: string, vid: string): Promise<T> {
+  async readVersion<T extends Resource>(resourceType: T['resourceType'], id: string, vid: string): Promise<T> {
     try {
       if (!validator.isUUID(vid)) {
         throw new OperationOutcomeError(notFound);
@@ -423,12 +513,11 @@ export class Repository extends BaseRepository implements FhirRepository {
         }
       }
 
-      const client = getClient();
       const rows = await new SelectQuery(resourceType + '_History')
         .column('content')
         .where('id', '=', id)
         .where('versionId', '=', vid)
-        .execute(client);
+        .execute(this.getDatabaseClient(DatabaseMode.READER));
 
       if (rows.length === 0) {
         throw new OperationOutcomeError(notFound);
@@ -443,10 +532,12 @@ export class Repository extends BaseRepository implements FhirRepository {
     }
   }
 
-  async updateResource<T extends Resource>(resource: T): Promise<T> {
+  async updateResource<T extends Resource>(resource: T, options?: UpdateResourceOptions): Promise<T> {
     try {
-      const result = await this.updateResourceImpl(resource, false);
-      this.logEvent(UpdateInteraction, AuditEventOutcome.Success, undefined, result);
+      const result = await this.updateResourceImpl(resource, false, options?.ifMatch);
+      await this.postCommit(async () => {
+        this.logEvent(UpdateInteraction, AuditEventOutcome.Success, undefined, result);
+      });
       return result;
     } catch (err) {
       this.logEvent(UpdateInteraction, AuditEventOutcome.MinorFailure, err, resource);
@@ -454,7 +545,7 @@ export class Repository extends BaseRepository implements FhirRepository {
     }
   }
 
-  private async updateResourceImpl<T extends Resource>(resource: T, create: boolean): Promise<T> {
+  private async updateResourceImpl<T extends Resource>(resource: T, create: boolean, versionId?: string): Promise<T> {
     const { resourceType, id } = resource;
     if (!id) {
       throw new OperationOutcomeError(badRequest('Missing id'));
@@ -462,52 +553,71 @@ export class Repository extends BaseRepository implements FhirRepository {
     if (!validator.isUUID(id)) {
       throw new OperationOutcomeError(badRequest('Invalid id'));
     }
+
+    // Add default profiles before validating resource
+    if (!resource.meta?.profile && this.currentProject()?.defaultProfile) {
+      const defaultProfiles = this.currentProject()?.defaultProfile?.find(
+        (o) => o.resourceType === resourceType
+      )?.profile;
+      resource.meta = { ...resource.meta, profile: defaultProfiles };
+    }
+
     await this.validateResource(resource);
 
     if (!this.canWriteResourceType(resourceType)) {
       throw new OperationOutcomeError(forbidden);
     }
 
-    const existing = await this.checkExistingResource<T>(resourceType, id, create);
-    if (await this.isTooManyVersions(resourceType, id, create)) {
-      throw new OperationOutcomeError(tooManyRequests);
-    }
+    const existing = create ? undefined : await this.checkExistingResource<T>(resourceType, id);
     if (existing) {
-      (existing.meta as Meta).compartment = this.getCompartments(existing);
+      (existing.meta as Meta).compartment = this.getCompartments(existing); // Update compartments with latest rules
       if (!this.canWriteToResource(existing)) {
         // Check before the update
         throw new OperationOutcomeError(forbidden);
       }
+      if (versionId && existing.meta?.versionId !== versionId) {
+        throw new OperationOutcomeError(preconditionFailed);
+      }
     }
 
-    const updated = await rewriteAttachments<T>(RewriteMode.REFERENCE, this, {
+    let updated = await rewriteAttachments<T>(RewriteMode.REFERENCE, this, {
       ...this.restoreReadonlyFields(resource, existing),
     });
+    updated = await replaceConditionalReferences(this, updated);
 
-    const resultMeta = {
+    const resultMeta: Meta = {
       ...updated.meta,
       versionId: randomUUID(),
       lastUpdated: this.getLastUpdated(existing, resource),
       author: this.getAuthor(resource),
     };
+
+    if (this.context.onBehalfOf) {
+      resultMeta.onBehalfOf = this.context.onBehalfOf;
+    }
+
     const result: T = { ...updated, meta: resultMeta };
 
     const project = this.getProjectId(existing, updated);
     if (project) {
       resultMeta.project = project;
     }
-    const account = await this.getAccount(existing, updated, create);
-    if (account) {
-      resultMeta.account = account;
+    const accounts = await this.getAccounts(existing, updated, create);
+    if (accounts) {
+      resultMeta.account = accounts[0];
+      resultMeta.accounts = accounts;
     }
     resultMeta.compartment = this.getCompartments(result);
 
     if (this.context.checkReferencesOnWrite) {
-      await validateReferences(result);
+      await this.preCommit(async () => {
+        await validateReferences(this, result);
+      });
     }
 
     if (this.isNotModified(existing, result)) {
-      return existing as T;
+      this.removeHiddenFields(existing);
+      return existing;
     }
 
     if (!this.isResourceWriteable(existing, result)) {
@@ -515,44 +625,104 @@ export class Repository extends BaseRepository implements FhirRepository {
       throw new OperationOutcomeError(forbidden);
     }
 
-    await this.handleMaybeCacheOnly(result);
-    await setCacheEntry(result);
-    await addBackgroundJobs(result, { interaction: create ? 'create' : 'update' });
+    await this.handleStorage(result, create);
+    await this.postCommit(async () => {
+      await this.handleBinaryUpdate(existing, result);
+      await addBackgroundJobs(result, existing, { interaction: create ? 'create' : 'update' });
+    });
     this.removeHiddenFields(result);
     return result;
   }
 
-  private async handleMaybeCacheOnly(result: Resource): Promise<void> {
-    if (!this.isCacheOnly(result)) {
-      await this.writeToDatabase(result);
-    } else if (result.resourceType === 'Subscription' && result.channel?.type === 'websocket') {
+  /**
+   * Handles a Binary resource update.
+   * If the resource has embedded base-64 data, writes the data to the binary storage.
+   * Otherwise if the resource already exists, copies the existing binary to the new resource.
+   * @param existing - Existing binary if it exists.
+   * @param resource - The resource to write to the database.
+   */
+  private async handleBinaryUpdate<T extends Resource>(existing: T | undefined, resource: T): Promise<void> {
+    if (resource.resourceType !== 'Binary') {
+      return;
+    }
+
+    if (resource.data) {
+      await this.handleBinaryData(resource);
+    } else if (existing) {
+      await getBinaryStorage().copyBinary(existing as Binary, resource);
+    }
+  }
+
+  /**
+   * Handles a Binary resource with embedded base-64 data.
+   * Writes the data to the binary storage and removes the data field from the resource.
+   * @param resource - The resource to write to the database.
+   */
+  private async handleBinaryData(resource: Binary): Promise<void> {
+    // Parse result.data as a base64 string
+    const buffer = Buffer.from(resource.data as string, 'base64');
+
+    // Convert buffer to a Readable stream
+    const stream = new Readable({
+      read() {
+        this.push(buffer);
+        this.push(null); // Signifies the end of the stream (EOF)
+      },
+    });
+
+    // Write the stream to the binary storage
+    await getBinaryStorage().writeBinary(resource, undefined, resource.contentType, stream);
+
+    // Remove the data field from the resource
+    resource.data = undefined;
+  }
+
+  /**
+   * Handles persisting data to at-rest storage: cache and/or database.
+   * This method handles all the special cases for storage, including cache invalidation.
+   * @param resource - The resource to store.
+   * @param create - Whether the resource is being create, or updated in place.
+   */
+  private async handleStorage(resource: Resource, create: boolean): Promise<void> {
+    if (!this.isCacheOnly(resource)) {
+      await this.writeToDatabase(resource, create);
+    }
+    await this.setCacheEntry(resource);
+
+    // Handle special cases for resource caching
+    if (resource.resourceType === 'Subscription' && resource.channel?.type === 'websocket') {
       const redis = getRedis();
-      const project = result?.meta?.project;
+      const project = resource?.meta?.project;
       if (!project) {
         throw new OperationOutcomeError(serverError(new Error('No project connected to the specified Subscription.')));
       }
       // WebSocket Subscriptions are also cache-only, but also need to be added to a special cache key
-      const currentWsSubscriptionsStr = await redis.get(`medplum:subscriptions:r4:project:${project}`);
-      const currentWsSubscriptions = (
-        currentWsSubscriptionsStr ? JSON.parse(currentWsSubscriptionsStr) : []
-      ) as Subscription[];
-      const existingIdx = currentWsSubscriptions.findIndex(
-        (sub: Subscription) => (sub.id as string) === (result.id as string)
-      );
-      if (existingIdx !== -1) {
-        currentWsSubscriptions[existingIdx] = result;
-      } else {
-        currentWsSubscriptions.push(result);
-      }
-      await redis.set(`medplum:subscriptions:r4:project:${project}`, JSON.stringify(currentWsSubscriptions));
+      await redis.sadd(`medplum:subscriptions:r4:project:${project}:active`, `Subscription/${resource.id}`);
+    }
+    if (resource.resourceType === 'StructureDefinition') {
+      await removeCachedProfile(resource);
     }
   }
 
-  private async validateResource(resource: Resource): Promise<void> {
+  /**
+   * Validates a resource against the current project configuration.
+   * If strict mode is enabled (default), validates against base StructureDefinition and all profiles.
+   * If strict mode is disabled, validates against the legacy JSONSchema validator.
+   * Throws on validation errors.
+   * Returns silently on success.
+   * @param resource - The candidate resource to validate.
+   */
+  async validateResource(resource: Resource): Promise<void> {
     if (this.context.strictMode) {
+      const logger = getLogger();
       const start = process.hrtime.bigint();
+
+      const issues = validateResource(resource);
+      for (const issue of issues) {
+        logger.warn(`Validator warning: ${issue.details?.text}`, { project: this.context.projects?.[0], issue });
+      }
+
       const profileUrls = resource.meta?.profile;
-      validateResource(resource);
       if (profileUrls) {
         await this.validateProfiles(resource, profileUrls);
       }
@@ -560,8 +730,7 @@ export class Repository extends BaseRepository implements FhirRepository {
       const elapsedTime = Number(process.hrtime.bigint() - start);
       const MILLISECONDS = 1e6; // Conversion factor from ns to ms
       if (elapsedTime > 10 * MILLISECONDS) {
-        const ctx = getRequestContext();
-        ctx.logger.debug('High validator latency', {
+        logger.debug('High validator latency', {
           resourceType: resource.resourceType,
           id: resource.id,
           time: elapsedTime / MILLISECONDS,
@@ -573,22 +742,22 @@ export class Repository extends BaseRepository implements FhirRepository {
   }
 
   private async validateProfiles(resource: Resource, profileUrls: string[]): Promise<void> {
+    const logger = getLogger();
     for (const url of profileUrls) {
       const loadStart = process.hrtime.bigint();
       const profile = await this.loadProfile(url);
       const loadTime = Number(process.hrtime.bigint() - loadStart);
-      const ctx = getRequestContext();
       if (!profile) {
-        ctx.logger.warn('Unknown profile referenced', {
+        logger.warn('Unknown profile referenced', {
           resource: `${resource.resourceType}/${resource.id}`,
           url,
         });
         continue;
       }
       const validateStart = process.hrtime.bigint();
-      validateResource(resource, profile);
+      validateResource(resource, { profile });
       const validateTime = Number(process.hrtime.bigint() - validateStart);
-      ctx.logger.debug('Profile loaded', {
+      logger.debug('Profile loaded', {
         url,
         loadTime,
         validateTime,
@@ -597,12 +766,16 @@ export class Repository extends BaseRepository implements FhirRepository {
   }
 
   private async loadProfile(url: string): Promise<StructureDefinition | undefined> {
-    const redis = getRedis();
-    const cacheKey = `Project/${this.context.project}/StructureDefinition/${url}`;
-    // Try retrieving from cache
-    const cachedProfile = await redis.get(cacheKey);
-    if (cachedProfile) {
-      return (JSON.parse(cachedProfile) as CacheEntry<StructureDefinition>).resource;
+    const projectIds = this.context.projects;
+
+    if (projectIds?.length) {
+      // Try loading from cache, using all available Project IDs
+      const cacheKeys = projectIds.map((id) => getProfileCacheKey(id, url));
+      const results = await getRedis().mget(...cacheKeys);
+      const cachedProfile = results.find(Boolean) as string | undefined;
+      if (cachedProfile) {
+        return (JSON.parse(cachedProfile) as CacheEntry<StructureDefinition>).resource;
+      }
     }
 
     // Fall back to loading from the DB; descending version sort approximates version resolution for some cases
@@ -620,17 +793,16 @@ export class Repository extends BaseRepository implements FhirRepository {
           code: 'version',
           descending: true,
         },
+        {
+          code: 'date',
+          descending: true,
+        },
       ],
     });
 
-    if (profile) {
+    if (projectIds?.length && profile) {
       // Store loaded profile in cache
-      await redis.set(
-        cacheKey,
-        JSON.stringify({ resource: profile, projectId: profile.meta?.project }),
-        'EX',
-        24 * 60 * 60 // 24 hours in seconds
-      );
+      await cacheProfile(profile);
     }
     return profile;
   }
@@ -639,26 +811,14 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Writes the resource to the database.
    * This is a single atomic operation inside of a transaction.
    * @param resource - The resource to write to the database.
+   * @param create - If true, then the resource is being created.
    */
-  private async writeToDatabase<T extends Resource>(resource: T): Promise<void> {
-    // Note: We don't try/catch this because if connecting throws an exception.
-    // We don't need to dispose of the client (it will be undefined).
-    // https://node-postgres.com/features/transactions
-    const client = await getClient().connect();
-    try {
-      await client.query('BEGIN');
-      await Promise.all([
-        this.writeResource(client, resource),
-        this.writeResourceVersion(client, resource),
-        this.writeLookupTables(client, resource),
-      ]);
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+  private async writeToDatabase<T extends Resource>(resource: T, create: boolean): Promise<void> {
+    await this.ensureInTransaction(async (client) => {
+      await this.writeResource(client, resource);
+      await this.writeResourceVersion(client, resource);
+      await this.writeLookupTables(client, resource, create);
+    });
   }
 
   /**
@@ -670,13 +830,11 @@ export class Repository extends BaseRepository implements FhirRepository {
    *  - Previous version does not exist, and user does have permission to create by ID
    * @param resourceType - The FHIR resource type.
    * @param id - The resource ID.
-   * @param create - Flag for "creating" vs "updating".
    * @returns The existing resource, if found.
    */
   private async checkExistingResource<T extends Resource>(
-    resourceType: string,
-    id: string,
-    create: boolean
+    resourceType: T['resourceType'],
+    id: string
   ): Promise<T | undefined> {
     try {
       return await this.readResourceImpl<T>(resourceType, id);
@@ -686,7 +844,7 @@ export class Repository extends BaseRepository implements FhirRepository {
         throw new OperationOutcomeError(outcome, err);
       }
 
-      if (!create && isNotFound(outcome) && !this.canSetId()) {
+      if (isNotFound(outcome) && !this.canSetId()) {
         throw new OperationOutcomeError(outcome, err);
       }
 
@@ -698,34 +856,12 @@ export class Repository extends BaseRepository implements FhirRepository {
   }
 
   /**
-   * Returns true if the resource has too many versions within the specified time period.
-   * @param resourceType - The resource type.
-   * @param id - The resource ID.
-   * @param create - If true, then the resource is being created.
-   * @returns True if the resource has too many versions within the specified time period.
-   */
-  private async isTooManyVersions(resourceType: string, id: string, create: boolean): Promise<boolean> {
-    if (create) {
-      return false;
-    }
-    const seconds = 60;
-    const maxVersions = 10;
-    const client = getClient();
-    const rows = await new SelectQuery(resourceType + '_History')
-      .raw(`COUNT (DISTINCT "versionId")::int AS "count"`)
-      .where('id', '=', id)
-      .where('lastUpdated', '>', new Date(Date.now() - 1000 * seconds))
-      .execute(client);
-    return rows[0].count >= maxVersions;
-  }
-
-  /**
    * Returns true if the resource is not modified from the existing resource.
    * @param existing - The existing resource.
    * @param updated - The updated resource.
    * @returns True if the resource is not modified.
    */
-  private isNotModified(existing: Resource | undefined, updated: Resource): boolean {
+  private isNotModified<T extends Resource>(existing: T | undefined, updated: T): existing is T {
     if (!existing) {
       return false;
     }
@@ -738,57 +874,6 @@ export class Repository extends BaseRepository implements FhirRepository {
   }
 
   /**
-   * Rebuilds compartments for all resources of the specified type.
-   * This is only available to super admins.
-   * @param resourceType - The resource type.
-   */
-  async rebuildCompartmentsForResourceType(resourceType: string): Promise<void> {
-    if (!this.isSuperAdmin()) {
-      throw new OperationOutcomeError(forbidden);
-    }
-
-    const client = getClient();
-    const builder = new SelectQuery(resourceType).column({ tableName: resourceType, columnName: 'content' });
-    this.addDeletedFilter(builder);
-
-    await builder.executeCursor(client, async (row: any) => {
-      try {
-        const resource = JSON.parse(row.content) as Resource;
-        (resource.meta as Meta).compartment = this.getCompartments(resource);
-        await this.updateResourceImpl(JSON.parse(row.content) as Resource, false);
-      } catch (err) {
-        getRequestContext().logger.error('Failed to rebuild compartments for resource', {
-          error: normalizeErrorString(err),
-        });
-      }
-    });
-  }
-
-  /**
-   * Reindexes all resources of the specified type.
-   * This is only available to the system account.
-   * This should not result in any change to resources or history.
-   * @param resourceType - The resource type.
-   */
-  async reindexResourceType(resourceType: string): Promise<void> {
-    if (!this.isSuperAdmin()) {
-      throw new OperationOutcomeError(forbidden);
-    }
-
-    const client = getClient();
-    const builder = new SelectQuery(resourceType).column({ tableName: resourceType, columnName: 'content' });
-    this.addDeletedFilter(builder);
-
-    await builder.executeCursor(client, async (row: any) => {
-      try {
-        await this.reindexResourceImpl(JSON.parse(row.content) as Resource);
-      } catch (err) {
-        getRequestContext().logger.error('Failed to reindex resource', { error: normalizeErrorString(err) });
-      }
-    });
-  }
-
-  /**
    * Reindexes the resource.
    * This is only available to the system and super admin accounts.
    * This should not result in any change to the resource or its history.
@@ -796,39 +881,41 @@ export class Repository extends BaseRepository implements FhirRepository {
    * @param id - The resource ID.
    * @returns Promise to complete.
    */
-  async reindexResource<T extends Resource>(resourceType: string, id: string): Promise<void> {
+  async reindexResource<T extends Resource = Resource>(resourceType: T['resourceType'], id: string): Promise<void> {
     if (!this.isSuperAdmin()) {
       throw new OperationOutcomeError(forbidden);
     }
 
-    const resource = await this.readResourceImpl<T>(resourceType, id);
-    return this.reindexResourceImpl(resource);
+    await this.withTransaction(async (conn) => {
+      const resource = await this.readResourceImpl<T>(resourceType, id);
+      return this.reindexResources(conn, [resource]);
+    });
   }
 
   /**
    * Internal implementation of reindexing a resource.
    * This accepts a resource as a parameter, rather than a resource type and ID.
    * When doing a bulk reindex, this will be more efficient because it avoids unnecessary reads.
-   * @param resource - The resource.
-   * @returns The reindexed resource.
+   * @param conn - Database client to use for reindex operations.
+   * @param resources - The resource(s) to reindex.
    */
-  private async reindexResourceImpl<T extends Resource>(resource: T): Promise<void> {
-    (resource.meta as Meta).compartment = this.getCompartments(resource);
+  async reindexResources<T extends Resource>(conn: PoolClient, resources: T[]): Promise<void> {
+    let resource: Resource;
+    // Since the page size could be relatively large (1k+), preferring a simple for loop with re-used variables
+    // eslint-disable-next-line @typescript-eslint/prefer-for-of
+    for (let i = 0; i < resources.length; i++) {
+      resource = resources[i];
+      const meta = resource.meta as Meta;
+      meta.compartment = this.getCompartments(resource);
 
-    // Note: We don't try/catch this because if connecting throws an exception.
-    // We don't need to dispose of the client (it will be undefined).
-    // https://node-postgres.com/features/transactions
-    const client = await getClient().connect();
-    try {
-      await client.query('BEGIN');
-      await Promise.all([this.writeResource(client, resource), this.writeLookupTables(client, resource)]);
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
+      if (!meta.project) {
+        const projectRef = meta.compartment.find((r) => r.reference?.startsWith('Project/'));
+        meta.project = resolveId(projectRef);
+      }
+
+      await this.writeLookupTables(conn, resource, false);
     }
+    await this.batchWriteResources(conn, resources);
   }
 
   /**
@@ -837,82 +924,120 @@ export class Repository extends BaseRepository implements FhirRepository {
    * This should not result in any change to the resource or its history.
    * @param resourceType - The resource type.
    * @param id - The resource ID.
+   * @param options - Additional options.
    * @returns Promise to complete.
    */
-  async resendSubscriptions<T extends Resource>(resourceType: string, id: string): Promise<void> {
+  async resendSubscriptions<T extends Resource = Resource>(
+    resourceType: T['resourceType'],
+    id: string,
+    options?: ResendSubscriptionsOptions
+  ): Promise<void> {
     if (!this.isSuperAdmin() && !this.isProjectAdmin()) {
       throw new OperationOutcomeError(forbidden);
     }
 
     const resource = await this.readResourceImpl<T>(resourceType, id);
-    return addSubscriptionJobs(resource, { interaction: 'update' });
+    const interaction = options?.interaction ?? 'update';
+    let previousVersion: T | undefined;
+
+    if (interaction === 'update') {
+      const history = await this.readHistory(resourceType, id, 2);
+      if (history.entry?.[0]?.resource?.meta?.versionId !== resource.meta?.versionId) {
+        throw new OperationOutcomeError(preconditionFailed);
+      }
+      previousVersion = history.entry?.[1]?.resource;
+    }
+
+    return addSubscriptionJobs(resource, previousVersion, { interaction }, options);
   }
 
-  async deleteResource(resourceType: string, id: string): Promise<void> {
+  async deleteResource<T extends Resource = Resource>(resourceType: T['resourceType'], id: string): Promise<void> {
+    let resource: Resource;
     try {
-      const resource = await this.readResourceImpl(resourceType, id);
+      resource = await this.readResourceImpl<T>(resourceType, id);
+    } catch (err) {
+      const outcomeErr = err as OperationOutcomeError;
+      if (isGone(outcomeErr.outcome)) {
+        return; // Resource is already deleted, return successfully
+      }
+      throw err;
+    }
 
+    try {
       if (!this.canWriteResourceType(resourceType) || !this.isResourceWriteable(undefined, resource)) {
         throw new OperationOutcomeError(forbidden);
       }
 
-      await deleteCacheEntry(resourceType, id);
+      await this.deleteCacheEntry(resourceType, id);
 
-      const client = getClient();
-      const lastUpdated = new Date();
-      const content = '';
-      const columns: Record<string, any> = {
-        id,
-        lastUpdated,
-        deleted: true,
-        projectId: resource.meta?.project,
-        compartments: this.getCompartments(resource).map((ref) => resolveId(ref)),
-        content,
-      };
-
-      const searchParams = getSearchParameters(resourceType);
-      if (searchParams) {
-        for (const searchParam of Object.values(searchParams)) {
-          this.buildColumn({ resourceType } as Resource, columns, searchParam);
-        }
-      }
-
-      await new InsertQuery(resourceType, [columns]).mergeOnConflict().execute(client);
-
-      await new InsertQuery(resourceType + '_History', [
-        {
+      await this.ensureInTransaction(async (conn) => {
+        const lastUpdated = new Date();
+        const content = '';
+        const columns: Record<string, any> = {
           id,
-          versionId: randomUUID(),
           lastUpdated,
+          deleted: true,
+          projectId: resource.meta?.project,
+          compartments: this.getCompartments(resource).map((ref) => resolveId(ref)),
           content,
-        },
-      ]).execute(client);
+        };
 
-      await this.deleteFromLookupTables(client, resource);
-      this.logEvent(DeleteInteraction, AuditEventOutcome.Success, undefined, resource);
-      await addSubscriptionJobs(resource, { interaction: 'delete' });
+        const searchParams = getSearchParameters(resourceType);
+        if (searchParams) {
+          for (const searchParam of Object.values(searchParams)) {
+            this.buildColumn({ resourceType } as Resource, columns, searchParam);
+          }
+        }
+
+        await new InsertQuery(resourceType, [columns]).mergeOnConflict().execute(conn);
+
+        await new InsertQuery(resourceType + '_History', [
+          {
+            id,
+            versionId: randomUUID(),
+            lastUpdated,
+            content,
+          },
+        ]).execute(conn);
+
+        await this.deleteFromLookupTables(conn, resource);
+
+        await this.postCommit(async () => {
+          this.logEvent(DeleteInteraction, AuditEventOutcome.Success, undefined, resource);
+        });
+      });
+
+      await addSubscriptionJobs(resource, resource, { interaction: 'delete' });
     } catch (err) {
       this.logEvent(DeleteInteraction, AuditEventOutcome.MinorFailure, err);
       throw err;
     }
   }
 
-  async patchResource(resourceType: string, id: string, patch: Operation[]): Promise<Resource> {
+  async patchResource<T extends Resource = Resource>(
+    resourceType: T['resourceType'],
+    id: string,
+    patch: Operation[]
+  ): Promise<T> {
     try {
-      const resource = await this.readResourceImpl(resourceType, id);
+      return await this.withTransaction(async () => {
+        const resource = await this.readResourceFromDatabase<T>(resourceType, id);
 
-      try {
-        const patchResult = applyPatch(resource, patch).filter(Boolean);
-        if (patchResult.length > 0) {
-          throw new OperationOutcomeError(badRequest(patchResult.map((e) => (e as Error).message).join('\n')));
+        if (resource.resourceType !== resourceType) {
+          throw new OperationOutcomeError(badRequest('Incorrect resource type'));
         }
-      } catch (err) {
-        throw new OperationOutcomeError(normalizeOperationOutcome(err));
-      }
+        if (resource.id !== id) {
+          throw new OperationOutcomeError(badRequest('Incorrect ID'));
+        }
 
-      const result = await this.updateResourceImpl(resource, false);
-      this.logEvent(PatchInteraction, AuditEventOutcome.Success, undefined, result);
-      return result;
+        patchObject(resource, patch);
+
+        const result = await this.updateResourceImpl(resource, false);
+        await this.postCommit(async () => {
+          this.logEvent(PatchInteraction, AuditEventOutcome.Success, undefined, result);
+        });
+        return result;
+      });
     } catch (err) {
       this.logEvent(PatchInteraction, AuditEventOutcome.MinorFailure, err);
       throw err;
@@ -926,12 +1051,7 @@ export class Repository extends BaseRepository implements FhirRepository {
    * @param id - The resource ID.
    */
   async expungeResource(resourceType: string, id: string): Promise<void> {
-    if (!this.isSuperAdmin()) {
-      throw new OperationOutcomeError(forbidden);
-    }
-    await new DeleteQuery(resourceType).where('id', '=', id).execute(getClient());
-    await new DeleteQuery(resourceType + '_History').where('id', '=', id).execute(getClient());
-    await deleteCacheEntry(resourceType, id);
+    await this.expungeResources(resourceType, [id]);
   }
 
   /**
@@ -944,9 +1064,16 @@ export class Repository extends BaseRepository implements FhirRepository {
     if (!this.isSuperAdmin()) {
       throw new OperationOutcomeError(forbidden);
     }
-    await new DeleteQuery(resourceType).where('id', 'IN', ids).execute(getClient());
-    await new DeleteQuery(resourceType + '_History').where('id', 'IN', ids).execute(getClient());
-    await deleteCacheEntries(resourceType, ids);
+    await this.withTransaction(async (client) => {
+      for (const id of ids) {
+        await this.deleteFromLookupTables(client, { resourceType, id } as Resource);
+      }
+
+      const db = this.getDatabaseClient(DatabaseMode.WRITER);
+      await new DeleteQuery(resourceType).where('id', 'IN', ids).execute(db);
+      await new DeleteQuery(resourceType + '_History').where('id', 'IN', ids).execute(db);
+      await this.postCommit(() => this.deleteCacheEntries(resourceType, ids));
+    });
   }
 
   /**
@@ -959,20 +1086,37 @@ export class Repository extends BaseRepository implements FhirRepository {
     if (!this.isSuperAdmin()) {
       throw new OperationOutcomeError(forbidden);
     }
-    await new DeleteQuery(resourceType).where('lastUpdated', '<=', before).execute(getClient());
-    await new DeleteQuery(resourceType + '_History').where('lastUpdated', '<=', before).execute(getClient());
+    await this.withTransaction(async (client) => {
+      const ids = await new DeleteQuery(resourceType)
+        .where('lastUpdated', '<=', before)
+        .returnColumn('id')
+        .execute(client);
+      await new DeleteQuery(resourceType + '_History').where('lastUpdated', '<=', before).execute(client);
+      for (const { id } of ids) {
+        await this.deleteFromLookupTables(client, { resourceType, id } as Resource);
+      }
+    });
   }
 
   async search<T extends Resource>(searchRequest: SearchRequest<T>): Promise<Bundle<T>> {
     try {
-      const resourceType = searchRequest.resourceType;
-      validateResourceType(resourceType);
-
-      if (!this.canReadResourceType(resourceType)) {
-        throw new OperationOutcomeError(forbidden);
-      }
-
+      // Resource type validation is performed in the searchImpl function
       const result = await searchImpl(this, searchRequest);
+      this.logEvent(SearchInteraction, AuditEventOutcome.Success, undefined, undefined, searchRequest);
+      return result;
+    } catch (err) {
+      this.logEvent(SearchInteraction, AuditEventOutcome.MinorFailure, err, undefined, searchRequest);
+      throw err;
+    }
+  }
+
+  async searchByReference<T extends Resource>(
+    searchRequest: SearchRequest<T>,
+    referenceField: string,
+    references: string[]
+  ): Promise<Record<string, T[]>> {
+    try {
+      const result = await searchByReferenceImpl<T>(this, searchRequest, referenceField, references);
       this.logEvent(SearchInteraction, AuditEventOutcome.Success, undefined, undefined, searchRequest);
       return result;
     } catch (err) {
@@ -1009,8 +1153,8 @@ export class Repository extends BaseRepository implements FhirRepository {
    * @param builder - The select query builder.
    */
   private addProjectFilters(builder: SelectQuery): void {
-    if (this.context.project) {
-      builder.where('compartments', 'ARRAY_CONTAINS', [this.context.project, r4ProjectId], 'UUID[]');
+    if (this.context.projects?.length) {
+      builder.where('compartments', 'ARRAY_CONTAINS', this.context.projects, 'UUID[]');
     }
   }
 
@@ -1035,8 +1179,13 @@ export class Repository extends BaseRepository implements FhirRepository {
           expressions.push(new Condition('compartments', 'ARRAY_CONTAINS', policyCompartmentId, 'UUID[]'));
         } else if (policy.criteria) {
           // Add subquery for access policy criteria.
-          const searchRequest = parseCriteriaAsSearchRequest(policy.criteria);
-          const accessPolicyExpression = buildSearchExpression(builder, searchRequest);
+          const searchRequest = parseSearchRequest(policy.criteria);
+          const accessPolicyExpression = buildSearchExpression(
+            this,
+            builder,
+            searchRequest.resourceType,
+            searchRequest
+          );
           if (accessPolicyExpression) {
             expressions.push(accessPolicyExpression);
           }
@@ -1052,20 +1201,13 @@ export class Repository extends BaseRepository implements FhirRepository {
     }
   }
 
-  /**
-   * Writes the resource to the resource table.
-   * This builds all search parameter columns.
-   * This does *not* write the version to the history table.
-   * @param client - The database client inside the transaction.
-   * @param resource - The resource.
-   */
-  private async writeResource(client: PoolClient, resource: Resource): Promise<void> {
+  private buildResourceRow(resource: Resource): Record<string, any> {
     const resourceType = resource.resourceType;
     const meta = resource.meta as Meta;
     const compartments = meta.compartment?.map((ref) => resolveId(ref));
     const content = stringify(resource);
 
-    const columns: Record<string, any> = {
+    const row: Record<string, any> = {
       id: resource.id,
       lastUpdated: meta.lastUpdated,
       deleted: false,
@@ -1077,11 +1219,34 @@ export class Repository extends BaseRepository implements FhirRepository {
     const searchParams = getSearchParameters(resourceType);
     if (searchParams) {
       for (const searchParam of Object.values(searchParams)) {
-        this.buildColumn(resource, columns, searchParam);
+        this.buildColumn(resource, row, searchParam);
       }
     }
+    return row;
+  }
 
-    await new InsertQuery(resourceType, [columns]).mergeOnConflict().execute(client);
+  /**
+   * Writes the resource to the resource table.
+   * This builds all search parameter columns.
+   * This does *not* write the version to the history table.
+   * @param client - The database client inside the transaction.
+   * @param resource - The resource.
+   */
+  private async writeResource(client: PoolClient, resource: Resource): Promise<void> {
+    await new InsertQuery(resource.resourceType, [this.buildResourceRow(resource)]).mergeOnConflict().execute(client);
+  }
+
+  private async batchWriteResources(client: PoolClient, resources: Resource[]): Promise<void> {
+    if (!resources.length) {
+      return;
+    }
+
+    await new InsertQuery(
+      resources[0].resourceType,
+      resources.map((r) => this.buildResourceRow(r))
+    )
+      .mergeOnConflict()
+      .execute(client);
   }
 
   /**
@@ -1113,30 +1278,63 @@ export class Repository extends BaseRepository implements FhirRepository {
    * @returns The list of compartments for the resource.
    */
   private getCompartments(resource: Resource): Reference[] {
-    const result: Reference[] = [];
+    const compartments = new Set<string>();
 
-    if (resource.meta?.project) {
+    if (resource.meta?.project && validator.isUUID(resource.meta.project)) {
       // Deprecated - to be removed after migrating all tables to use "projectId" column
-      result.push({ reference: 'Project/' + resource.meta.project });
+      compartments.add('Project/' + resource.meta.project);
     }
 
-    if (resource.resourceType === 'User' && resource.project?.reference) {
+    if (
+      resource.resourceType === 'User' &&
+      resource.project?.reference &&
+      validator.isUUID(resolveId(resource.project) ?? '')
+    ) {
       // Deprecated - to be removed after migrating all tables to use "projectId" column
-      result.push(resource.project);
+      compartments.add(resource.project.reference);
     }
 
-    if (resource.meta?.account) {
-      result.push(resource.meta.account);
+    if (resource.meta?.accounts) {
+      for (const account of resource.meta.accounts) {
+        const id = resolveId(resource.meta.account);
+        if (!account.reference?.startsWith('Project/') && id && validator.isUUID(id)) {
+          compartments.add(account.reference as string);
+        }
+      }
+    } else if (resource.meta?.account && !resource.meta.account.reference?.startsWith('Project/')) {
+      const id = resolveId(resource.meta.account);
+      if (id && validator.isUUID(id)) {
+        compartments.add(resource.meta.account.reference as string);
+      }
     }
 
     for (const patient of getPatients(resource)) {
       const patientId = resolveId(patient);
       if (patientId && validator.isUUID(patientId)) {
-        result.push(patient);
+        compartments.add(patient.reference);
       }
     }
 
-    return result;
+    // Carry forward anything added to the resource compartments array
+    if (resource.meta?.compartment?.length) {
+      for (const compartment of resource.meta.compartment) {
+        const id = resolveId(compartment);
+        if (
+          id &&
+          validator.isUUID(id) &&
+          (compartment.reference?.startsWith('Organization/') || compartment.reference?.startsWith('Location/'))
+        ) {
+          compartments.add(compartment.reference as string);
+        }
+      }
+    }
+
+    const results: Reference[] = [];
+    for (const reference of compartments.values()) {
+      results.push({ reference });
+    }
+
+    return results;
   }
 
   /**
@@ -1160,15 +1358,23 @@ export class Repository extends BaseRepository implements FhirRepository {
 
     const details = getSearchParameterDetails(resource.resourceType, searchParam);
     const values = evalFhirPath(searchParam.expression as string, resource);
+    let columnValue = null;
 
     if (values.length > 0) {
       if (details.array) {
-        columns[details.columnName] = values.map((v) => this.buildColumnValue(searchParam, details, v));
+        columnValue = values.map((v) => this.buildColumnValue(searchParam, details, v));
       } else {
-        columns[details.columnName] = this.buildColumnValue(searchParam, details, values[0]);
+        columnValue = this.buildColumnValue(searchParam, details, values[0]);
       }
-    } else {
-      columns[details.columnName] = null;
+    }
+
+    columns[details.columnName] = columnValue;
+
+    // Handle special case for "MeasureReport-period"
+    // This is a trial for using "tstzrange" columns for date/time ranges.
+    // Eventually, this special case will go away, and this will become the default behavior for all "date" search parameters.
+    if (searchParam.id === 'MeasureReport-period') {
+      columns['period_range'] = this.buildPeriodColumn(values[0]);
     }
   }
 
@@ -1224,7 +1430,7 @@ export class Repository extends BaseRepository implements FhirRepository {
       try {
         const date = new Date(value);
         return date.toISOString().substring(0, 10);
-      } catch (ex) {
+      } catch (_err) {
         // Silent ignore
       }
     }
@@ -1243,7 +1449,7 @@ export class Repository extends BaseRepository implements FhirRepository {
       try {
         const date = new Date(value);
         return date.toISOString();
-      } catch (ex) {
+      } catch (_err) {
         // Silent ignore
       }
     } else if (typeof value === 'object') {
@@ -1254,6 +1460,20 @@ export class Repository extends BaseRepository implements FhirRepository {
       if ('end' in value) {
         return this.buildDateTimeColumn(value.end);
       }
+    }
+    return undefined;
+  }
+
+  /**
+   * Builds the column value for a "date" search parameter.
+   * This is currently in trial mode. The intention is for this to replace all "date" and "date/time" search parameters.
+   * @param value - The FHIRPath result value.
+   * @returns The period column string value.
+   */
+  private buildPeriodColumn(value: any): string | undefined {
+    const period = toPeriod(value);
+    if (period) {
+      return periodToRangeString(period);
     }
     return undefined;
   }
@@ -1368,11 +1588,10 @@ export class Repository extends BaseRepository implements FhirRepository {
    * Writes resources values to the lookup tables.
    * @param client - The database client inside the transaction.
    * @param resource - The resource to index.
+   * @param create - If true, then the resource is being created.
    */
-  private async writeLookupTables(client: PoolClient, resource: Resource): Promise<void> {
-    for (const lookupTable of lookupTables) {
-      await lookupTable.indexResource(client, resource);
-    }
+  private async writeLookupTables(client: PoolClient, resource: Resource, create: boolean): Promise<void> {
+    await Promise.all(lookupTables.map((lookupTable) => lookupTable.indexResource(client, resource, create)));
   }
 
   /**
@@ -1428,6 +1647,11 @@ export class Repository extends BaseRepository implements FhirRepository {
       return resolveId(updated.project);
     }
 
+    if (updated.resourceType === 'User' && this.isSuperAdmin()) {
+      // Super admins can add, remove, and the project compartment of users.
+      return updated?.meta?.project;
+    }
+
     if (protectedResourceTypes.includes(updated.resourceType)) {
       return undefined;
     }
@@ -1440,7 +1664,7 @@ export class Repository extends BaseRepository implements FhirRepository {
       return submittedProjectId;
     }
 
-    return existing?.meta?.project ?? this.context.project;
+    return existing?.meta?.project ?? this.context.projects?.[0];
   }
 
   /**
@@ -1473,40 +1697,52 @@ export class Repository extends BaseRepository implements FhirRepository {
    * @param create - Flag for when "creating" vs "updating".
    * @returns The account value.
    */
-  private async getAccount(
+  private async getAccounts(
     existing: Resource | undefined,
     updated: Resource,
     create: boolean
-  ): Promise<Reference | undefined> {
-    const account = updated.meta?.account;
-    if (account && this.canWriteAccount()) {
+  ): Promise<Reference[] | undefined> {
+    const updatedAccounts = this.extractAccountReferences(updated.meta);
+    if (updatedAccounts && this.canWriteAccount()) {
       // If the user specifies an account, allow it if they have permission.
-      return account;
+      return updatedAccounts;
     }
 
     if (create && this.context.accessPolicy?.compartment) {
       // If the user access policy specifies a compartment, then use it as the account.
-      return this.context.accessPolicy.compartment;
+      return [this.context.accessPolicy.compartment];
     }
 
     if (updated.resourceType !== 'Patient') {
       for (const patientRef of getPatients(updated)) {
-        // If the resource is in a patient compartment, then lookup the patient.
         try {
-          const patient = await systemRepo.readReference(patientRef);
-          if (patient.meta?.account) {
-            // If the patient has an account, then use it as the resource account.
-            return patient.meta.account;
-          }
+          // If the resource is in a patient compartment, then lookup the patient.
+          const patient = await getSystemRepo().readReference(patientRef);
+          // If the patient has an account, then use it as the resource account.
+          return this.extractAccountReferences(patient.meta);
         } catch (err: any) {
-          const ctx = getRequestContext();
-          ctx.logger.debug('Error setting patient compartment', err);
+          getRequestContext().logger.debug('Error setting patient compartment', err);
         }
       }
     }
 
     // Otherwise, default to the existing value.
-    return existing?.meta?.account ?? updated.meta?.account;
+    return this.extractAccountReferences(existing?.meta);
+  }
+
+  private extractAccountReferences(meta: Meta | undefined): Reference[] | undefined {
+    if (!meta) {
+      return undefined;
+    }
+    if (meta.accounts && meta.account) {
+      const accounts = meta.accounts;
+      if (accounts.some((a) => a.reference === meta.account?.reference)) {
+        return accounts;
+      }
+      return [meta.account, ...accounts];
+    } else {
+      return arrayify(meta.accounts ?? meta.account);
+    }
   }
 
   /**
@@ -1583,7 +1819,7 @@ export class Repository extends BaseRepository implements FhirRepository {
     if (protectedResourceTypes.includes(resourceType)) {
       return false;
     }
-    if (resource.meta?.project !== this.context.project) {
+    if (resource.meta?.project !== this.context.projects?.[0]) {
       return false;
     }
     return !!satisfiedAccessPolicy(resource, AccessPolicyInteraction.UPDATE, this.context.accessPolicy);
@@ -1600,7 +1836,7 @@ export class Repository extends BaseRepository implements FhirRepository {
       return true;
     }
 
-    if (current.meta?.project !== this.context.project) {
+    if (current.meta?.project !== this.context.projects?.[0]) {
       return false;
     }
 
@@ -1677,14 +1913,25 @@ export class Repository extends BaseRepository implements FhirRepository {
       original ? AccessPolicyInteraction.UPDATE : AccessPolicyInteraction.CREATE,
       this.context.accessPolicy
     );
-    if (policy?.readonlyFields) {
-      for (const field of policy.readonlyFields) {
-        this.removeField(input, field);
-        if (original) {
-          const value = original[field as keyof T];
-          if (value) {
-            input[field as keyof T] = value;
-          }
+    if (!policy?.readonlyFields && !policy?.hiddenFields) {
+      return input;
+    }
+    const fieldsToRestore = [];
+    if (policy.readonlyFields) {
+      fieldsToRestore.push(...policy.readonlyFields);
+    }
+    if (policy.hiddenFields) {
+      fieldsToRestore.push(...policy.hiddenFields);
+    }
+    for (const field of fieldsToRestore) {
+      this.removeField(input, field);
+      // only top-level fields can be restored.
+      // choice-of-type fields technically aren't allowed in readonlyFields/hiddenFields,
+      // but that isn't currently enforced at write time, so exclude them here
+      if (original && !field.includes('.') && !field.endsWith('[x]')) {
+        const value = original[field as keyof T];
+        if (value) {
+          input[field as keyof T] = value;
         }
       }
     }
@@ -1692,25 +1939,47 @@ export class Repository extends BaseRepository implements FhirRepository {
   }
 
   /**
-   * Removes a field from the input resource.
-   * Uses JSONPatch to process the remove operation, which supports nested fields.
+   * Removes a field from the input resource; supports nested fields.
    * @param input - The input resource.
-   * @param path - The path to the field to remove.
-   * @returns The new document with the field removed.
+   * @param path - The path to the field to remove
    */
-  private removeField<T extends Resource>(input: T, path: string): T {
-    const patch: Operation[] = [{ op: 'remove', path: `/${path.replaceAll('.', '/')}` }];
-    // applyPatch returns errors if the value is missing
-    // but we don't care if the value is missing in this case
-    applyPatch(input, patch);
-    return input;
+  private removeField<T extends Resource>(input: T, path: string): void {
+    let last: any[] = [input];
+    const pathParts = path.split('.');
+    for (let i = 0; i < pathParts.length; i++) {
+      const pathPart = pathParts[i];
+
+      if (i === pathParts.length - 1) {
+        // final key part
+        last.forEach((item) => {
+          resolveFieldName(item, pathPart).forEach((k) => {
+            delete item[k];
+          });
+        });
+      } else {
+        // intermediate key part
+        const next: any[] = [];
+        for (const lastItem of last) {
+          for (const k of resolveFieldName(lastItem, pathPart)) {
+            if (lastItem[k] !== undefined) {
+              if (Array.isArray(lastItem[k])) {
+                next.push(...lastItem[k]);
+              } else if (isObject(lastItem[k])) {
+                next.push(lastItem[k]);
+              }
+            }
+          }
+        }
+        last = next;
+      }
+    }
   }
 
-  private isSuperAdmin(): boolean {
+  isSuperAdmin(): boolean {
     return !!this.context.superAdmin;
   }
 
-  private isProjectAdmin(): boolean {
+  isProjectAdmin(): boolean {
     return !!this.context.projectAdmin;
   }
 
@@ -1743,7 +2012,7 @@ export class Repository extends BaseRepository implements FhirRepository {
     }
     const auditEvent = logRestfulEvent(
       subtype,
-      this.context.project as string,
+      this.context.projects?.[0] as string,
       this.context.author,
       this.context.remoteAddress,
       outcome,
@@ -1753,8 +2022,288 @@ export class Repository extends BaseRepository implements FhirRepository {
     );
 
     if (getConfig().saveAuditEvents && resource?.resourceType !== 'AuditEvent') {
-      auditEvent.id = randomUUID();
+      auditEvent.id = this.generateId();
       this.updateResourceImpl(auditEvent, true).catch(console.error);
+    }
+  }
+
+  /**
+   * Returns a database client.
+   * Use this method when you don't care if you're in a transaction or not.
+   * For example, use this method for "read by ID".
+   * The return value can either be a pool client or a pool.
+   * If in a transaction, then returns the transaction client (PoolClient).
+   * Otherwise, returns the pool (Pool).
+   * @param mode - The database mode.
+   * @returns The database client.
+   */
+  getDatabaseClient(mode: DatabaseMode): Pool | PoolClient {
+    this.assertNotClosed();
+    if (this.conn) {
+      // If in a transaction, then use the transaction client.
+      return this.conn;
+    }
+    if (mode === DatabaseMode.WRITER) {
+      // If we ever use a writer, then all subsequent operations must use a writer.
+      this.mode = RepositoryMode.WRITER;
+    }
+    return getDatabasePool(this.mode === RepositoryMode.WRITER ? DatabaseMode.WRITER : mode);
+  }
+
+  /**
+   * Returns a proper database connection.
+   * Unlike getDatabaseClient(), this method always returns a PoolClient.
+   * @param mode - The database mode.
+   * @returns Database connection.
+   */
+  private async getConnection(mode: DatabaseMode): Promise<PoolClient> {
+    this.assertNotClosed();
+    if (!this.conn) {
+      this.conn = await getDatabasePool(mode).connect();
+    }
+    return this.conn;
+  }
+
+  /**
+   * Releases the database connection.
+   * Include an error to remove the connection from the pool.
+   * See: https://github.com/brianc/node-postgres/blob/master/packages/pg-pool/index.js#L333
+   * @param err - Optional error to remove the connection from the pool.
+   */
+  private releaseConnection(err?: boolean | Error): void {
+    if (this.conn) {
+      this.conn.release(err);
+      this.conn = undefined;
+    }
+  }
+
+  async withTransaction<TResult>(
+    callback: (client: PoolClient) => Promise<TResult>,
+    options?: { serializable: boolean }
+  ): Promise<TResult> {
+    try {
+      const client = await this.beginTransaction(options?.serializable ? 'SERIALIZABLE' : undefined);
+      const result = await callback(client);
+      await this.commitTransaction();
+      return result;
+    } catch (err) {
+      const operationOutcomeError = normalizeDatabaseError(err);
+      await this.rollbackTransaction(operationOutcomeError);
+      throw operationOutcomeError;
+    } finally {
+      this.endTransaction();
+    }
+  }
+
+  private async beginTransaction(isolationLevel: TransactionIsolationLevel = 'REPEATABLE READ'): Promise<PoolClient> {
+    this.assertNotClosed();
+    this.transactionDepth++;
+    const conn = await this.getConnection(DatabaseMode.WRITER);
+    if (this.transactionDepth === 1) {
+      await conn.query('BEGIN ISOLATION LEVEL ' + isolationLevel);
+    } else {
+      await conn.query('SAVEPOINT sp' + this.transactionDepth);
+    }
+    return conn;
+  }
+
+  private async commitTransaction(): Promise<void> {
+    this.assertInTransaction();
+    const conn = await this.getConnection(DatabaseMode.WRITER);
+    if (this.transactionDepth === 1) {
+      await this.processPreCommit();
+      await conn.query('COMMIT');
+      this.transactionDepth--;
+      this.releaseConnection();
+      await this.processPostCommit();
+    } else {
+      await conn.query('RELEASE SAVEPOINT sp' + this.transactionDepth);
+      this.transactionDepth--;
+    }
+  }
+
+  private async rollbackTransaction(error: Error): Promise<void> {
+    this.assertInTransaction();
+    const conn = await this.getConnection(DatabaseMode.WRITER);
+    if (this.transactionDepth === 1) {
+      await conn.query('ROLLBACK');
+      this.transactionDepth--;
+      this.releaseConnection(error);
+    } else {
+      await conn.query('ROLLBACK TO SAVEPOINT sp' + this.transactionDepth);
+      this.transactionDepth--;
+    }
+  }
+
+  private endTransaction(): void {
+    if (this.transactionDepth === 0) {
+      this.releaseConnection();
+    }
+  }
+
+  private assertInTransaction(): void {
+    if (this.transactionDepth <= 0) {
+      throw new Error('Not in transaction');
+    }
+  }
+
+  async preCommit(fn: () => Promise<void>): Promise<void> {
+    if (this.transactionDepth) {
+      this.preCommitCallbacks.push(fn);
+    } else {
+      await fn();
+    }
+  }
+
+  private async processPreCommit(): Promise<void> {
+    const callbacks = this.preCommitCallbacks;
+    this.preCommitCallbacks = [];
+    for (const cb of callbacks) {
+      await cb();
+    }
+  }
+
+  async postCommit(fn: () => Promise<void>): Promise<void> {
+    if (this.transactionDepth) {
+      this.postCommitCallbacks.push(fn);
+    } else {
+      await fn();
+    }
+  }
+
+  private async processPostCommit(): Promise<void> {
+    const callbacks = this.postCommitCallbacks;
+    this.postCommitCallbacks = [];
+    for (const cb of callbacks) {
+      await cb();
+    }
+  }
+
+  /**
+   * Tries to read a cache entry from Redis by resource type and ID.
+   * @param resourceType - The resource type.
+   * @param id - The resource ID.
+   * @returns The cache entry if found; otherwise, undefined.
+   */
+  private async getCacheEntry<T extends Resource>(
+    resourceType: string,
+    id: string
+  ): Promise<CacheEntry<T> | undefined> {
+    // No cache access allowed mid-transaction
+    if (this.transactionDepth) {
+      return undefined;
+    }
+    const cachedValue = await getRedis().get(getCacheKey(resourceType, id));
+    return cachedValue ? (JSON.parse(cachedValue) as CacheEntry<T>) : undefined;
+  }
+
+  /**
+   * Performs a bulk read of cache entries from Redis.
+   * @param references - Array of FHIR references.
+   * @returns Array of cache entries or undefined.
+   */
+  private async getCacheEntries(references: Reference[]): Promise<(CacheEntry | undefined)[]> {
+    // No cache access allowed mid-transaction
+    if (this.transactionDepth) {
+      return new Array(references.length);
+    }
+    const referenceKeys = references.map((r) => r.reference as string);
+    if (referenceKeys.length === 0) {
+      // Return early to avoid calling mget() with no args, which is an error
+      return [];
+    }
+    return (await getRedis().mget(...referenceKeys)).map((cachedValue) =>
+      cachedValue ? (JSON.parse(cachedValue) as CacheEntry) : undefined
+    );
+  }
+
+  /**
+   * Writes a cache entry to Redis.
+   * @param resource - The resource to cache.
+   */
+  private async setCacheEntry(resource: Resource): Promise<void> {
+    // No cache access allowed mid-transaction
+    if (this.transactionDepth) {
+      await this.postCommit(() => this.setCacheEntry(resource));
+      return;
+    }
+
+    const projectId = resource.meta?.project;
+    await getRedis().set(
+      getCacheKey(resource.resourceType, resource.id as string),
+      JSON.stringify({ resource, projectId }),
+      'EX',
+      REDIS_CACHE_EX_SECONDS
+    );
+  }
+
+  /**
+   * Deletes a cache entry from Redis.
+   * @param resourceType - The resource type.
+   * @param id - The resource ID.
+   */
+  private async deleteCacheEntry(resourceType: string, id: string): Promise<void> {
+    // No cache access allowed mid-transaction
+    if (this.transactionDepth) {
+      await this.postCommit(() => this.deleteCacheEntry(resourceType, id));
+      return;
+    }
+
+    await getRedis().del(getCacheKey(resourceType, id));
+  }
+
+  /**
+   * Deletes cache entries from Redis.
+   * @param resourceType - The resource type.
+   * @param ids - The resource IDs.
+   */
+  private async deleteCacheEntries(resourceType: string, ids: string[]): Promise<void> {
+    // No cache access allowed mid-transaction
+    if (this.transactionDepth) {
+      await this.postCommit(() => this.deleteCacheEntries(resourceType, ids));
+      return;
+    }
+
+    const cacheKeys = ids.map((id) => {
+      return getCacheKey(resourceType, id);
+    });
+
+    await getRedis().del(cacheKeys);
+  }
+
+  async ensureInTransaction<TResult>(callback: (client: PoolClient) => Promise<TResult>): Promise<TResult> {
+    if (this.transactionDepth) {
+      const client = await this.getConnection(DatabaseMode.WRITER);
+      return callback(client);
+    } else {
+      return this.withTransaction(callback);
+    }
+  }
+
+  getConfig(): RepositoryContext {
+    return this.context;
+  }
+
+  close(): void {
+    this.assertNotClosed();
+    if (this.transactionDepth > 0) {
+      // Bad state, remove connection from pool
+      getRequestContext().logger.error('Closing Repository with active transaction');
+      this.releaseConnection(new Error('Closing Repository with active transaction'));
+    } else {
+      // Good state, return healthy connection to pool
+      this.releaseConnection();
+    }
+    this.closed = true;
+  }
+
+  [Symbol.dispose](): void {
+    this.close();
+  }
+
+  private assertNotClosed(): void {
+    if (this.closed) {
+      throw new Error('Already closed');
     }
   }
 }
@@ -1763,7 +2312,7 @@ export function isIndexTable(resourceType: string, searchParam: SearchParameter)
   return !!getLookupTable(resourceType, searchParam);
 }
 
-export function getLookupTable(resourceType: string, searchParam: SearchParameter): LookupTable<unknown> | undefined {
+export function getLookupTable(resourceType: string, searchParam: SearchParameter): LookupTable | undefined {
   for (const lookupTable of lookupTables) {
     if (lookupTable.isIndexed(searchParam, resourceType)) {
       return lookupTable;
@@ -1772,67 +2321,8 @@ export function getLookupTable(resourceType: string, searchParam: SearchParamete
   return undefined;
 }
 
-/**
- * Tries to read a cache entry from Redis by resource type and ID.
- * @param resourceType - The resource type.
- * @param id - The resource ID.
- * @returns The cache entry if found; otherwise, undefined.
- */
-async function getCacheEntry<T extends Resource>(resourceType: string, id: string): Promise<CacheEntry<T> | undefined> {
-  const cachedValue = await getRedis().get(getCacheKey(resourceType, id));
-  return cachedValue ? (JSON.parse(cachedValue) as CacheEntry<T>) : undefined;
-}
-
-/**
- * Performs a bulk read of cache entries from Redis.
- * @param references - Array of FHIR references.
- * @returns Array of cache entries or undefined.
- */
-async function getCacheEntries(references: Reference[]): Promise<(CacheEntry | undefined)[]> {
-  const referenceKeys = references.map((r) => r.reference as string);
-  if (referenceKeys.length === 0) {
-    // Return early to avoid calling mget() with no args, which is an error
-    return [];
-  }
-  return (await getRedis().mget(...referenceKeys)).map((cachedValue) =>
-    cachedValue ? (JSON.parse(cachedValue) as CacheEntry) : undefined
-  );
-}
-
-/**
- * Writes a cache entry to Redis.
- * @param resource - The resource to cache.
- */
-async function setCacheEntry(resource: Resource): Promise<void> {
-  await getRedis().set(
-    getCacheKey(resource.resourceType, resource.id as string),
-    JSON.stringify({ resource, projectId: resource.meta?.project }),
-    'EX',
-    24 * 60 * 60 // 24 hours in seconds
-  );
-}
-
-/**
- * Deletes a cache entry from Redis.
- * @param resourceType - The resource type.
- * @param id - The resource ID.
- */
-async function deleteCacheEntry(resourceType: string, id: string): Promise<void> {
-  await getRedis().del(getCacheKey(resourceType, id));
-}
-
-/**
- * Deletes cache entries from Redis.
- * @param resourceType - The resource type.
- * @param ids - The resource IDs.
- */
-async function deleteCacheEntries(resourceType: string, ids: string[]): Promise<void> {
-  const cacheKeys = ids.map((id) => {
-    return getCacheKey(resourceType, id);
-  });
-
-  await getRedis().del(cacheKeys);
-}
+const REDIS_CACHE_EX_SECONDS = 24 * 60 * 60; // 24 hours in seconds
+const PROFILE_CACHE_EX_SECONDS = 5 * 60; // 5 minutes in seconds
 
 /**
  * Returns the redis cache key for the given resource type and resource ID.
@@ -1844,12 +2334,92 @@ function getCacheKey(resourceType: string, id: string): string {
   return `${resourceType}/${id}`;
 }
 
-export const systemRepo = new Repository({
-  superAdmin: true,
-  strictMode: true,
-  extendedMode: true,
-  author: {
-    reference: 'system',
-  },
-  // System repo does not have an associated Project; it can write to any
-});
+/**
+ * Writes a FHIR profile cache entry to Redis.
+ * @param profile - The profile structure definition.
+ */
+async function cacheProfile(profile: StructureDefinition): Promise<void> {
+  if (!profile.url || !profile.meta?.project) {
+    return;
+  }
+  profile = await getSystemRepo().readReference(createReference(profile));
+  await getRedis().set(
+    getProfileCacheKey(profile.meta?.project as string, profile.url),
+    JSON.stringify({ resource: profile, projectId: profile.meta?.project }),
+    'EX',
+    PROFILE_CACHE_EX_SECONDS
+  );
+}
+
+/**
+ * Writes a FHIR profile cache entry to Redis.
+ * @param profile - The profile structure definition.
+ */
+async function removeCachedProfile(profile: StructureDefinition): Promise<void> {
+  if (!profile.url || !profile.meta?.project) {
+    return;
+  }
+  await getRedis().del(getProfileCacheKey(profile.meta.project, profile.url));
+}
+
+/**
+ * Returns the redis cache key for the given profile resource.
+ * @param projectId - The ID of the Project to which the profile belongs.
+ * @param url - The canonical URL of the profile.
+ * @returns The Redis cache key.
+ */
+function getProfileCacheKey(projectId: string, url: string): string {
+  return `Project/${projectId}/StructureDefinition/${url}`;
+}
+
+export function getSystemRepo(): Repository {
+  return new Repository({
+    superAdmin: true,
+    strictMode: true,
+    extendedMode: true,
+    author: {
+      reference: 'system',
+    },
+    // System repo does not have an associated Project; it can write to any
+  });
+}
+
+function lowercaseFirstLetter(str: string): string {
+  return str.charAt(0).toLowerCase() + str.slice(1);
+}
+
+function resolveFieldName(input: any, fieldName: string): string[] {
+  if (!fieldName.endsWith('[x]')) {
+    return [fieldName];
+  }
+
+  const baseKey = fieldName.slice(0, -3);
+  return Object.keys(input).filter((k) => {
+    if (k.startsWith(baseKey)) {
+      const maybePropertyType = k.substring(baseKey.length);
+      if (maybePropertyType in PropertyType || lowercaseFirstLetter(maybePropertyType) in PropertyType) {
+        return true;
+      }
+    }
+    return false;
+  });
+}
+
+export function setTypedPropertyValue(target: TypedValue, path: string, replacement: TypedValue): void {
+  let patchPath = '/' + path.replaceAll(/\[|\]\.|\./g, '/');
+  if (patchPath.endsWith(']')) {
+    patchPath = patchPath.slice(0, -1);
+  }
+  patchObject(target.value, [{ op: 'replace', path: patchPath, value: replacement.value }]);
+}
+
+function patchObject(obj: any, patch: Operation[]): void {
+  try {
+    const patchErrors = applyPatch(obj, patch).filter(Boolean);
+    if (patchErrors.length) {
+      throw new OperationOutcomeError(badRequest(patchErrors.map((e) => (e as Error).message).join('\n')));
+    }
+  } catch (err) {
+    throw new OperationOutcomeError(normalizeOperationOutcome(err));
+  }
+}

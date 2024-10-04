@@ -1,9 +1,13 @@
 import { Group, Text } from '@mantine/core';
-import { getDisplayString, getReferenceString } from '@medplum/core';
+import { getDisplayString, getReferenceString, isPopulated } from '@medplum/core';
 import { OperationOutcome, Patient, Reference, Resource } from '@medplum/fhirtypes';
 import { useMedplum, useResource } from '@medplum/react-hooks';
-import { forwardRef, useCallback, useState } from 'react';
-import { AsyncAutocomplete, AsyncAutocompleteOption } from '../AsyncAutocomplete/AsyncAutocomplete';
+import { forwardRef, ReactNode, useCallback, useState } from 'react';
+import {
+  AsyncAutocomplete,
+  AsyncAutocompleteOption,
+  AsyncAutocompleteProps,
+} from '../AsyncAutocomplete/AsyncAutocomplete';
 import { ResourceAvatar } from '../ResourceAvatar/ResourceAvatar';
 
 /**
@@ -13,7 +17,9 @@ import { ResourceAvatar } from '../ResourceAvatar/ResourceAvatar';
  * Otherwise it will fallback to "_id".
  */
 const SEARCH_CODES: Record<string, string> = {
+  Device: 'device-name',
   Observation: 'code',
+  Subscription: 'criteria',
   User: 'email:contains',
 };
 
@@ -28,6 +34,7 @@ const NAME_RESOURCE_TYPES = [
   'ActivityDefinition',
   'Bot',
   'CapabilityStatement',
+  'CareTeam',
   'ClientApplication',
   'CodeSystem',
   'CompartmentDefinition',
@@ -39,6 +46,7 @@ const NAME_RESOURCE_TYPES = [
   'EvidenceVariable',
   'ExampleScenario',
   'GraphDefinition',
+  'Group',
   'HealthcareService',
   'ImplementationGuide',
   'InsurancePlan',
@@ -77,7 +85,11 @@ export interface ResourceInputProps<T extends Resource = Resource> {
   readonly placeholder?: string;
   readonly loadOnFocus?: boolean;
   readonly required?: boolean;
+  readonly itemComponent?: (props: AsyncAutocompleteOption<T>) => JSX.Element | ReactNode;
   readonly onChange?: (value: T | undefined) => void;
+  readonly disabled?: boolean;
+  readonly label?: AsyncAutocompleteProps<T>['label'];
+  readonly error?: AsyncAutocompleteProps<T>['error'];
 }
 
 function toOption<T extends Resource>(resource: T): AsyncAutocompleteOption<T> {
@@ -93,6 +105,7 @@ export function ResourceInput<T extends Resource = Resource>(props: ResourceInpu
   const { resourceType, searchCriteria } = props;
   const [outcome, setOutcome] = useState<OperationOutcome>();
   const defaultValue = useResource(props.defaultValue, setOutcome);
+  const ItemComponent = props.itemComponent ?? DefaultItemComponent;
   const onChange = props.onChange;
 
   const loadValues = useCallback(
@@ -119,7 +132,7 @@ export function ResourceInput<T extends Resource = Resource>(props: ResourceInpu
     [onChange]
   );
 
-  if (props.defaultValue && !outcome && !defaultValue) {
+  if (isPopulated(props.defaultValue) && !outcome && !defaultValue) {
     // If a default value was specified, but the default resource is not loaded yet,
     // then return null to avoid rendering the input until the default resource is loaded.
     // The Mantine <MultiSelect> component does not reliably handle changes to defaultValue.
@@ -128,13 +141,15 @@ export function ResourceInput<T extends Resource = Resource>(props: ResourceInpu
 
   return (
     <AsyncAutocomplete<T>
+      disabled={props.disabled}
       name={props.name}
+      label={props.label}
+      error={props.error}
       required={props.required}
       itemComponent={ItemComponent}
       defaultValue={defaultValue}
       placeholder={props.placeholder}
-      maxSelectedValues={1}
-      toKey={getReferenceString}
+      maxValues={1}
       toOption={toOption}
       loadOptions={loadValues}
       onChange={handleChange}
@@ -143,21 +158,23 @@ export function ResourceInput<T extends Resource = Resource>(props: ResourceInpu
   );
 }
 
-const ItemComponent = forwardRef<HTMLDivElement, any>(({ label, resource, ...others }: any, ref) => {
-  return (
-    <div ref={ref} {...others}>
-      <Group noWrap>
-        <ResourceAvatar value={resource} />
-        <div>
-          <Text>{label}</Text>
-          <Text size="xs" color="dimmed">
-            {(resource as Patient).birthDate}
-          </Text>
-        </div>
-      </Group>
-    </div>
-  );
-});
+const DefaultItemComponent = forwardRef<HTMLDivElement, AsyncAutocompleteOption<Resource>>(
+  ({ label, resource, active: _active, ...others }: AsyncAutocompleteOption<Resource>, ref) => {
+    return (
+      <div ref={ref} {...others}>
+        <Group wrap="nowrap">
+          <ResourceAvatar value={resource} />
+          <div>
+            <Text>{label}</Text>
+            <Text size="xs" c="dimmed">
+              {(resource as Patient).birthDate || resource.id}
+            </Text>
+          </div>
+        </Group>
+      </div>
+    );
+  }
+);
 
 /**
  * Returns the search parameter to use for the given resource type.

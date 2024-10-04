@@ -1,7 +1,7 @@
 import { MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react-hooks';
-import { act, fireEvent, render, screen } from '@testing-library/react';
 import { ReactNode } from 'react';
+import { act, fireEvent, render, screen } from '../test-utils/render';
 import { CodingInput } from './CodingInput';
 
 const medplum = new MockClient();
@@ -26,20 +26,20 @@ describe('CodingInput', () => {
   }
 
   test('Renders', async () => {
-    await setup(<CodingInput binding={binding} name="test" />);
+    await setup(<CodingInput path="" binding={binding} name="test" />);
 
     expect(screen.getByRole('searchbox')).toBeInTheDocument();
   });
 
   test('Renders Coding default value', async () => {
-    await setup(<CodingInput binding={binding} name="test" defaultValue={{ code: 'abc' }} />);
+    await setup(<CodingInput path="" binding={binding} name="test" defaultValue={{ code: 'abc' }} />);
 
-    expect(screen.getByRole('searchbox')).toBeInTheDocument();
+    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
     expect(screen.getByText('abc')).toBeDefined();
   });
 
   test('Searches for results', async () => {
-    await setup(<CodingInput binding={binding} name="test" />);
+    await setup(<CodingInput path="" binding={binding} name="test" />);
 
     const input = screen.getByRole('searchbox') as HTMLInputElement;
 
@@ -67,7 +67,7 @@ describe('CodingInput', () => {
   });
 
   test('Renders with empty binding property', async () => {
-    await setup(<CodingInput binding={undefined} name="test" />);
+    await setup(<CodingInput path="" binding={undefined} name="test" />);
 
     const input = screen.getByRole('searchbox') as HTMLInputElement;
 
@@ -91,6 +91,6 @@ describe('CodingInput', () => {
       fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
     });
     // Despite an undefined binding value, the app still renders and functions
-    expect(screen.getByDisplayValue('Test Empty')).toBeDefined();
+    expect(screen.getByText('Test Empty')).toBeDefined();
   });
 });

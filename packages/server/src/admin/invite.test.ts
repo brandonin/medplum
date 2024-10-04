@@ -10,11 +10,12 @@ import { simpleParser } from 'mailparser';
 import fetch from 'node-fetch';
 import { Readable } from 'stream';
 import request from 'supertest';
-
 import { initApp, shutdownApp } from '../app';
 import { registerNew } from '../auth/register';
 import { loadTestConfig } from '../config';
 import { addTestUser, initTestAuth, setupPwnedPasswordMock, setupRecaptchaMock, withTestContext } from '../test.setup';
+import { SelectQuery } from '../fhir/sql';
+import { DatabaseMode, getDatabasePool } from '../database';
 
 jest.mock('hibp');
 jest.mock('node-fetch');
@@ -26,6 +27,7 @@ describe('Admin Invite', () => {
 
   beforeAll(async () => {
     const config = await loadTestConfig();
+    config.emailProvider = 'awsses';
     await withTestContext(() => initApp(app, config));
   });
 
@@ -82,6 +84,11 @@ describe('Admin Invite', () => {
     const parsed = await simpleParser(Readable.from(inputArgs?.Content?.Raw?.Data ?? ''));
 
     expect(parsed.subject).toBe('Welcome to Medplum');
+    const rows = await new SelectQuery('User')
+      .column('projectId')
+      .where('email', '=', bobEmail)
+      .execute(getDatabasePool(DatabaseMode.READER));
+    expect(rows[0].projectId).toEqual(null);
   });
 
   test('Existing user to project', async () => {
@@ -130,6 +137,12 @@ describe('Admin Invite', () => {
 
     const parsed = await simpleParser(Readable.from(inputArgs?.Content?.Raw?.Data ?? ''));
     expect(parsed.subject).toBe('Medplum: Welcome to Alice Project');
+
+    const rows = await new SelectQuery('User')
+      .column('projectId')
+      .where('email', '=', bobEmail)
+      .execute(getDatabasePool(DatabaseMode.READER));
+    expect(rows[0].projectId).toEqual(null);
   });
 
   test('Existing practitioner to project', async () => {
@@ -173,6 +186,12 @@ describe('Admin Invite', () => {
 
     expect(res3.status).toBe(200);
     expect(res3.body.profile.reference).toEqual(getReferenceString(res2.body));
+
+    const rows = await new SelectQuery('User')
+      .column('projectId')
+      .where('email', '=', bobEmail)
+      .execute(getDatabasePool(DatabaseMode.READER));
+    expect(rows[0].projectId).toEqual(null);
   });
 
   test('Specified practitioner to project', async () => {
@@ -218,6 +237,12 @@ describe('Admin Invite', () => {
 
     expect(res3.status).toBe(200);
     expect(res3.body.profile.reference).toEqual(getReferenceString(res2.body));
+
+    const rows = await new SelectQuery('User')
+      .column('projectId')
+      .where('email', '=', bobEmail)
+      .execute(getDatabasePool(DatabaseMode.READER));
+    expect(rows[0].projectId).toEqual(null);
   });
 
   test('Access denied', async () => {
@@ -328,6 +353,46 @@ describe('Admin Invite', () => {
 
     // Second, Alice invites Bob to the project
     const bobSub = randomUUID();
+    const bobEmail = `bob${randomUUID()}@example.com`;
+    const res2 = await request(app)
+      .post('/admin/projects/' + project.id + '/invite')
+      .set('Authorization', 'Bearer ' + accessToken)
+      .send({
+        resourceType: 'Patient',
+        firstName: 'Bob',
+        lastName: 'Jones',
+        email: bobEmail,
+        sendEmail: false,
+        externalId: bobSub,
+      });
+
+    expect(res2.status).toBe(200);
+    expect(res2.body.profile.reference).toContain('Patient/');
+    expect(res2.body.admin).toBe(undefined);
+    expect(mockSESv2Client.send.callCount).toBe(0);
+    expect(mockSESv2Client).not.toHaveReceivedCommand(SendEmailCommand);
+
+    const rows = await new SelectQuery('User')
+      .column('projectId')
+      .where('email', '=', bobEmail)
+      .execute(getDatabasePool(DatabaseMode.READER));
+    expect(rows[0].projectId).toEqual(project.id);
+  });
+
+  test('Duplicate externalId', async () => {
+    // First, Alice creates a project
+    const { project, accessToken } = await withTestContext(() =>
+      registerNew({
+        firstName: 'Alice',
+        lastName: 'Smith',
+        projectName: 'Alice Project',
+        email: `alice${randomUUID()}@example.com`,
+        password: 'password!@#',
+      })
+    );
+
+    // Second, Alice invites Bob to the project
+    const bobSub = randomUUID();
     const res2 = await request(app)
       .post('/admin/projects/' + project.id + '/invite')
       .set('Authorization', 'Bearer ' + accessToken)
@@ -339,10 +404,22 @@ describe('Admin Invite', () => {
       });
 
     expect(res2.status).toBe(200);
-    expect(res2.body.profile.reference).toContain('Patient/');
-    expect(res2.body.admin).toBe(undefined);
-    expect(mockSESv2Client.send.callCount).toBe(0);
-    expect(mockSESv2Client).not.toHaveReceivedCommand(SendEmailCommand);
+
+    // Third, Alice tries to invite Carol to the project with the same externalId
+    // This should fail
+    const carolSub = bobSub;
+    const res3 = await request(app)
+      .post('/admin/projects/' + project.id + '/invite')
+      .set('Authorization', 'Bearer ' + accessToken)
+      .send({
+        resourceType: 'Patient',
+        firstName: 'Carol',
+        lastName: 'White',
+        externalId: carolSub,
+      });
+
+    expect(res3.status).toBe(409);
+    expect(res3.body.issue[0].details.text).toMatch(/already exists/);
   });
 
   test('Reuse deleted externalId', async () => {
@@ -479,6 +556,12 @@ describe('Admin Invite', () => {
     expect(res2.body.admin).toBe(true);
     expect(mockSESv2Client.send.callCount).toBe(1);
     expect(mockSESv2Client).toHaveReceivedCommandTimes(SendEmailCommand, 1);
+
+    const rows = await new SelectQuery('User')
+      .column('projectId')
+      .where('email', '=', bobEmail)
+      .execute(getDatabasePool(DatabaseMode.READER));
+    expect(rows[0].projectId).toEqual(project.id);
   });
 
   test('Invite user with admin flag as false', async () => {
@@ -595,9 +678,6 @@ describe('Admin Invite', () => {
       });
 
     expect(res2.status).toBe(200);
-    if (!res2.body.user) {
-      console.log(JSON.stringify(res2.body, null, 2));
-    }
     expect(res2.body.user.display).toBe(lowerBobEmail);
     expect(mockSESv2Client.send.callCount).toBe(1);
     expect(mockSESv2Client).toHaveReceivedCommandTimes(SendEmailCommand, 1);
@@ -645,7 +725,7 @@ describe('Admin Invite', () => {
         lastName: 'Jones',
         email: bobEmail,
       });
-    expect(res3.status).toBe(400);
+    expect(res3.status).toBe(409);
     expect(normalizeErrorString(res3.body)).toEqual('User is already a member of this project');
 
     // Invite Bob third time with "upsert = true" - should succeed
@@ -675,7 +755,7 @@ describe('Admin Invite', () => {
         upsert: true,
         membership: { profile: createReference(profile) },
       });
-    expect(res5.status).toBe(400);
+    expect(res5.status).toBe(409);
     expect(normalizeErrorString(res5.body)).toEqual(
       'User is already a member of this project with a different profile'
     );

@@ -1,4 +1,4 @@
-import { createStyles, Group, Text } from '@mantine/core';
+import { Group, Text } from '@mantine/core';
 import { formatHumanName, getDisplayString, getReferenceString, isUUID } from '@medplum/core';
 import { Patient, ServiceRequest } from '@medplum/fhirtypes';
 import { useMedplum, useMedplumNavigate } from '@medplum/react-hooks';
@@ -6,30 +6,9 @@ import { IconSearch } from '@tabler/icons-react';
 import { forwardRef, useCallback } from 'react';
 import { AsyncAutocomplete, AsyncAutocompleteOption } from '../AsyncAutocomplete/AsyncAutocomplete';
 import { ResourceAvatar } from '../ResourceAvatar/ResourceAvatar';
+import classes from './HeaderSearchInput.module.css';
 
 export type HeaderSearchTypes = Patient | ServiceRequest;
-
-const useStyles = createStyles(() => {
-  return {
-    searchInput: {
-      input: {
-        width: 220,
-        transition: 'width 0.2s',
-      },
-      'input:focus': {
-        width: 400,
-      },
-      '@media (max-width: 800px)': {
-        input: {
-          width: 150,
-        },
-        'input:focus': {
-          width: 150,
-        },
-      },
-    },
-  };
-});
 
 interface SearchGraphQLResponse {
   readonly data: {
@@ -37,10 +16,6 @@ interface SearchGraphQLResponse {
     readonly Patients2: Patient[] | undefined;
     readonly ServiceRequestList: ServiceRequest[] | undefined;
   };
-}
-
-function toKey(resource: HeaderSearchTypes): string {
-  return resource.id as string;
 }
 
 function toOption(resource: HeaderSearchTypes): AsyncAutocompleteOption<HeaderSearchTypes> {
@@ -52,12 +27,11 @@ function toOption(resource: HeaderSearchTypes): AsyncAutocompleteOption<HeaderSe
 }
 
 export interface HeaderSearchInputProps {
-  pathname?: string;
-  searchParams?: URLSearchParams;
+  readonly pathname?: string;
+  readonly searchParams?: URLSearchParams;
 }
 
 export function HeaderSearchInput(props: HeaderSearchInputProps): JSX.Element {
-  const { classes } = useStyles();
   const navigate = useMedplumNavigate();
   const medplum = useMedplum();
 
@@ -86,22 +60,20 @@ export function HeaderSearchInput(props: HeaderSearchInputProps): JSX.Element {
       size="sm"
       radius="md"
       className={classes.searchInput}
-      icon={<IconSearch size={16} />}
+      leftSection={<IconSearch size={16} />}
       placeholder="Search"
       itemComponent={ItemComponent}
-      toKey={toKey}
       toOption={toOption}
       onChange={handleSelect}
       loadOptions={loadData}
-      maxSelectedValues={0}
-      clearSearchOnChange
+      maxValues={0}
       clearable={false}
     />
   );
 }
 
-const ItemComponent = forwardRef<HTMLDivElement, any>(
-  ({ resource, ...others }: AsyncAutocompleteOption<HeaderSearchTypes>, ref) => {
+const ItemComponent = forwardRef<HTMLDivElement, AsyncAutocompleteOption<HeaderSearchTypes>>(
+  ({ resource, active: _active, ...others }: AsyncAutocompleteOption<HeaderSearchTypes>, ref) => {
     let helpText: string | undefined = undefined;
 
     if (resource.resourceType === 'Patient') {
@@ -112,11 +84,11 @@ const ItemComponent = forwardRef<HTMLDivElement, any>(
 
     return (
       <div ref={ref} {...others}>
-        <Group noWrap>
+        <Group wrap="nowrap">
           <ResourceAvatar value={resource} />
           <div>
             <Text>{getDisplayString(resource)}</Text>
-            <Text size="xs" color="dimmed">
+            <Text size="xs" c="dimmed">
               {helpText}
             </Text>
           </div>

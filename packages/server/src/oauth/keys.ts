@@ -14,7 +14,7 @@ import {
   SignJWT,
 } from 'jose';
 import { MedplumServerConfig } from '../config';
-import { systemRepo } from '../fhir/repo';
+import { getSystemRepo } from '../fhir/repo';
 import { globalLogger } from '../logger';
 
 export interface MedplumBaseClaims extends JWTPayload {
@@ -79,6 +79,7 @@ export interface MedplumRefreshTokenClaims extends MedplumBaseClaims {
  * This is the algorithm used by AWS Cognito and Auth0.
  */
 const ALG = 'RS256';
+const DEFAULT_REFRESH_LIFETIME = '2w';
 
 let issuer: string | undefined;
 const publicKeys: Record<string, KeyLike> = {};
@@ -101,6 +102,7 @@ export async function initKeys(config: MedplumServerConfig): Promise<void> {
     throw new Error('Missing issuer');
   }
 
+  const systemRepo = getSystemRepo();
   const searchResult = await systemRepo.searchResources<JsonWebKey>({
     resourceType: 'JsonWebKey',
     filters: [{ code: 'active', operator: Operator.EQUALS, value: 'true' }],
@@ -147,7 +149,7 @@ export async function initKeys(config: MedplumServerConfig): Promise<void> {
   // Use the first key as the signing key
   signingKeyId = jsonWebKeys[0].id;
   signingKey = (await importJWK({
-    ...jsonWebKeys[0],
+    ...(jsonWebKeys[0] as JWK),
     alg: ALG,
     use: 'sig',
   })) as KeyLike;
@@ -204,10 +206,13 @@ export function generateAccessToken(
 /**
  * Generates a refresh token JWT.
  * @param claims - The refresh token claims.
+ * @param refreshLifetime - The refresh token duration.
  * @returns A well-formed JWT that can be used as a refresh token.
  */
-export function generateRefreshToken(claims: MedplumRefreshTokenClaims): Promise<string> {
-  return generateJwt('2w', claims);
+export function generateRefreshToken(claims: MedplumRefreshTokenClaims, refreshLifetime?: string): Promise<string> {
+  const duration = refreshLifetime ?? DEFAULT_REFRESH_LIFETIME;
+
+  return generateJwt(duration, claims);
 }
 
 /**
@@ -216,9 +221,14 @@ export function generateRefreshToken(claims: MedplumRefreshTokenClaims): Promise
  * @param claims - The key/value pairs to include in the payload section.
  * @returns Promise to generate and sign the JWT.
  */
-async function generateJwt(exp: '1h' | '2w', claims: JWTPayload): Promise<string> {
+async function generateJwt(exp: string, claims: JWTPayload): Promise<string> {
   if (!signingKey || !issuer) {
     throw new Error('Signing key not initialized');
+  }
+
+  const regex = /^[0-9]+[smhdwy]$/;
+  if (!regex.test(exp)) {
+    throw new Error('Invalid token duration');
   }
 
   return new SignJWT(claims)

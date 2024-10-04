@@ -1,7 +1,7 @@
 import { MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react-hooks';
-import { act, fireEvent, render, screen } from '@testing-library/react';
 import { ReactNode } from 'react';
+import { act, fireEvent, render, screen } from '../test-utils/render';
 import { CodeInput } from './CodeInput';
 
 const medplum = new MockClient();
@@ -19,6 +19,8 @@ describe('CodeInput', () => {
     jest.useRealTimers();
   });
 
+  const defaultProps = { maxValues: 1, binding, name: 'test', onChange: undefined };
+
   async function setup(child: ReactNode): Promise<void> {
     await act(async () => {
       render(<MedplumProvider medplum={medplum}>{child}</MedplumProvider>);
@@ -26,7 +28,7 @@ describe('CodeInput', () => {
   }
 
   test('Renders', async () => {
-    await setup(<CodeInput binding={binding} name="test" />);
+    await setup(<CodeInput {...defaultProps} />);
 
     expect(screen.getByRole('searchbox')).toBeInTheDocument();
   });
@@ -35,7 +37,7 @@ describe('CodeInput', () => {
     await act(async () => {
       render(
         <MedplumProvider medplum={medplum}>
-          <CodeInput binding={binding} name="test" defaultValue="xyz" />
+          <CodeInput {...defaultProps} defaultValue="xyz" maxValues={undefined} />
         </MedplumProvider>
       );
     });
@@ -45,7 +47,7 @@ describe('CodeInput', () => {
   });
 
   test('Searches for results', async () => {
-    await setup(<CodeInput binding={binding} name="test" />);
+    await setup(<CodeInput {...defaultProps} />);
 
     const input = screen.getByRole('searchbox') as HTMLInputElement;
 
@@ -73,7 +75,7 @@ describe('CodeInput', () => {
   });
 
   test('Searches for results with creatable set to false', async () => {
-    await setup(<CodeInput binding={binding} name="test" creatable={false} clearable={false} />);
+    await setup(<CodeInput {...defaultProps} creatable={false} clearable={false} />);
 
     const input = screen.getByRole('searchbox') as HTMLInputElement;
 

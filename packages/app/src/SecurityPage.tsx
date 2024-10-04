@@ -13,18 +13,18 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 interface UserSession {
-  id: string;
-  lastUpdated: string;
-  authMethod: string;
-  remoteAddress: string;
-  browser?: string;
-  os?: string;
+  readonly id: string;
+  readonly lastUpdated: string;
+  readonly authMethod: string;
+  readonly remoteAddress: string;
+  readonly browser?: string;
+  readonly os?: string;
 }
 
 interface SecurityDetails {
-  profile: ProfileResource;
-  config: UserConfiguration;
-  security: {
+  readonly profile: ProfileResource;
+  readonly config: UserConfiguration;
+  readonly security: {
     mfaEnrolled: boolean;
     sessions: UserSession[];
   };
@@ -37,7 +37,7 @@ export function SecurityPage(): JSX.Element | null {
 
   useEffect(() => {
     medplum
-      .get('auth/me')
+      .get('auth/me', { cache: 'no-cache' })
       .then(setDetails)
       .catch((err) => showNotification({ color: 'red', message: normalizeErrorString(err), autoClose: false }));
   }, [medplum]);

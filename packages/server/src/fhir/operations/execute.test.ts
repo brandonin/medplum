@@ -1,75 +1,138 @@
-import { InvokeCommand, LambdaClient, ListLayerVersionsCommand } from '@aws-sdk/client-lambda';
-import { ContentType } from '@medplum/core';
-import { Bot } from '@medplum/fhirtypes';
-import { AwsClientStub, mockClient } from 'aws-sdk-client-mock';
-import { randomUUID } from 'crypto';
+import { ContentType, Operator, allOk, badRequest, createReference, getReferenceString } from '@medplum/core';
+import {
+  AsyncJob,
+  AuditEvent,
+  Bot,
+  Parameters,
+  ParametersParameter,
+  Project,
+  ProjectMembership,
+} from '@medplum/fhirtypes';
 import express from 'express';
+import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { initApp, shutdownApp } from '../../app';
 import { registerNew } from '../../auth/register';
 import { getConfig, loadTestConfig } from '../../config';
-import { initTestAuth, withTestContext } from '../../test.setup';
+import { createTestProject, waitForAsyncJob, withTestContext } from '../../test.setup';
+import { getSystemRepo } from '../repo';
 import { getBinaryStorage } from '../storage';
-import { getLambdaFunctionName } from './execute';
-
-const app = express();
-let accessToken: string;
-let bot: Bot;
 
 describe('Execute', () => {
-  let mockLambdaClient: AwsClientStub<LambdaClient>;
+  let app: express.Express;
+  let project: Project;
+  let accessToken: string;
+  const bots = [] as Bot[];
 
-  beforeEach(() => {
-    mockLambdaClient = mockClient(LambdaClient);
-
-    mockLambdaClient.on(ListLayerVersionsCommand).resolves({
-      LayerVersions: [
-        {
-          LayerVersionArn: 'xyz',
-        },
-      ],
-    });
-
-    mockLambdaClient.on(InvokeCommand).callsFake(({ Payload }) => {
-      const decoder = new TextDecoder();
-      const event = JSON.parse(decoder.decode(Payload));
-      const output = JSON.stringify(event.input);
-      const encoder = new TextEncoder();
-
-      return {
-        LogResult: `U1RBUlQgUmVxdWVzdElkOiAxNDZmY2ZjZi1jMzJiLTQzZjUtODJhNi1lZTBmMzEzMmQ4NzMgVmVyc2lvbjogJExBVEVTVAoyMDIyLTA1LTMwVDE2OjEyOjIyLjY4NVoJMTQ2ZmNmY2YtYzMyYi00M2Y1LTgyYTYtZWUwZjMxMzJkODczCUlORk8gdGVzdApFTkQgUmVxdWVzdElkOiAxNDZmY2ZjZi1jMzJiLTQzZjUtODJhNi1lZTBmMzEzMmQ4NzMKUkVQT1JUIFJlcXVlc3RJZDogMTQ2ZmNmY2YtYzMyYi00M2Y1LTgyYTYtZWUwZjMxMzJkODcz`,
-        Payload: encoder.encode(output),
-      };
-    });
-  });
-
-  afterEach(() => {
-    mockLambdaClient.restore();
-  });
+  const botCodes = [
+    [
+      `
+export async function handler(medplum, event) {
+  console.log(JSON.stringify(event));
+  return event.input;
+}
+  `,
+      `
+exports.handler = async function (medplum, event) {
+  console.log(JSON.stringify(event));
+  return event.input;
+};
+`,
+    ],
+    [
+      `
+export async function handler(medplum, event) {
+  console.log('input', event.input);
+  if (event.input === 'input: true') {
+    return true;
+  } else if (event.input === 'input: false') {
+    return false;
+  } else {
+    throw new Error('Invalid boolean');
+  }
+}
+  `,
+      `
+exports.handler = async function (medplum, event) {
+  console.log('input', event.input);
+  if (event.input === 'input: true') {
+    return true;
+  } else if (event.input === 'input: false') {
+    return false;
+  } else {
+    throw new Error('Invalid boolean');
+  }
+};
+`,
+    ],
+    [
+      `
+export async function handler(medplum, event) {
+  return {
+    resourceType: 'Binary',
+    contentType: 'text/plain',
+    data: '${Buffer.from('Hello, world!').toString('base64')}'
+  };
+}
+  `,
+      `
+exports.handler = async function (medplum, event) {
+  return {
+    resourceType: 'Binary',
+    contentType: 'text/plain',
+    data: '${Buffer.from('Hello, world!').toString('base64')}'
+  };
+};
+`,
+    ],
+  ] as [string, string][];
 
   beforeAll(async () => {
+    app = express();
     const config = await loadTestConfig();
+    config.vmContextBotsEnabled = true;
     await initApp(app, config);
-    accessToken = await initTestAuth();
 
-    const res = await request(app)
-      .post(`/fhir/R4/Bot`)
-      .set('Content-Type', ContentType.FHIR_JSON)
-      .set('Authorization', 'Bearer ' + accessToken)
-      .send({
-        resourceType: 'Bot',
-        identifier: [{ system: 'https://example.com/bot', value: randomUUID() }],
-        name: 'Test Bot',
-        runtimeVersion: 'awslambda',
-        code: `
-          export async function handler(medplum, event) {
-            console.log('input', event.input);
-            return event.input;
-          }
-        `,
-      });
-    expect(res.status).toBe(201);
-    bot = res.body as Bot;
+    const testSetup = await createTestProject({
+      project: {
+        secret: [{ name: 'secret1', valueString: 'value1' }],
+        systemSecret: [{ name: 'secret2', valueString: 'value2' }],
+      },
+      withAccessToken: true,
+    });
+    project = testSetup.project;
+    accessToken = testSetup.accessToken;
+
+    for (let i = 0; i < botCodes.length; i++) {
+      const [esmCode, cjsCode] = botCodes[i];
+
+      const res1 = await request(app)
+        .post('/fhir/R4/Bot')
+        .set('Content-Type', ContentType.FHIR_JSON)
+        .set('Authorization', 'Bearer ' + accessToken)
+        .send({
+          resourceType: 'Bot',
+          identifier: [{ system: 'https://example.com/bot', value: randomUUID() }],
+          name: `Test Bot #${i + 1}`,
+          runtimeVersion: 'vmcontext',
+          code: esmCode,
+          system: i === 0,
+        });
+
+      expect(res1.status).toBe(201);
+      const bot = res1.body as Bot;
+
+      const res2 = await request(app)
+        .post(`/fhir/R4/Bot/${bot.id}/$deploy`)
+        .set('Content-Type', ContentType.FHIR_JSON)
+        .set('Authorization', 'Bearer ' + accessToken)
+        .send({
+          code: cjsCode,
+        });
+
+      expect(res2.status).toBe(200);
+      bots[i] = bot;
+    }
   });
 
   afterAll(async () => {
@@ -78,7 +141,7 @@ describe('Execute', () => {
 
   test('Submit plain text', async () => {
     const res = await request(app)
-      .post(`/fhir/R4/Bot/${bot.id}/$execute`)
+      .post(`/fhir/R4/Bot/${bots[0].id}/$execute`)
       .set('Content-Type', ContentType.TEXT)
       .set('Authorization', 'Bearer ' + accessToken)
       .send('input');
@@ -89,7 +152,7 @@ describe('Execute', () => {
 
   test('Submit FHIR with content type', async () => {
     const res = await request(app)
-      .post(`/fhir/R4/Bot/${bot.id}/$execute`)
+      .post(`/fhir/R4/Bot/${bots[0].id}/$execute`)
       .set('Content-Type', ContentType.FHIR_JSON)
       .set('Authorization', 'Bearer ' + accessToken)
       .send({
@@ -102,7 +165,7 @@ describe('Execute', () => {
 
   test('Submit FHIR without content type', async () => {
     const res = await request(app)
-      .post(`/fhir/R4/Bot/${bot.id}/$execute`)
+      .post(`/fhir/R4/Bot/${bots[0].id}/$execute`)
       .set('Authorization', 'Bearer ' + accessToken)
       .send({
         resourceType: 'Patient',
@@ -121,13 +184,13 @@ describe('Execute', () => {
       'MSA|AA|9B38584D|Everything was okay dokay!|';
 
     const res = await request(app)
-      .post(`/fhir/R4/Bot/${bot.id}/$execute`)
+      .post(`/fhir/R4/Bot/${bots[0].id}/$execute`)
       .set('Content-Type', ContentType.HL7_V2)
       .set('Authorization', 'Bearer ' + accessToken)
       .send(text);
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toBe('x-application/hl7-v2+er7; charset=utf-8');
-    expect(writeFileSpy).toBeCalledTimes(1);
+    expect(writeFileSpy).toHaveBeenCalledTimes(1);
 
     const args = writeFileSpy.mock.calls[0];
     expect(args.length).toBe(3);
@@ -135,7 +198,7 @@ describe('Execute', () => {
     expect(args[1]).toBe(ContentType.JSON);
 
     const row = JSON.parse(args[2] as string);
-    expect(row.botId).toEqual(bot.id);
+    expect(row.botId).toEqual(bots[0].id);
     expect(row.hl7MessageType).toEqual('ACK');
     expect(row.hl7Version).toEqual('2.6.1');
   });
@@ -143,7 +206,7 @@ describe('Execute', () => {
   test('Execute without code', async () => {
     // Create a bot with empty code
     const res1 = await request(app)
-      .post(`/fhir/R4/Bot`)
+      .post('/fhir/R4/Bot')
       .set('Content-Type', ContentType.FHIR_JSON)
       .set('Authorization', 'Bearer ' + accessToken)
       .send({
@@ -165,7 +228,7 @@ describe('Execute', () => {
 
   test('Unsupported runtime version', async () => {
     const res1 = await request(app)
-      .post(`/fhir/R4/Bot`)
+      .post('/fhir/R4/Bot')
       .set('Content-Type', ContentType.FHIR_JSON)
       .set('Authorization', 'Bearer ' + accessToken)
       .send({
@@ -237,68 +300,7 @@ describe('Execute', () => {
     expect(res3.body.issue[0].details.text).toEqual('Bots not enabled');
   });
 
-  test('Get function name', async () => {
-    const config = getConfig();
-    const normalBot: Bot = { resourceType: 'Bot', id: '123' };
-    const customBot: Bot = {
-      resourceType: 'Bot',
-      id: '456',
-      identifier: [{ system: 'https://medplum.com/bot-external-function-id', value: 'custom' }],
-    };
-
-    expect(getLambdaFunctionName(normalBot)).toEqual('medplum-bot-lambda-123');
-    expect(getLambdaFunctionName(customBot)).toEqual('medplum-bot-lambda-456');
-
-    // Temporarily enable custom bot support
-    config.botCustomFunctionsEnabled = true;
-    expect(getLambdaFunctionName(normalBot)).toEqual('medplum-bot-lambda-123');
-    expect(getLambdaFunctionName(customBot)).toEqual('custom');
-    config.botCustomFunctionsEnabled = false;
-  });
-
-  test('Execute by identifier', async () => {
-    const res = await request(app)
-      .post(`/fhir/R4/Bot/$execute?identifier=${bot.identifier?.[0]?.system}|${bot.identifier?.[0]?.value}`)
-      .set('Content-Type', ContentType.TEXT)
-      .set('Authorization', 'Bearer ' + accessToken)
-      .send('input');
-    expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toBe('text/plain; charset=utf-8');
-    expect(res.text).toEqual('input');
-  });
-
-  test('Missing parameters', async () => {
-    const res = await request(app)
-      .post(`/fhir/R4/Bot/$execute`)
-      .set('Content-Type', ContentType.TEXT)
-      .set('Authorization', 'Bearer ' + accessToken)
-      .send('input');
-    expect(res.status).toBe(400);
-    expect(res.body.issue[0].details.text).toEqual('Must specify bot ID or identifier.');
-  });
-
-  test('GET request with query params', async () => {
-    const res = await request(app)
-      .get(`/fhir/R4/Bot/${bot.id}/$execute?foo=bar`)
-      .set('Authorization', 'Bearer ' + accessToken);
-    expect(res.status).toBe(200);
-    expect(res.body.foo).toBe('bar');
-  });
-
-  test('POST request with extra path', async () => {
-    const res = await request(app)
-      .post(`/fhir/R4/Bot/${bot.id}/$execute/RequestGroup`)
-      .set('Authorization', 'Bearer ' + accessToken)
-      .set('Content-Type', ContentType.FHIR_JSON)
-      .send({ foo: 'bar' });
-    expect(res.status).toBe(200);
-    expect(res.body.foo).toBe('bar');
-  });
-
   test('VM context bot success', async () => {
-    // Temporarily enable VM context bots
-    getConfig().vmContextBotsEnabled = true;
-
     // Create a bot with empty code
     const res1 = await request(app)
       .post(`/fhir/R4/Bot`)
@@ -354,8 +356,11 @@ describe('Execute', () => {
       .send({
         code: `
           const { getReferenceString } = require("@medplum/core");
-          exports.handler = async function () {
-            return { msg: getReferenceString({ resourceType: 'Patient', id: '123' }) }
+          exports.handler = async function (_medplum, event) {
+            return {
+              patient: getReferenceString({ resourceType: 'Patient', id: '123' }),
+              bot: getReferenceString(event.bot),
+            }
           };
       `,
       });
@@ -368,7 +373,10 @@ describe('Execute', () => {
       .set('Authorization', 'Bearer ' + accessToken)
       .send({});
     expect(res6.status).toBe(200);
-    expect(res6.body).toMatchObject({ msg: 'Patient/123' });
+    expect(res6.body).toMatchObject({
+      patient: 'Patient/123',
+      bot: 'Bot/' + bot.id,
+    });
 
     // Disable VM context bots
     getConfig().vmContextBotsEnabled = false;
@@ -382,12 +390,11 @@ describe('Execute', () => {
       .send({});
     expect(res7.status).toBe(400);
     expect(res7.body.issue[0].details.text).toEqual('VM Context bots not enabled on this server');
+
+    getConfig().vmContextBotsEnabled = true;
   });
 
   test('Handle number response', async () => {
-    // Temporarily enable VM context bots
-    getConfig().vmContextBotsEnabled = true;
-
     // Create a bot with empty code
     const res1 = await request(app)
       .post(`/fhir/R4/Bot`)
@@ -423,8 +430,214 @@ describe('Execute', () => {
       .send({});
     expect(res6.status).toBe(200);
     expect(res6.body).toEqual(42);
+  });
 
-    // Disable VM context bots
-    getConfig().vmContextBotsEnabled = false;
+  test('OperationOutcome response', async () => {
+    const res = await request(app)
+      .post(`/fhir/R4/Bot/${bots[0].id}/$execute`)
+      .set('Content-Type', ContentType.FHIR_JSON)
+      .set('Authorization', 'Bearer ' + accessToken)
+      .send(allOk);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/fhir+json; charset=utf-8');
+    expect(res.body).toMatchObject(allOk);
+  });
+
+  test('Binary response', async () => {
+    const res = await request(app)
+      .get(`/fhir/R4/Bot/${bots[2].id}/$execute`)
+      .set('Authorization', 'Bearer ' + accessToken);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('text/plain; charset=utf-8');
+    expect(res.text).toEqual('Hello, world!');
+  });
+
+  test('Bot secrets from linked project', async () => {
+    // Use the first test bot for everything
+    const bot = bots[0];
+
+    // Create a new project that links to the first project
+    const testSetup2 = await createTestProject({
+      withAccessToken: true,
+      project: {
+        name: 'Project 2',
+        secret: [{ name: 'secret3', valueString: 'value3' }],
+        systemSecret: [{ name: 'secret4', valueString: 'value4' }],
+        link: [{ project: createReference(project) }],
+      },
+      membership: {
+        admin: true,
+      },
+    });
+    const project2 = testSetup2.project;
+    const accessToken2 = testSetup2.accessToken;
+
+    // Create a project membership for the existing bot in the new project
+    const systemRepo = getSystemRepo();
+    await systemRepo.createResource<ProjectMembership>({
+      resourceType: 'ProjectMembership',
+      project: createReference(project2),
+      user: createReference(bot),
+      profile: createReference(bot),
+    });
+
+    // Confirm that we can read our own project
+    const res1 = await request(app)
+      .get(`/fhir/R4/Project/${project2.id}`)
+      .set('Authorization', 'Bearer ' + accessToken2);
+    expect(res1.status).toBe(200);
+    expect(res1.body.resourceType).toBe('Project');
+    expect(res1.body.id).toBe(project2.id);
+
+    // Confirm that we can read the linked project
+    const res2 = await request(app)
+      .get(`/fhir/R4/Project/${project.id}`)
+      .set('Authorization', 'Bearer ' + accessToken2);
+    expect(res2.status).toBe(200);
+    expect(res2.body.resourceType).toBe('Project');
+    expect(res2.body.id).toBe(project.id);
+
+    // Confirm that we can read the bot in the new project
+    const res3 = await request(app)
+      .get(`/fhir/R4/Bot/${bot.id}`)
+      .set('Authorization', 'Bearer ' + accessToken2);
+    expect(res3.status).toBe(200);
+    expect(res3.body.resourceType).toBe('Bot');
+    expect(res3.body.id).toBe(bot.id);
+
+    // Now execute the bot in the new project
+    const res = await request(app)
+      .post(`/fhir/R4/Bot/${bot.id}/$execute`)
+      .set('Content-Type', ContentType.TEXT)
+      .set('Authorization', 'Bearer ' + accessToken2)
+      .send('input');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('text/plain; charset=utf-8');
+    expect(res.text).toEqual('input');
+
+    // Get the audit event
+    const auditEvent = await systemRepo.searchOne<AuditEvent>({
+      resourceType: 'AuditEvent',
+      filters: [
+        { code: '_project', operator: Operator.EQUALS, value: project2.id as string },
+        { code: 'entity', operator: Operator.EQUALS, value: getReferenceString(bot) },
+      ],
+    });
+    expect(auditEvent).toBeDefined();
+    expect(auditEvent?.meta?.project).toBe(project2.id);
+
+    const output = JSON.parse(auditEvent?.outcomeDesc as string);
+    expect(output.secrets).toMatchObject({
+      secret1: { valueString: 'value1' },
+      secret2: { valueString: 'value2' },
+      secret3: { valueString: 'value3' },
+      secret4: { valueString: 'value4' },
+    });
+  });
+
+  describe('Prefer: respond-async', () => {
+    test('Plain text -- Prefer: respond-async', async () => {
+      const res = await request(app)
+        .post(`/fhir/R4/Bot/${bots[0].id}/$execute`)
+        .set('Content-Type', ContentType.TEXT)
+        .set('Authorization', 'Bearer ' + accessToken)
+        .set('Prefer', 'respond-async')
+        .send('input');
+      expect(res.status).toBe(202);
+
+      const job = await waitForAsyncJob(res.headers['content-location'], app, accessToken);
+      expect(job).toMatchObject<Partial<AsyncJob>>({
+        resourceType: 'AsyncJob',
+        status: 'completed',
+        request: expect.stringContaining('$execute'),
+        output: expect.objectContaining<Parameters>({
+          resourceType: 'Parameters',
+          parameter: expect.arrayContaining<ParametersParameter>([
+            expect.objectContaining<ParametersParameter>({
+              name: 'responseBody',
+              valueString: 'input',
+            }),
+          ]),
+        }),
+      });
+    });
+
+    test('JSON -- Prefer: respond-async', async () => {
+      const res = await request(app)
+        .post(`/fhir/R4/Bot/${bots[0].id}/$execute`)
+        .set('Content-Type', ContentType.JSON)
+        .set('Authorization', 'Bearer ' + accessToken)
+        .set('Prefer', 'respond-async')
+        .send({ hello: 'medplum' });
+      expect(res.status).toBe(202);
+
+      const job = await waitForAsyncJob(res.headers['content-location'], app, accessToken);
+      expect(job).toMatchObject<Partial<AsyncJob>>({
+        resourceType: 'AsyncJob',
+        status: 'completed',
+        request: expect.stringContaining('$execute'),
+        output: expect.objectContaining<Parameters>({
+          resourceType: 'Parameters',
+          parameter: expect.arrayContaining<ParametersParameter>([
+            expect.objectContaining<ParametersParameter>({
+              name: 'responseBody',
+              valueString: JSON.stringify({ hello: 'medplum' }),
+            }),
+          ]),
+        }),
+      });
+    });
+
+    test('Boolean -- Prefer: respond-async', async () => {
+      const res = await request(app)
+        .post(`/fhir/R4/Bot/${bots[1].id}/$execute`)
+        .set('Content-Type', ContentType.TEXT)
+        .set('Authorization', 'Bearer ' + accessToken)
+        .set('Prefer', 'respond-async')
+        .send('input: true');
+      expect(res.status).toBe(202);
+
+      const job = await waitForAsyncJob(res.headers['content-location'], app, accessToken);
+      expect(job).toMatchObject<Partial<AsyncJob>>({
+        resourceType: 'AsyncJob',
+        status: 'completed',
+        request: expect.stringContaining('$execute'),
+        output: expect.objectContaining<Parameters>({
+          resourceType: 'Parameters',
+          parameter: expect.arrayContaining<ParametersParameter>([
+            expect.objectContaining<ParametersParameter>({
+              name: 'responseBody',
+              valueBoolean: true,
+            }),
+          ]),
+        }),
+      });
+    });
+
+    test('No Bot ID -- Prefer: respond-async', async () => {
+      const res = await request(app)
+        .post('/fhir/R4/Bot/$execute')
+        .set('Content-Type', ContentType.TEXT)
+        .set('Authorization', 'Bearer ' + accessToken)
+        .set('Prefer', 'respond-async')
+        .send('input');
+      expect(res.status).toBe(202);
+
+      const job = await waitForAsyncJob(res.headers['content-location'], app, accessToken);
+      expect(job).toMatchObject<Partial<AsyncJob>>({
+        resourceType: 'AsyncJob',
+        status: 'error',
+        request: expect.stringContaining('$execute'),
+        output: expect.objectContaining<Parameters>({
+          resourceType: 'Parameters',
+          parameter: expect.arrayContaining<ParametersParameter>([
+            expect.objectContaining<ParametersParameter>({
+              name: 'outcome',
+              resource: badRequest('Must specify bot ID or identifier.'),
+            }),
+          ]),
+        }),
+      });
+    });
   });
 });

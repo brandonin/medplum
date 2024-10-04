@@ -12,7 +12,7 @@ import {
 import { formatHumanName } from './format';
 import { SearchParameterDetails } from './search/details';
 import { InternalSchemaElement, InternalTypeSchema, getAllDataTypes, tryGetDataType } from './typeschema/types';
-import { capitalize, createReference } from './utils';
+import { capitalize, createReference, flatMapFilter } from './utils';
 
 export type TypeName<T> = T extends string
   ? 'string'
@@ -94,7 +94,7 @@ export const PropertyType = {
   uri: 'uri',
   url: 'url',
   uuid: 'uuid',
-};
+} as const;
 
 /**
  * An IndexedStructureDefinition is a lookup-optimized version of a StructureDefinition.
@@ -152,6 +152,74 @@ export function indexSearchParameterBundle(bundle: Bundle<SearchParameter>): voi
   }
 }
 
+export function indexDefaultSearchParameters(bundle: Bundle): void {
+  const sds =
+    flatMapFilter(bundle.entry, (e) => (e.resource?.resourceType === 'StructureDefinition' ? e.resource : undefined)) ??
+    [];
+  for (const sd of sds) {
+    getOrInitTypeSchema(sd.type);
+  }
+}
+
+function getOrInitTypeSchema(resourceType: string): TypeInfo {
+  let typeSchema = globalSchema.types[resourceType];
+  if (!typeSchema) {
+    typeSchema = {
+      searchParamsDetails: {},
+    } as TypeInfo;
+    globalSchema.types[resourceType] = typeSchema;
+  }
+
+  if (!typeSchema.searchParams) {
+    typeSchema.searchParams = {
+      _id: {
+        base: [resourceType],
+        code: '_id',
+        type: 'token',
+        expression: resourceType + '.id',
+      } as SearchParameter,
+      _lastUpdated: {
+        base: [resourceType],
+        code: '_lastUpdated',
+        type: 'date',
+        expression: resourceType + '.meta.lastUpdated',
+      } as SearchParameter,
+      _compartment: {
+        base: [resourceType],
+        code: '_compartment',
+        type: 'reference',
+        expression: resourceType + '.meta.compartment',
+      } as SearchParameter,
+      _profile: {
+        base: [resourceType],
+        code: '_profile',
+        type: 'uri',
+        expression: resourceType + '.meta.profile',
+      } as SearchParameter,
+      _security: {
+        base: [resourceType],
+        code: '_security',
+        type: 'token',
+        expression: resourceType + '.meta.security',
+      } as SearchParameter,
+      _source: {
+        base: [resourceType],
+        code: '_source',
+        type: 'uri',
+        expression: resourceType + '.meta.source',
+      } as SearchParameter,
+      _tag: {
+        base: [resourceType],
+        code: '_tag',
+        type: 'token',
+        expression: resourceType + '.meta.tag',
+      } as SearchParameter,
+    };
+  }
+
+  return typeSchema;
+}
+
 /**
  * Indexes a SearchParameter resource for fast lookup.
  * Indexes by SearchParameter.code, which is the query string parameter name.
@@ -160,59 +228,10 @@ export function indexSearchParameterBundle(bundle: Bundle<SearchParameter>): voi
  */
 export function indexSearchParameter(searchParam: SearchParameter): void {
   for (const resourceType of searchParam.base ?? []) {
-    let typeSchema = globalSchema.types[resourceType];
-    if (!typeSchema) {
-      typeSchema = {
-        searchParamsDetails: {},
-      } as TypeInfo;
-      globalSchema.types[resourceType] = typeSchema;
-    }
+    const typeSchema = getOrInitTypeSchema(resourceType);
 
     if (!typeSchema.searchParams) {
-      typeSchema.searchParams = {
-        _id: {
-          base: [resourceType],
-          code: '_id',
-          type: 'token',
-          expression: resourceType + '.id',
-        } as SearchParameter,
-        _lastUpdated: {
-          base: [resourceType],
-          code: '_lastUpdated',
-          type: 'date',
-          expression: resourceType + '.meta.lastUpdated',
-        } as SearchParameter,
-        _compartment: {
-          base: [resourceType],
-          code: '_compartment',
-          type: 'reference',
-          expression: resourceType + '.meta.compartment',
-        } as SearchParameter,
-        _profile: {
-          base: [resourceType],
-          code: '_profile',
-          type: 'uri',
-          expression: resourceType + '.meta.profile',
-        } as SearchParameter,
-        _security: {
-          base: [resourceType],
-          code: '_security',
-          type: 'token',
-          expression: resourceType + '.meta.security',
-        } as SearchParameter,
-        _source: {
-          base: [resourceType],
-          code: '_source',
-          type: 'uri',
-          expression: resourceType + '.meta.source',
-        } as SearchParameter,
-        _tag: {
-          base: [resourceType],
-          code: '_tag',
-          type: 'token',
-          expression: resourceType + '.meta.tag',
-        } as SearchParameter,
-      };
+      typeSchema.searchParams = {};
     }
 
     typeSchema.searchParams[searchParam.code as string] = searchParam;
@@ -349,10 +368,15 @@ function capitalizeDisplayWord(word: string): string {
  * Returns an element definition by type and property name.
  * @param typeName - The type name.
  * @param propertyName - The property name.
+ * @param profileUrl - (optional) The URL of the current resource profile
  * @returns The element definition if found.
  */
-export function getElementDefinition(typeName: string, propertyName: string): InternalSchemaElement | undefined {
-  const typeSchema = tryGetDataType(typeName);
+export function getElementDefinition(
+  typeName: string,
+  propertyName: string,
+  profileUrl?: string
+): InternalSchemaElement | undefined {
+  const typeSchema = tryGetDataType(typeName, profileUrl);
   if (!typeSchema) {
     return undefined;
   }
@@ -408,7 +432,7 @@ export function isResource(value: unknown): value is Resource {
  * @returns True if the input is of type 'object' and contains property 'reference'
  */
 export function isReference(value: unknown): value is Reference & { reference: string } {
-  return !!(value && typeof value === 'object' && 'reference' in value);
+  return !!(value && typeof value === 'object' && 'reference' in value && typeof value.reference === 'string');
 }
 
 /**

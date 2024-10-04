@@ -1,6 +1,6 @@
 import { Accordion, Center, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { FhircastMessagePayload, SubscriptionRequest } from '@medplum/core';
-import { Document, useMedplum } from '@medplum/react';
+import { Document, useMedplum, usePrevious } from '@medplum/react';
 import { IconMessage2Exclamation } from '@tabler/icons-react';
 import { useCallback, useEffect, useState } from 'react';
 import { useClientId } from '../hooks';
@@ -8,14 +8,14 @@ import ConnectionHandler from './ConnectionHandler';
 import TopicLoader from './TopicLoader';
 
 type FhircastMessageDisplayProps = {
-  eventNo: number;
-  message: FhircastMessagePayload<'Patient-open'>;
+  readonly eventNo: number;
+  readonly message: FhircastMessagePayload<'Patient-open'>;
 };
 
 function FhircastMessageLabel(props: FhircastMessageDisplayProps): JSX.Element {
   const { message, eventNo } = props;
   return (
-    <Group noWrap={true}>
+    <Group wrap="nowrap">
       <IconMessage2Exclamation />
       <div>
         <Text fw={700} c="dimmed">
@@ -76,11 +76,15 @@ export default function Subscriber(): JSX.Element {
   const [subRequest, setSubRequest] = useState<SubscriptionRequest>();
   const [fhircastMessages, setFhircastMessages] = useState<FhircastMessagePayload<'Patient-open'>[]>([]);
   const [eventCount, setEventCount] = useState(0);
+  const prevTopic = usePrevious(topic);
 
   const clientId = useClientId();
 
   useEffect(() => {
-    if (topic) {
+    if (prevTopic === topic) {
+      return;
+    }
+    if (topic && !subRequest) {
       // sub
       medplum
         .fhircastSubscribe(topic, ['Patient-open'])
@@ -88,11 +92,16 @@ export default function Subscriber(): JSX.Element {
           setSubRequest(subRequest);
         })
         .catch((err) => console.error(err));
-    } else {
+    } else if (!topic && subRequest) {
       // unset subRequest (closing WS connection) when the topic is unset (cannot reuse websocket anyways since endpoint contains a slug)
-      setSubRequest(undefined);
+      medplum
+        .fhircastUnsubscribe(subRequest)
+        .then(() => {
+          setSubRequest(undefined);
+        })
+        .catch(console.error);
     }
-  }, [topic, medplum]);
+  }, [prevTopic, topic, subRequest, medplum]);
 
   const handleFhircastMessage = useCallback((fhircastMessage: FhircastMessagePayload) => {
     if (fhircastMessage.event['hub.event'] !== 'Patient-open') {
@@ -120,7 +129,7 @@ export default function Subscriber(): JSX.Element {
         onMessage={handleFhircastMessage}
         onStatusChange={(status) => setStatus(status)}
       />
-      <Title align="center" fz={36}>
+      <Title ta="center" fz={36}>
         Subscriber
       </Title>
       <Center>
@@ -137,7 +146,7 @@ export default function Subscriber(): JSX.Element {
         <>
           <Divider />
           <Stack pt={20}>
-            <Title align="center" order={2}>
+            <Title ta="center" order={2}>
               Events
             </Title>
             <Accordion title="Events">

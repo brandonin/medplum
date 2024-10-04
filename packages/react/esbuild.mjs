@@ -16,7 +16,9 @@ const options = {
   resolveExtensions: ['.js', '.ts', '.tsx'],
   target: 'es2021',
   tsconfig: 'tsconfig.json',
-  minify: true,
+  minifyWhitespace: true,
+  minifyIdentifiers: false,
+  minifySyntax: true,
   sourcemap: true,
   define: {
     'import.meta.env.NODE_ENV': '"production"',
@@ -45,7 +47,10 @@ esbuild
     outfile: './dist/cjs/index.cjs',
   })
   .then(() => writeFileSync('./dist/cjs/package.json', '{"type": "commonjs"}'))
-  .catch(console.error);
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 
 esbuild
   .build({
@@ -54,4 +59,7 @@ esbuild
     outfile: './dist/esm/index.mjs',
   })
   .then(() => writeFileSync('./dist/esm/package.json', '{"type": "module"}'))
-  .catch(console.error);
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });

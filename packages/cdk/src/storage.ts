@@ -13,7 +13,7 @@ import {
 import { ServerlessClamscan } from 'cdk-serverless-clamscan';
 import { Construct } from 'constructs';
 import { grantBucketAccessToOriginAccessIdentity } from './oai';
-import { awsManagedRules } from './waf';
+import { buildWafConfig } from './waf';
 
 /**
  * Binary storage bucket and CloudFront distribution.
@@ -81,7 +81,7 @@ export class Storage extends Construct {
         customHeadersBehavior: {
           customHeaders: [
             {
-              header: 'Permission-Policy',
+              header: 'Permissions-Policy',
               value:
                 'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), interest-cohort=()',
               override: true,
@@ -90,8 +90,7 @@ export class Storage extends Construct {
         },
         securityHeadersBehavior: {
           contentSecurityPolicy: {
-            contentSecurityPolicy:
-              "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors *.medplum.com;",
+            contentSecurityPolicy: "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors *;",
             override: true,
           },
           contentTypeOptions: { override: true },
@@ -118,17 +117,11 @@ export class Storage extends Construct {
       });
 
       // WAF
-      this.waf = new wafv2.CfnWebACL(this, 'StorageWAF', {
-        defaultAction: { allow: {} },
-        scope: 'CLOUDFRONT',
-        name: `${config.stackName}-StorageWAF`,
-        rules: awsManagedRules,
-        visibilityConfig: {
-          cloudWatchMetricsEnabled: true,
-          metricName: `${config.stackName}-StorageWAF-Metric`,
-          sampledRequestsEnabled: false,
-        },
-      });
+      this.waf = new wafv2.CfnWebACL(
+        this,
+        'StorageWAF',
+        buildWafConfig(`${config.stackName}-StorageWAF`, 'CLOUDFRONT', config.storageWafIpSetArn)
+      );
 
       // Origin access identity
       this.originAccessIdentity = new cloudfront.OriginAccessIdentity(this, 'OriginAccessIdentity', {});

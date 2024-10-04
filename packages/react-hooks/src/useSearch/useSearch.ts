@@ -60,7 +60,7 @@ function useSearchImpl<K extends ResourceType, ReturnType>(
 ): [ReturnType | undefined, boolean, OperationOutcome | undefined] {
   const medplum = useMedplum();
   const [searchKey, setSearchKey] = useState<string>();
-  const [loading, setLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(true);
   const [result, setResult] = useState<ReturnType>();
   const [outcome, setOutcome] = useState<OperationOutcome>();
 
@@ -80,7 +80,7 @@ function useSearchImpl<K extends ResourceType, ReturnType>(
           setOutcome(normalizeOperationOutcome(err));
         });
     }
-  }, [medplum, searchFn, resourceType, query, searchKey, setResult]);
+  }, [medplum, searchFn, resourceType, query, searchKey]);
 
   return [result, loading, outcome];
 }

@@ -1,8 +1,8 @@
+import { loadDataType } from '@medplum/core';
 import { FishPatientResources, MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react-hooks';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '../test-utils/render';
 import { ReferenceInput, ReferenceInputProps } from './ReferenceInput';
-import { indexStructureDefinitionBundle } from '@medplum/core';
 
 const medplum = new MockClient();
 
@@ -185,7 +185,7 @@ describe('ReferenceInput', () => {
     const blinky = FishPatientResources.getBlinkyTheFish();
     await medplum.createResource(blinky);
 
-    indexStructureDefinitionBundle([FishPatientProfileSD], FishPatientProfileSD.url);
+    loadDataType(FishPatientProfileSD);
     setup({
       name: 'foo',
       targetTypes: [FishPatientProfileSD.url, 'Patient'],
@@ -196,7 +196,7 @@ describe('ReferenceInput', () => {
     expect(screen.getByDisplayValue(FishPatientProfileSD.url)).toBeInTheDocument();
 
     // wait for the profile to be fetched
-    await waitFor(() => screen.getByText('Fish Patient'));
+    expect(await screen.findByText('Fish Patient')).toBeInTheDocument();
 
     // After the profile is fetched, the URl is replaced by the title
     expect(screen.queryByDisplayValue(FishPatientProfileSD.url)).toBeNull();

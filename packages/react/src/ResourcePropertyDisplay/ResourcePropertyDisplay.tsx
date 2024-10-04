@@ -24,15 +24,23 @@ import { RangeDisplay } from '../RangeDisplay/RangeDisplay';
 import { RatioDisplay } from '../RatioDisplay/RatioDisplay';
 import { ReferenceDisplay } from '../ReferenceDisplay/ReferenceDisplay';
 import { ResourceArrayDisplay } from '../ResourceArrayDisplay/ResourceArrayDisplay';
+import { ExtensionDisplay } from '../ExtensionDisplay/ExtensionDisplay';
+import { ElementDefinitionType } from '@medplum/fhirtypes';
 
 export interface ResourcePropertyDisplayProps {
-  property?: InternalSchemaElement;
-  propertyType: string;
-  value: any;
-  arrayElement?: boolean;
-  maxWidth?: number;
-  ignoreMissingValues?: boolean;
-  link?: boolean;
+  readonly property?: InternalSchemaElement;
+  /** The path identifies the element and is expressed as a "."-separated list of ancestor elements, beginning with the name of the resource or extension. */
+  readonly path?: string;
+  readonly propertyType: string;
+  readonly value: any;
+  readonly arrayElement?: boolean;
+  readonly maxWidth?: number;
+  readonly ignoreMissingValues?: boolean;
+  readonly link?: boolean;
+  /** (Optional) The `ElemendDefinitionType` to display the property against. Used when displaying extensions.  */
+  readonly elementDefinitionType?: ElementDefinitionType;
+  /** (Optional) If true and `property` is an array, output is wrapped with a DescriptionListEntry */
+  readonly includeArrayDescriptionListEntry?: boolean;
 }
 
 /**
@@ -40,19 +48,19 @@ export interface ResourcePropertyDisplayProps {
  * @param props - The ResourcePropertyDisplay React props.
  * @returns The ResourcePropertyDisplay React node.
  */
-export function ResourcePropertyDisplay(props: ResourcePropertyDisplayProps): JSX.Element {
+export function ResourcePropertyDisplay(props: ResourcePropertyDisplayProps): JSX.Element | null {
   const { property, propertyType, value } = props;
 
   const isIdProperty = property?.path?.endsWith('.id');
   if (isIdProperty) {
     return (
-      <Box component="div" sx={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+      <Box component="div" style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
         {value}
         {!isEmpty(value) && (
           <CopyButton value={value} timeout={2000}>
             {({ copied, copy }) => (
               <Tooltip label={copied ? 'Copied' : 'Copy'} withArrow position="right">
-                <ActionIcon color={copied ? 'teal' : 'gray'} onClick={copy}>
+                <ActionIcon variant="subtle" color={copied ? 'teal' : 'gray'} onClick={copy}>
                   {copied ? <IconCheck size="1rem" /> : <IconCopy size="1rem" />}
                 </ActionIcon>
               </Tooltip>
@@ -63,14 +71,25 @@ export function ResourcePropertyDisplay(props: ResourcePropertyDisplayProps): JS
     );
   }
 
-  if (property?.max && property.max > 1 && !props.arrayElement) {
+  if (property && (property.isArray || property.max > 1) && !props.arrayElement) {
     if (propertyType === PropertyType.Attachment) {
-      return <AttachmentArrayDisplay values={value} maxWidth={props.maxWidth} />;
+      return (
+        <AttachmentArrayDisplay
+          values={value}
+          maxWidth={props.maxWidth}
+          includeDescriptionListEntry={props.includeArrayDescriptionListEntry}
+          property={property}
+          path={props.path}
+        />
+      );
     }
     return (
       <ResourceArrayDisplay
+        path={props.path}
         property={property}
+        propertyType={propertyType}
         values={value}
+        includeDescriptionListEntry={props.includeArrayDescriptionListEntry}
         ignoreMissingValues={props.ignoreMissingValues}
         link={props.link}
       />
@@ -135,19 +154,40 @@ export function ResourcePropertyDisplay(props: ResourcePropertyDisplayProps): JS
       return <>{formatTiming(value)}</>;
     case PropertyType.Dosage:
     case PropertyType.UsageContext:
+      if (!props.path) {
+        throw Error(`Displaying property of type ${props.propertyType} requires path`);
+      }
       return (
         <BackboneElementDisplay
+          path={props.path}
           value={{ type: propertyType, value }}
           compact={true}
           ignoreMissingValues={props.ignoreMissingValues}
+        />
+      );
+    case PropertyType.Extension:
+      if (!props.path) {
+        throw Error(`Displaying property of type ${props.propertyType} requires path`);
+      }
+      return (
+        <ExtensionDisplay
+          path={props.path}
+          value={value}
+          compact={true}
+          ignoreMissingValues={props.ignoreMissingValues}
+          elementDefinitionType={props.elementDefinitionType}
         />
       );
     default:
       if (!property) {
         throw Error(`Displaying property of type ${props.propertyType} requires element schema`);
       }
+      if (!props.path) {
+        throw Error(`Displaying property of type ${props.propertyType} requires path`);
+      }
       return (
         <BackboneElementDisplay
+          path={props.path}
           value={{ type: property.type[0].code, value }}
           compact={true}
           ignoreMissingValues={props.ignoreMissingValues}

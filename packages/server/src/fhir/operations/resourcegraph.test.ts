@@ -4,6 +4,7 @@ import {
   Bundle,
   DiagnosticReport,
   GraphDefinition,
+  GraphDefinitionLink,
   Observation,
   ObservationDefinition,
   Organization,
@@ -28,7 +29,7 @@ describe('Resource $graph', () => {
   beforeAll(async () => {
     const config = await loadTestConfig();
     await initApp(app, config);
-    defaultAccessToken = await initTestAuth({ strictMode: false });
+    defaultAccessToken = await initTestAuth({ project: { strictMode: false } });
   });
 
   afterAll(async () => {
@@ -107,7 +108,7 @@ describe('Resource $graph', () => {
         link: [{ path: 'PlanDefinition.action.definition', target: [{ type: 'Questionnaire' }] }],
       });
 
-      await getResourceGraph({ resourceType: 'PlanDefinition', id: randomUUID() }, graphName, 404);
+      await getResourceGraph({ resourceType: 'PlanDefinition', id: randomUUID() } as PlanDefinition, graphName, 404);
     });
 
     test('Missing Target', async () => {
@@ -149,7 +150,7 @@ describe('Resource $graph', () => {
         link: [
           {
             target: [{ id: 'foo' }],
-          },
+          } as GraphDefinitionLink,
         ],
       });
 
@@ -174,7 +175,7 @@ describe('Resource $graph', () => {
             target: [{ type: 'Practitioner' }],
           },
         ],
-      });
+      } as GraphDefinition);
 
       const outcome = await getResourceGraph(patient, graphName, 400);
       expect(normalizeErrorString(outcome)).toContain('Missing or incorrect `start` type');

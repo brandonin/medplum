@@ -1,4 +1,4 @@
-import { ActionIcon, Button, createStyles, Divider, Group, NativeSelect, Stack, Text, TextInput } from '@mantine/core';
+import { ActionIcon, Button, Divider, Group, NativeSelect, Stack, Text, TextInput } from '@mantine/core';
 import { formatRange, getCodeBySystem } from '@medplum/core';
 import { CodeableConcept, ObservationDefinition, ObservationDefinitionQualifiedInterval } from '@medplum/fhirtypes';
 import { IconCircleMinus, IconCirclePlus } from '@tabler/icons-react';
@@ -7,24 +7,14 @@ import { Container } from '../Container/Container';
 import { Form } from '../Form/Form';
 import { RangeInput } from '../RangeInput/RangeInput';
 import { killEvent } from '../utils/dom';
-
-const useStyles = createStyles((theme) => ({
-  section: {
-    position: 'relative',
-    margin: '4px 4px 8px 0',
-    padding: '6px 12px 16px 6px',
-    border: `1.5px solid ${theme.colors.gray[3]}`,
-    borderRadius: theme.radius.sm,
-    transition: 'all 0.1s',
-  },
-}));
+import classes from './ReferenceRangeEditor.module.css';
 
 // Properties of qualified intervals used for grouping
 const intervalFilters = ['gender', 'age', 'gestationalAge', 'context', 'appliesTo', 'category'] as const;
 
 export interface ReferenceRangeEditorProps {
-  definition: ObservationDefinition;
-  onSubmit: (result: ObservationDefinition) => void;
+  readonly definition: ObservationDefinition;
+  readonly onSubmit: (result: ObservationDefinition) => void;
 }
 
 // Helper type that groups of qualified intervals by equal filter criteria
@@ -35,7 +25,10 @@ export type IntervalGroup = {
 };
 
 const defaultProps: ReferenceRangeEditorProps = {
-  definition: { resourceType: 'ObservationDefinition' },
+  definition: {
+    resourceType: 'ObservationDefinition',
+    code: { text: '' },
+  },
   onSubmit: () => {
     return undefined;
   },
@@ -71,6 +64,7 @@ export function ReferenceRangeEditor(props: ReferenceRangeEditorProps): JSX.Elem
       </Stack>
       <ActionIcon
         title="Add Group"
+        variant="subtle"
         size="sm"
         onClick={(e: MouseEvent) => {
           killEvent(e);
@@ -81,7 +75,7 @@ export function ReferenceRangeEditor(props: ReferenceRangeEditorProps): JSX.Elem
         <IconCirclePlus />
       </ActionIcon>
 
-      <Group position="right">
+      <Group justify="flex-end">
         <Button type="submit">Save</Button>
       </Group>
     </Form>
@@ -165,27 +159,27 @@ export function ReferenceRangeEditor(props: ReferenceRangeEditorProps): JSX.Elem
  * that have the same filter values
  */
 export interface ReferenceRangeGroupEditorProps {
-  intervalGroup: IntervalGroup;
-  unit: string | undefined;
-  onChange: (groupId: string, changed: ObservationDefinitionQualifiedInterval) => void;
-  onAdd: (groupId: string, added: ObservationDefinitionQualifiedInterval) => void;
-  onRemove: (groupId: string, removed: ObservationDefinitionQualifiedInterval) => void;
-  onRemoveGroup: (removedGroup: IntervalGroup) => void;
+  readonly intervalGroup: IntervalGroup;
+  readonly unit: string | undefined;
+  readonly onChange: (groupId: string, changed: ObservationDefinitionQualifiedInterval) => void;
+  readonly onAdd: (groupId: string, added: ObservationDefinitionQualifiedInterval) => void;
+  readonly onRemove: (groupId: string, removed: ObservationDefinitionQualifiedInterval) => void;
+  readonly onRemoveGroup: (removedGroup: IntervalGroup) => void;
 }
 
 export function ReferenceRangeGroupEditor(props: ReferenceRangeGroupEditorProps): JSX.Element {
   const { intervalGroup, unit } = props;
-  const { classes } = useStyles();
   return (
     <Container data-testid={intervalGroup.id} className={classes.section}>
-      <Stack spacing={'lg'}>
-        <Group position="right">
+      <Stack gap="lg">
+        <Group justify="flex-end">
           <ActionIcon
             title="Remove Group"
+            variant="subtle"
             data-testid={`remove-group-button-${intervalGroup.id}`}
             key={`remove-group-button-${intervalGroup.id}`}
             size="sm"
-            onClick={(e: React.MouseEvent) => {
+            onClick={(e: MouseEvent) => {
               killEvent(e);
               props.onRemoveGroup(intervalGroup);
             }}
@@ -196,14 +190,14 @@ export function ReferenceRangeGroupEditor(props: ReferenceRangeGroupEditorProps)
         <ReferenceRangeGroupFilters intervalGroup={intervalGroup} onChange={props.onChange} />
         <Divider />
         {intervalGroup.intervals.map((interval) => (
-          <Stack key={`interval-${interval.id}`} spacing={'xs'}>
+          <Stack key={`interval-${interval.id}`} gap="xs">
             <Group>
               <TextInput
                 key={`condition-${interval.id}`}
                 data-testid={`condition-${interval.id}`}
                 defaultValue={interval.condition}
-                label={'Condition: '}
-                size={'sm'}
+                label="Condition: "
+                size="sm"
                 onChange={(e) => {
                   killEvent(e);
                   props.onChange(intervalGroup.id, { ...interval, condition: e.currentTarget.value.trim() });
@@ -211,10 +205,11 @@ export function ReferenceRangeGroupEditor(props: ReferenceRangeGroupEditorProps)
               />
               <ActionIcon
                 title="Remove Interval"
+                variant="subtle"
                 size="sm"
                 key={`remove-interval-${interval.id}`}
                 data-testid={`remove-interval-${interval.id}`}
-                onClick={(e: React.MouseEvent) => {
+                onClick={(e: MouseEvent) => {
                   killEvent(e);
                   props.onRemove(intervalGroup.id, interval);
                 }}
@@ -224,6 +219,7 @@ export function ReferenceRangeGroupEditor(props: ReferenceRangeGroupEditorProps)
             </Group>
 
             <RangeInput
+              path=""
               onChange={(range) => {
                 props.onChange(intervalGroup.id, { ...interval, range });
               }}
@@ -235,8 +231,9 @@ export function ReferenceRangeGroupEditor(props: ReferenceRangeGroupEditorProps)
         ))}
         <ActionIcon
           title="Add Interval"
+          variant="subtle"
           size="sm"
-          onClick={(e: React.MouseEvent) => {
+          onClick={(e: MouseEvent) => {
             killEvent(e);
             props.onAdd(intervalGroup.id, {
               range: {
@@ -254,8 +251,8 @@ export function ReferenceRangeGroupEditor(props: ReferenceRangeGroupEditorProps)
 }
 
 interface ReferenceRangeGroupFiltersProps {
-  intervalGroup: IntervalGroup;
-  onChange: ReferenceRangeGroupEditorProps['onChange'];
+  readonly intervalGroup: IntervalGroup;
+  readonly onChange: ReferenceRangeGroupEditorProps['onChange'];
 }
 
 /**
@@ -301,12 +298,13 @@ function ReferenceRangeGroupFilters(props: ReferenceRangeGroupFiltersProps): JSX
           }}
         />
       </Group>
-      <Group spacing={'xs'}>
+      <Group gap="xs">
         <Text component="label" htmlFor={`div-age-${intervalGroup.id}`}>
           Age:
         </Text>
         <div id={`div-age-${intervalGroup.id}`}>
           <RangeInput
+            path=""
             key={`age-${intervalGroup.id}`}
             name={`age-${intervalGroup.id}`}
             defaultValue={intervalGroup.filters['age']}

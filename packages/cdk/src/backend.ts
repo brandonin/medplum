@@ -17,9 +17,10 @@ import {
   aws_wafv2 as wafv2,
 } from 'aws-cdk-lib';
 import { Repository } from 'aws-cdk-lib/aws-ecr';
-import { ClusterInstance } from 'aws-cdk-lib/aws-rds';
+import { ClusterInstance, ParameterGroup } from 'aws-cdk-lib/aws-rds';
 import { Construct } from 'constructs';
-import { awsManagedRules } from './waf';
+import { buildWafConfig } from './waf';
+import hashObject from 'object-hash';
 
 /**
  * Based on: https://github.com/aws-samples/http-api-aws-fargate-cdk/blob/master/cdk/singleAccount/lib/fargate-vpclink-stack.ts
@@ -31,8 +32,9 @@ export class BackEnd extends Construct {
   botLambdaRole: iam.IRole;
   rdsSecretsArn?: string;
   rdsCluster?: rds.DatabaseCluster;
+  rdsProxy?: rds.DatabaseProxy;
   redisSubnetGroup: elasticache.CfnSubnetGroup;
-  redisSecurityGroup: ec2.SecurityGroup;
+  redisSecurityGroup: ec2.ISecurityGroup;
   redisPassword: secretsmanager.ISecret;
   redisCluster: elasticache.CfnReplicationGroup;
   redisSecrets: secretsmanager.ISecret;
@@ -52,6 +54,7 @@ export class BackEnd extends Construct {
   dnsRecord?: route53.ARecord;
   regionParameter: ssm.StringParameter;
   databaseSecretsParameter: ssm.StringParameter;
+  databaseProxyEndpointParameter?: ssm.StringParameter;
   redisSecretsParameter: ssm.StringParameter;
   botLambdaRoleParameter: ssm.StringParameter;
 
@@ -59,6 +62,8 @@ export class BackEnd extends Construct {
     super(scope, 'BackEnd');
 
     const name = config.name;
+    const accountNumber = config.accountNumber;
+    const region = config.region;
 
     // VPC
     if (config.vpcId) {
@@ -92,34 +97,56 @@ export class BackEnd extends Construct {
     this.rdsSecretsArn = config.rdsSecretsArn;
     if (!this.rdsSecretsArn) {
       // See: https://docs.aws.amazon.com/cdk/api/v2/docs/aws-cdk-lib.aws_rds-readme.html#migrating-from-instanceprops
-      const instanceProps: rds.ProvisionedClusterInstanceProps = {
-        instanceType: config.rdsInstanceType ? new ec2.InstanceType(config.rdsInstanceType) : undefined,
+      const defaultInstanceProps: rds.ProvisionedClusterInstanceProps = {
         enablePerformanceInsights: true,
         isFromLegacyInstanceProps: true,
+        caCertificate: rds.CaCertificate.RDS_CA_RSA2048_G1,
+      };
+
+      const engine = rds.DatabaseClusterEngine.auroraPostgres({
+        version: config.rdsInstanceVersion
+          ? rds.AuroraPostgresEngineVersion.of(
+              config.rdsInstanceVersion,
+              config.rdsInstanceVersion.slice(0, config.rdsInstanceVersion.indexOf('.')),
+              { s3Import: true, s3Export: true }
+            )
+          : rds.AuroraPostgresEngineVersion.VER_12_9,
+      });
+
+      const defaultPostgresParams = {
+        statement_timeout: '60000',
+        default_transaction_isolation: 'REPEATABLE READ',
+      };
+
+      const postgresSettings = { ...defaultPostgresParams, ...config.rdsClusterParameters };
+      const paramHash = hashObject(postgresSettings, { encoding: 'base64' }).slice(0, 8);
+      const dbParams = new ParameterGroup(this, 'MedplumDatabaseClusterParams' + paramHash, {
+        engine,
+        parameters: postgresSettings,
+      });
+
+      const readerInstanceType = config.rdsReaderInstanceType ?? config.rdsInstanceType;
+      const readerInstanceProps: rds.ProvisionedClusterInstanceProps = {
+        ...defaultInstanceProps,
+        instanceType: readerInstanceType ? new ec2.InstanceType(readerInstanceType) : undefined,
+      };
+
+      const writerInstanceType = config.rdsInstanceType;
+      const writerInstanceProps: rds.ProvisionedClusterInstanceProps = {
+        ...defaultInstanceProps,
+        instanceType: writerInstanceType ? new ec2.InstanceType(writerInstanceType) : undefined,
       };
 
       let readers = undefined;
       if (config.rdsInstances > 1) {
         readers = [];
-        for (let i = 0; i < config.rdsInstances - 1; i++) {
-          readers.push(
-            ClusterInstance.provisioned('Instance' + (i + 2), {
-              ...instanceProps,
-            })
-          );
+        for (let i = 1; i < config.rdsInstances; i++) {
+          readers.push(ClusterInstance.provisioned('Instance' + (i + 1), readerInstanceProps));
         }
       }
 
       this.rdsCluster = new rds.DatabaseCluster(this, 'DatabaseCluster', {
-        engine: rds.DatabaseClusterEngine.auroraPostgres({
-          version: config.rdsInstanceVersion
-            ? rds.AuroraPostgresEngineVersion.of(
-                config.rdsInstanceVersion,
-                config.rdsInstanceVersion.slice(0, config.rdsInstanceVersion.indexOf('.')),
-                { s3Import: true, s3Export: true }
-              )
-            : rds.AuroraPostgresEngineVersion.VER_12_9,
-        }),
+        engine,
         credentials: rds.Credentials.fromGeneratedSecret('clusteradmin'),
         defaultDatabaseName: 'medplum',
         storageEncrypted: true,
@@ -127,18 +154,25 @@ export class BackEnd extends Construct {
         vpcSubnets: {
           subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
         },
-        writer: ClusterInstance.provisioned('Instance1', {
-          ...instanceProps,
-        }),
+        writer: ClusterInstance.provisioned('Instance1', writerInstanceProps),
         readers,
         backup: {
           retention: Duration.days(7),
         },
         cloudwatchLogsExports: ['postgresql'],
         instanceUpdateBehaviour: rds.InstanceUpdateBehaviour.ROLLING,
+        parameterGroup: dbParams,
       });
 
       this.rdsSecretsArn = (this.rdsCluster.secret as secretsmanager.ISecret).secretArn;
+
+      if (config.rdsProxyEnabled) {
+        this.rdsProxy = new rds.DatabaseProxy(this, 'DatabaseProxy', {
+          proxyTarget: rds.ProxyTarget.fromCluster(this.rdsCluster),
+          secrets: [this.rdsCluster.secret as secretsmanager.ISecret],
+          vpc: this.vpc,
+        });
+      }
     }
 
     // Redis
@@ -148,11 +182,19 @@ export class BackEnd extends Construct {
       subnetIds: this.vpc.privateSubnets.map((subnet) => subnet.subnetId),
     });
 
-    this.redisSecurityGroup = new ec2.SecurityGroup(this, 'RedisSecurityGroup', {
-      vpc: this.vpc,
-      description: 'Redis Security Group',
-      allowAllOutbound: false,
-    });
+    if (config.cacheSecurityGroupId) {
+      this.redisSecurityGroup = ec2.SecurityGroup.fromSecurityGroupId(
+        this,
+        'RedisSecurityGroup',
+        config.cacheSecurityGroupId
+      );
+    } else {
+      this.redisSecurityGroup = new ec2.SecurityGroup(this, 'RedisSecurityGroup', {
+        vpc: this.vpc,
+        description: 'Redis Security Group',
+        allowAllOutbound: false,
+      });
+    }
 
     this.redisPassword = new secretsmanager.Secret(this, 'RedisPassword', {
       generateSecretString: {
@@ -195,6 +237,7 @@ export class BackEnd extends Construct {
     // ECS Cluster
     this.ecsCluster = new ecs.Cluster(this, 'Cluster', {
       vpc: this.vpc,
+      containerInsights: config.containerInsights,
     });
 
     // Task Policies
@@ -211,7 +254,7 @@ export class BackEnd extends Construct {
             'logs:DescribeLogGroups',
             'logs:PutRetentionPolicy',
           ],
-          resources: ['arn:aws:logs:*'],
+          resources: [`arn:aws:logs:${region}:${accountNumber}:log-group:*`],
         }),
 
         // Secrets Manager: Read only access to secrets
@@ -225,7 +268,7 @@ export class BackEnd extends Construct {
             'secretsmanager:ListSecrets',
             'secretsmanager:ListSecretVersionIds',
           ],
-          resources: ['arn:aws:secretsmanager:*'],
+          resources: [`arn:aws:secretsmanager:${region}:${accountNumber}:secret:*`],
         }),
 
         // Parameter Store: Read only access
@@ -233,7 +276,7 @@ export class BackEnd extends Construct {
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
           actions: ['ssm:GetParametersByPath', 'ssm:GetParameters', 'ssm:GetParameter', 'ssm:DescribeParameters'],
-          resources: ['arn:aws:ssm:*'],
+          resources: [`arn:aws:ssm:${region}:${accountNumber}:parameter/medplum/${name}/*`],
         }),
 
         // SES: Send emails
@@ -241,15 +284,23 @@ export class BackEnd extends Construct {
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
           actions: ['ses:SendEmail', 'ses:SendRawEmail'],
-          resources: ['arn:aws:ses:*'],
+          resources: [`arn:aws:ses:${region}:${accountNumber}:identity/*`],
         }),
 
-        // S3: Read and write access to buckets
+        // S3: List storage bucket
         // https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazons3.html
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
-          actions: ['s3:ListBucket', 's3:GetObject', 's3:PutObject', 's3:DeleteObject'],
-          resources: ['arn:aws:s3:::*'],
+          actions: ['s3:ListBucket'],
+          resources: [`arn:aws:s3:::${config.storageBucketName}`],
+        }),
+
+        // S3: Read, write, and delete access to storage bucket
+        // https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazons3.html
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+          resources: [`arn:aws:s3:::${config.storageBucketName}/*`],
         }),
 
         // IAM: Pass role to innvoke lambda functions
@@ -270,11 +321,23 @@ export class BackEnd extends Construct {
             'lambda:GetFunctionConfiguration',
             'lambda:UpdateFunctionCode',
             'lambda:UpdateFunctionConfiguration',
-            'lambda:ListLayerVersions',
-            'lambda:GetLayerVersion',
             'lambda:InvokeFunction',
           ],
-          resources: ['arn:aws:lambda:*'],
+          resources: [`arn:aws:lambda:${region}:${accountNumber}:function:medplum-bot-lambda-*`],
+        }),
+
+        // Lambda layers: List layer versions
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['lambda:ListLayerVersions'],
+          resources: [`arn:aws:lambda:${region}:${accountNumber}:layer:medplum-bot-layer`],
+        }),
+
+        // Lambda layers: Get layer version
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['lambda:GetLayerVersion'],
+          resources: [`arn:aws:lambda:${region}:${accountNumber}:layer:medplum-bot-layer:*`],
         }),
 
         // XRay: Write to segment store
@@ -287,6 +350,26 @@ export class BackEnd extends Construct {
             'xray:GetSamplingRules',
             'xray:GetSamplingTargets',
             'xray:GetSamplingStatisticSummaries',
+          ],
+          resources: ['*'],
+        }),
+
+        // Textract and Comprehend Medical: Analyze medical text
+        // https://docs.aws.amazon.com/comprehend/latest/dg/security_iam_id-based-policy-examples.html
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'comprehend:DetectEntities',
+            'comprehend:DetectKeyPhrases',
+            'comprehend:DetectDominantLanguage',
+            'comprehend:DetectSentiment',
+            'comprehend:DetectTargetedSentiment',
+            'comprehend:DetectSyntax',
+            'comprehendmedical:DetectEntitiesV2',
+            'textract:DetectDocumentText',
+            'textract:AnalyzeDocument',
+            'textract:StartDocumentTextDetection',
+            'textract:GetDocumentTextDetection',
           ],
           resources: ['*'],
         }),
@@ -323,7 +406,7 @@ export class BackEnd extends Construct {
     // Task Containers
     this.serviceContainer = this.taskDefinition.addContainer('MedplumTaskDefinition', {
       image: this.getContainerImage(config, config.serverImage),
-      command: [config.region === 'us-east-1' ? `aws:/medplum/${name}/` : `aws:${config.region}:/medplum/${name}/`],
+      command: [region === 'us-east-1' ? `aws:/medplum/${name}/` : `aws:${region}:/medplum/${name}/`],
       logging: this.logDriver,
       environment: config.environment,
     });
@@ -365,9 +448,25 @@ export class BackEnd extends Construct {
       healthCheckGracePeriod: Duration.minutes(5),
     });
 
+    // Add autoscaling
+    if (config.fargateAutoScaling) {
+      const scaling = this.fargateService.autoScaleTaskCount({
+        minCapacity: config.fargateAutoScaling.minCapacity,
+        maxCapacity: config.fargateAutoScaling.maxCapacity,
+      });
+      scaling.scaleOnCpuUtilization('CpuScaling', {
+        targetUtilizationPercent: config.fargateAutoScaling.targetUtilizationPercent,
+        scaleInCooldown: Duration.seconds(config.fargateAutoScaling.scaleInCooldown),
+        scaleOutCooldown: Duration.seconds(config.fargateAutoScaling.scaleOutCooldown),
+      });
+    }
+
     // Add dependencies - make sure Fargate service is created after RDS and Redis
     if (this.rdsCluster) {
       this.fargateService.node.addDependency(this.rdsCluster);
+    }
+    if (this.rdsProxy) {
+      this.fargateService.node.addDependency(this.rdsProxy);
     }
     this.fargateService.node.addDependency(this.redisCluster);
 
@@ -386,11 +485,21 @@ export class BackEnd extends Construct {
       targets: [this.fargateService],
     });
 
+    let loadBalancerSecurityGroup: ec2.ISecurityGroup | undefined = undefined;
+    if (config.loadBalancerSecurityGroupId) {
+      loadBalancerSecurityGroup = ec2.SecurityGroup.fromSecurityGroupId(
+        this,
+        'LoadBalancerSecurityGroup',
+        config.loadBalancerSecurityGroupId
+      );
+    }
+
     // Load Balancer
     this.loadBalancer = new elbv2.ApplicationLoadBalancer(this, 'LoadBalancer', {
       vpc: this.vpc,
       internetFacing: config.apiInternetFacing !== false, // default true
       http2Enabled: true,
+      securityGroup: loadBalancerSecurityGroup,
     });
 
     if (config.loadBalancerLoggingBucket) {
@@ -410,22 +519,16 @@ export class BackEnd extends Construct {
           certificateArn: config.apiSslCertArn,
         },
       ],
-      sslPolicy: elbv2.SslPolicy.FORWARD_SECRECY_TLS12_RES_GCM,
+      sslPolicy: elbv2.SslPolicy.RECOMMENDED_TLS,
       defaultAction: elbv2.ListenerAction.forward([this.targetGroup]),
     });
 
     // WAF
-    this.waf = new wafv2.CfnWebACL(this, 'BackEndWAF', {
-      defaultAction: { allow: {} },
-      scope: 'REGIONAL',
-      name: `${config.stackName}-BackEndWAF`,
-      rules: awsManagedRules,
-      visibilityConfig: {
-        cloudWatchMetricsEnabled: true,
-        metricName: `${config.stackName}-BackEndWAF-Metric`,
-        sampledRequestsEnabled: false,
-      },
-    });
+    this.waf = new wafv2.CfnWebACL(
+      this,
+      'BackEndWAF',
+      buildWafConfig(`${config.stackName}-BackEndWAF`, 'REGIONAL', config.apiWafIpSetArn)
+    );
 
     // Create an association between the load balancer and the WAF
     this.wafAssociation = new wafv2.CfnWebACLAssociation(this, 'LoadBalancerAssociation', {
@@ -436,6 +539,13 @@ export class BackEnd extends Construct {
     // Grant RDS access to the fargate group
     if (this.rdsCluster) {
       this.rdsCluster.connections.allowDefaultPortFrom(this.fargateSecurityGroup);
+    }
+
+    // Grant RDS Proxy access to the fargate group
+    if (this.rdsProxy) {
+      // Cannot call allowDefaultPortFrom(): this resource has no default port
+      // See: https://repost.aws/knowledge-center/rds-proxy-connection-issues
+      this.rdsProxy.connections.allowFrom(this.fargateSecurityGroup, ec2.Port.tcp(5432));
     }
 
     // Grant Redis access to the fargate group
@@ -469,6 +579,15 @@ export class BackEnd extends Construct {
       description: 'Database secrets ARN',
       stringValue: this.rdsSecretsArn,
     });
+
+    if (this.rdsProxy) {
+      this.databaseProxyEndpointParameter = new ssm.StringParameter(this, 'DatabaseProxyEndpointParameter', {
+        tier: ssm.ParameterTier.STANDARD,
+        parameterName: `/medplum/${name}/databaseProxyEndpoint`,
+        description: 'Database proxy endpoint',
+        stringValue: this.rdsProxy?.endpoint as string,
+      });
+    }
 
     this.redisSecretsParameter = new ssm.StringParameter(this, 'RedisSecretsParameter', {
       tier: ssm.ParameterTier.STANDARD,

@@ -2,13 +2,16 @@ import { Resource, ResourceType, SearchParameter } from '@medplum/fhirtypes';
 import { evalFhirPathTyped } from '../fhirpath/parse';
 import { OperationOutcomeError, badRequest } from '../outcomes';
 import { TypedValue, globalSchema, stringifyTypedValue } from '../types';
+import { append, sortStringArray } from '../utils';
 
 export const DEFAULT_SEARCH_COUNT = 20;
+export const DEFAULT_MAX_SEARCH_COUNT = 1000;
 
 export interface SearchRequest<T extends Resource = Resource> {
   readonly resourceType: T['resourceType'];
   filters?: Filter[];
   sortRules?: SortRule[];
+  cursor?: string;
   offset?: number;
   count?: number;
   fields?: string[];
@@ -17,6 +20,9 @@ export interface SearchRequest<T extends Resource = Resource> {
   include?: IncludeTarget[];
   revInclude?: IncludeTarget[];
   summary?: 'true' | 'text' | 'data';
+  format?: string;
+  pretty?: boolean;
+  types?: T['resourceType'][];
 }
 
 export interface Filter {
@@ -34,7 +40,7 @@ export interface IncludeTarget {
   resourceType: string;
   searchParam: string;
   targetType?: string;
-  modifier?: string;
+  modifier?: 'iterate';
 }
 
 /**
@@ -72,6 +78,7 @@ export enum Operator {
 
   // All
   MISSING = 'missing',
+  PRESENT = 'present',
 
   // Reference
   IDENTIFIER = 'identifier',
@@ -120,24 +127,66 @@ const PREFIX_OPERATORS: Record<string, Operator> = {
 
 /**
  * Parses a search URL into a search request.
- * @param resourceType - The FHIR resource type.
- * @param query - The collection of query string parameters.
+ * @param url - The original search URL or the FHIR resource type.
+ * @param query - Optional collection of additional query string parameters.
  * @returns A parsed SearchRequest.
  */
 export function parseSearchRequest<T extends Resource = Resource>(
-  resourceType: T['resourceType'],
-  query: Record<string, string[] | string | undefined>
+  url: T['resourceType'] | URL | string,
+  query?: Record<string, string[] | string | undefined>
 ): SearchRequest<T> {
-  const queryArray: [string, string][] = [];
-  for (const [key, value] of Object.entries(query)) {
-    if (Array.isArray(value)) {
-      for (const v of value) {
-        queryArray.push([key, v]);
-      }
+  if (!url) {
+    throw new Error('Invalid search URL');
+  }
+
+  // Parse the input into path and search parameters
+  let pathname = '';
+  let searchParams: URLSearchParams | undefined = undefined;
+  if (typeof url === 'string') {
+    if (url.includes('?')) {
+      const [path, search] = url.split('?');
+      pathname = path;
+      searchParams = new URLSearchParams(search);
     } else {
-      queryArray.push([key, value ?? '']);
+      pathname = url;
+    }
+  } else if (typeof url === 'object') {
+    pathname = url.pathname;
+    searchParams = url.searchParams;
+  }
+
+  // Next, parse out the resource type from the URL
+  // By convention, the resource type is the last non-empty part of the path
+  let resourceType: ResourceType;
+  if (pathname.includes('/')) {
+    resourceType = pathname.split('/').filter(Boolean).pop() as ResourceType;
+  } else {
+    resourceType = pathname as ResourceType;
+  }
+
+  // Next, parse out the search parameters
+  // First, we convert the URLSearchParams to an array of key-value pairs
+  const queryArray: [string, string][] = [];
+  if (searchParams) {
+    queryArray.push(...searchParams.entries());
+  }
+
+  // Next, we merge in the query object
+  // This is an optional set of additional query parameters
+  // which should be added to the URL
+  if (query) {
+    for (const [key, value] of Object.entries(query)) {
+      if (Array.isArray(value)) {
+        for (const v of value) {
+          queryArray.push([key, v]);
+        }
+      } else {
+        queryArray.push([key, value ?? '']);
+      }
     }
   }
+
+  // Finally we can move on to the actual parsing
   return parseSearchImpl(resourceType, queryArray);
 }
 
@@ -145,24 +194,20 @@ export function parseSearchRequest<T extends Resource = Resource>(
  * Parses a search URL into a search request.
  * @param url - The search URL.
  * @returns A parsed SearchRequest.
+ * @deprecated Use parseSearchRequest instead.
  */
 export function parseSearchUrl<T extends Resource = Resource>(url: URL): SearchRequest<T> {
-  let resourceType;
-  for (const part of url.pathname.split('/')) {
-    if (part) {
-      resourceType = part;
-    }
-  }
-  return parseSearchImpl<T>(resourceType as ResourceType, url.searchParams.entries());
+  return parseSearchRequest<T>(url);
 }
 
 /**
  * Parses a URL string into a SearchRequest.
  * @param url - The URL to parse.
  * @returns Parsed search definition.
+ * @deprecated Use parseSearchRequest instead.
  */
 export function parseSearchDefinition<T extends Resource = Resource>(url: string): SearchRequest<T> {
-  return parseSearchUrl<T>(new URL(url, 'https://example.com/'));
+  return parseSearchRequest<T>(url);
 }
 
 /**
@@ -170,9 +215,10 @@ export function parseSearchDefinition<T extends Resource = Resource>(url: string
  * FHIR criteria strings are found on resources such as Subscription.
  * @param criteria - The FHIR criteria string.
  * @returns Parsed search definition.
+ * @deprecated Use parseSearchRequest instead.
  */
-export function parseCriteriaAsSearchRequest(criteria: string): SearchRequest {
-  return parseSearchUrl(new URL(criteria, 'https://api.medplum.com/'));
+export function parseCriteriaAsSearchRequest<T extends Resource = Resource>(criteria: string): SearchRequest<T> {
+  return parseSearchRequest<T>(criteria);
 }
 
 function parseSearchImpl<T extends Resource = Resource>(
@@ -191,8 +237,8 @@ function parseSearchImpl<T extends Resource = Resource>(
 }
 
 function parseKeyValue(searchRequest: SearchRequest, key: string, value: string): void {
-  let code;
-  let modifier;
+  let code: string;
+  let modifier: string;
 
   const colonIndex = key.indexOf(':');
   if (colonIndex >= 0) {
@@ -203,14 +249,24 @@ function parseKeyValue(searchRequest: SearchRequest, key: string, value: string)
     modifier = '';
   }
 
+  // Ignore the '_' parameter
+  // This is added by React Native when `no-cache` strategy is used to bust the cache presumably
+  if (code === '_') {
+    return;
+  }
+
   if (code === '_has' || key.includes('.')) {
-    addFilter(searchRequest, { code: key, operator: Operator.EQUALS, value });
+    searchRequest.filters = append(searchRequest.filters, { code: key, operator: Operator.EQUALS, value });
     return;
   }
 
   switch (code) {
     case '_sort':
       parseSortRule(searchRequest, value);
+      break;
+
+    case '_cursor':
+      searchRequest.cursor = value;
       break;
 
     case '_count':
@@ -239,11 +295,7 @@ function parseKeyValue(searchRequest: SearchRequest, key: string, value: string)
       if (modifier === 'iterate') {
         target.modifier = Operator.ITERATE;
       }
-      if (searchRequest.include) {
-        searchRequest.include.push(target);
-      } else {
-        searchRequest.include = [target];
-      }
+      searchRequest.include = append(searchRequest.include, target);
       break;
     }
 
@@ -252,11 +304,7 @@ function parseKeyValue(searchRequest: SearchRequest, key: string, value: string)
       if (modifier === 'iterate') {
         target.modifier = Operator.ITERATE;
       }
-      if (searchRequest.revInclude) {
-        searchRequest.revInclude.push(target);
-      } else {
-        searchRequest.revInclude = [target];
-      }
+      searchRequest.revInclude = append(searchRequest.revInclude, target);
       break;
     }
 
@@ -265,12 +313,24 @@ function parseKeyValue(searchRequest: SearchRequest, key: string, value: string)
       searchRequest.fields = value.split(',');
       break;
 
+    case '_type':
+      searchRequest.types = value.split(',') as Resource['resourceType'][];
+      break;
+
+    case '_format':
+      searchRequest.format = value;
+      break;
+
+    case '_pretty':
+      searchRequest.pretty = value === 'true';
+      break;
+
     default: {
       const param = globalSchema.types[searchRequest.resourceType]?.searchParams?.[code];
       if (param) {
-        addFilter(searchRequest, parseParameter(param, modifier, value));
+        searchRequest.filters = append(searchRequest.filters, parseParameter(param, modifier, value));
       } else {
-        addFilter(searchRequest, parseUnknownParameter(code, modifier, value));
+        searchRequest.filters = append(searchRequest.filters, parseUnknownParameter(code, modifier, value));
       }
     }
   }
@@ -278,7 +338,7 @@ function parseKeyValue(searchRequest: SearchRequest, key: string, value: string)
 
 function parseSortRule(searchRequest: SearchRequest, value: string): void {
   for (const field of value.split(',')) {
-    let code;
+    let code: string;
     let descending = false;
     if (field.startsWith('-')) {
       code = field.substring(1);
@@ -390,14 +450,6 @@ function parseIncludeTarget(input: string): IncludeTarget {
   }
 }
 
-function addFilter(searchRequest: SearchRequest, filter: Filter): void {
-  if (searchRequest.filters) {
-    searchRequest.filters.push(filter);
-  } else {
-    searchRequest.filters = [filter];
-  }
-}
-
 const subexpressionPattern = /{{([^{}]+)}}/g;
 
 /**
@@ -425,7 +477,7 @@ export function parseXFhirQuery(query: string, variables: Record<string, TypedVa
     }
     return stringifyTypedValue(replacement[0]);
   });
-  return parseCriteriaAsSearchRequest(query);
+  return parseSearchRequest(query);
 }
 
 /**
@@ -449,7 +501,11 @@ export function formatSearchQuery(definition: SearchRequest): string {
     params.push(formatSortRules(definition.sortRules));
   }
 
-  if (definition.offset !== undefined) {
+  if (definition.cursor !== undefined) {
+    params.push('_cursor=' + encodeURIComponent(definition.cursor));
+  }
+
+  if (definition.offset !== undefined && definition.offset !== 0) {
     params.push('_offset=' + definition.offset);
   }
 
@@ -473,7 +529,7 @@ export function formatSearchQuery(definition: SearchRequest): string {
     return '';
   }
 
-  params.sort((a, b) => a.localeCompare(b));
+  sortStringArray(params);
   return '?' + params.join('&');
 }
 
@@ -489,6 +545,45 @@ function formatSortRules(sortRules: SortRule[]): string {
 
 function formatIncludeTarget(kind: '_include' | '_revinclude', target: IncludeTarget): string {
   return (
-    kind + '=' + target.resourceType + ':' + target.searchParam + (target.targetType ? ':' + target.targetType : '')
+    kind +
+    (target.modifier ? ':' + target.modifier : '') +
+    '=' +
+    target.resourceType +
+    ':' +
+    target.searchParam +
+    (target.targetType ? ':' + target.targetType : '')
   );
+}
+
+/**
+ * Splits a FHIR search value on commas.
+ * Respects backslash escape.
+ *
+ * See: https://hl7.org/fhir/r4/search.html#escaping
+ *
+ * @param input - The FHIR search value to split.
+ * @returns The individual search values.
+ */
+export function splitSearchOnComma(input: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let escaped = false;
+
+  for (const c of input) {
+    if (escaped) {
+      current += c;
+      escaped = false;
+    } else if (c === '\\') {
+      escaped = true;
+    } else if (c === ',') {
+      result.push(current);
+      current = '';
+    } else {
+      current += c;
+    }
+  }
+
+  // Push the last segment
+  result.push(current);
+  return result;
 }

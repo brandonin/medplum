@@ -1,8 +1,8 @@
-import { globalSchema, indexStructureDefinitionBundle, InternalSchemaElement, TypeInfo } from '@medplum/core';
+import { globalSchema, InternalSchemaElement, loadDataType, TypeInfo } from '@medplum/core';
 import { FishPatientResources, MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react-hooks';
-import { act, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { act, render, screen, within } from '../test-utils/render';
 import { BackboneElementInput, BackboneElementInputProps } from './BackboneElementInput';
 
 const valueSetComposeProperty: InternalSchemaElement = {
@@ -73,19 +73,19 @@ describe('BackboneElementInput', () => {
 
   test('Renders', async () => {
     await medplum.requestSchema('Patient');
-    await setup({ typeName: 'PatientContact' });
+    await setup({ typeName: 'PatientContact', path: 'Patient.contact' });
     expect(screen.getByText('Name')).toBeDefined();
   });
 
   test('Handles content reference', async () => {
     await medplum.requestSchema('ValueSet');
-    await setup({ typeName: 'ValueSetCompose' });
+    await setup({ typeName: 'ValueSetCompose', path: 'ValueSet.compose' });
     expect(screen.getByText('Locked Date')).toBeInTheDocument();
     expect(screen.getByText('Exclude')).toBeInTheDocument();
   });
 
   test('Not implemented', async () => {
-    await setup({ typeName: 'Foo' });
+    await setup({ typeName: 'Foo', path: 'Foo' });
     expect(screen.getByText('Foo not implemented')).toBeInTheDocument();
   });
 
@@ -95,10 +95,11 @@ describe('BackboneElementInput', () => {
     const fishPatient = FishPatientResources.getSampleFishPatient();
 
     for (const profile of [fishPatientProfile, fishSpeciesProfile]) {
-      indexStructureDefinitionBundle([profile], profile.url);
+      loadDataType(profile);
     }
     await setup({
-      typeName: fishPatientProfile.name,
+      path: fishPatientProfile.type,
+      typeName: fishPatientProfile.type,
       profileUrl: fishPatientProfile.url,
       defaultValue: fishPatient,
       onChange: () => {},

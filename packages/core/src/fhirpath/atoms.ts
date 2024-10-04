@@ -5,6 +5,7 @@ import {
   booleanToTypedValue,
   fhirPathArrayEquals,
   fhirPathArrayEquivalent,
+  fhirPathArrayNotEquals,
   fhirPathIs,
   fhirPathNot,
   getTypedPropertyValue,
@@ -23,12 +24,16 @@ export class FhirPathAtom implements Atom {
   eval(context: AtomContext, input: TypedValue[]): TypedValue[] {
     try {
       if (input.length > 0) {
-        return input.map((e) => this.child.eval(context, [e])).flat();
+        const result = [];
+        for (const e of input) {
+          result.push(this.child.eval({ parent: context, variables: { $this: e } }, [e]));
+        }
+        return result.flat();
       } else {
         return this.child.eval(context, []);
       }
     } catch (error) {
-      throw new Error(`FhirPathError on "${this.original}": ${error}`);
+      throw new Error(`FhirPathError on "${this.original}": ${error}`, { cause: error });
     }
   }
 
@@ -58,7 +63,7 @@ export class SymbolAtom implements Atom {
     if (this.name === '$this') {
       return input;
     }
-    const variableValue = context.variables[this.name];
+    const variableValue = this.getVariable(context);
     if (variableValue) {
       return [variableValue];
     }
@@ -66,6 +71,19 @@ export class SymbolAtom implements Atom {
       throw new Error(`Undefined variable ${this.name}`);
     }
     return input.flatMap((e) => this.evalValue(e)).filter((e) => e?.value !== undefined) as TypedValue[];
+  }
+
+  private getVariable(context: AtomContext): TypedValue | undefined {
+    const value = context.variables[this.name];
+    if (value !== undefined) {
+      return value;
+    }
+
+    if (context.parent) {
+      return this.getVariable(context.parent);
+    }
+
+    return undefined;
   }
 
   private evalValue(typedValue: TypedValue): TypedValue[] | TypedValue | undefined {
@@ -251,7 +269,7 @@ export class NotEqualsAtom extends BooleanInfixOperatorAtom {
   eval(context: AtomContext, input: TypedValue[]): TypedValue[] {
     const leftValue = this.left.eval(context, input);
     const rightValue = this.right.eval(context, input);
-    return fhirPathNot(fhirPathArrayEquals(leftValue, rightValue));
+    return fhirPathArrayNotEquals(leftValue, rightValue);
   }
 }
 

@@ -76,10 +76,8 @@ export async function handler(medplum: MedplumClient, event: BotEvent): Promise<
 }
 
 /**
- * Returns a practitioner resource.
- * Creates the practitioner if one does not already exist.
+ * Creates the questionnaire if one does not already exist.
  * @param medplum - The medplum client.
- * @returns The practitioner resource.
  */
 async function ensureQuestionnaire(medplum: MedplumClient): Promise<void> {
   const questionnaire = await medplum.searchOne('Questionnaire', 'title=Order Lab Tests');
@@ -95,7 +93,7 @@ async function ensureQuestionnaire(medplum: MedplumClient): Promise<void> {
       {
         id: 'id-4',
         linkId: 'g2',
-        type: 'group',
+        type: 'display',
         text: 'For guidance on which labs to order visit: https://www.uptodate.com/contents/search?search=lab%20orders',
       },
       {
@@ -227,7 +225,9 @@ async function ensureSlots(medplum: MedplumClient, schedule: Schedule, slotDate:
     slotDate.setHours(hour, 0, 0, 0);
     await medplum.createResource({
       resourceType: 'Slot',
+      status: 'free',
       start: slotDate.toISOString(),
+      end: new Date(slotDate.getTime() + 30 * 60 * 1000).toISOString(),
       schedule: createReference(schedule),
     });
   }
@@ -347,6 +347,7 @@ async function createCarePlan(medplum: MedplumClient, patient: Patient, tasks: T
 function createA1CObservation(patient: Patient): Observation {
   return {
     resourceType: 'Observation',
+    status: 'final',
     subject: createReference(patient),
     code: {
       text: 'Hemoglobin A1c',
@@ -767,6 +768,7 @@ function createHeartRateObservation(patient: Patient, date: Date): Observation {
 function createWelcomeMessage(patient: Patient, practitioner: Practitioner): Communication {
   return {
     resourceType: 'Communication',
+    status: 'completed',
     subject: createReference(patient),
     recipient: [createReference(patient)],
     sender: createReference(practitioner),

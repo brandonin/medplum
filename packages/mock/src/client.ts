@@ -1,17 +1,36 @@
 import {
-  allOk,
-  badRequest,
+  BinarySource,
   ContentType,
-  getStatus,
-  indexSearchParameter,
-  loadDataType,
+  CreateBinaryOptions,
   LoginState,
   MedplumClient,
   MedplumClientOptions,
+  MedplumRequestOptions,
+  OperationOutcomeError,
   ProfileResource,
+  SubscriptionEmitter,
+  allOk,
+  badRequest,
+  generateId,
+  getReferenceString,
+  getStatus,
+  indexSearchParameter,
+  loadDataType,
+  normalizeCreateBinaryOptions,
 } from '@medplum/core';
 import { FhirRequest, FhirRouter, HttpMethod, MemoryRepository } from '@medplum/fhir-router';
-import { Binary, Resource, SearchParameter, StructureDefinition, UserConfiguration } from '@medplum/fhirtypes';
+import {
+  Agent,
+  Binary,
+  Bot,
+  Device,
+  Reference,
+  Resource,
+  SearchParameter,
+  StructureDefinition,
+  Subscription,
+  UserConfiguration,
+} from '@medplum/fhirtypes';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 /** @ts-ignore */
 import type { CustomTableLayout, TDocumentDefinitions, TFontDictionary } from 'pdfmake/interfaces';
@@ -21,13 +40,13 @@ import {
   DrAliceSmith,
   DrAliceSmithPreviousVersion,
   DrAliceSmithSchedule,
-  makeDrAliceSmithSlots,
   ExampleBot,
   ExampleClient,
   ExampleQuestionnaire,
   ExampleQuestionnaireResponse,
   ExampleSubscription,
-  exampleValueSet,
+  ExampleThreadHeader,
+  ExampleThreadMessages,
   HomerCommunication,
   HomerDiagnosticReport,
   HomerEncounter,
@@ -45,9 +64,11 @@ import {
   HomerSimpsonPreviousVersion,
   HomerSimpsonSpecimen,
   TestOrganization,
+  exampleValueSet,
+  makeDrAliceSmithSlots,
 } from './mocks';
 import { ExampleAccessPolicy, ExampleStatusValueSet, ExampleUserConfiguration } from './mocks/accesspolicy';
-import { TestProject, TestProjectMembersihp } from './mocks/project';
+import { TestProject, TestProjectMembership } from './mocks/project';
 import SearchParameterList from './mocks/searchparameters.json';
 import { ExampleSmartClientApplication } from './mocks/smart';
 import StructureDefinitionList from './mocks/structuredefinitions.json';
@@ -62,15 +83,30 @@ import {
   ExampleWorkflowTask2,
   ExampleWorkflowTask3,
 } from './mocks/workflow';
+import { MockSubscriptionManager } from './subscription-manager';
 
-export interface MockClientOptions extends MedplumClientOptions {
+export interface MockClientOptions
+  extends Pick<MedplumClientOptions, 'baseUrl' | 'clientId' | 'storage' | 'cacheTime'> {
   readonly debug?: boolean;
   /**
    * Override currently logged in user. Specifying null results in
    * MedplumContext.profile returning undefined as if no one were logged in.
    */
   readonly profile?: ReturnType<MedplumClient['getProfile']> | null;
+  /**
+   * Override the `MockFetchClient` used by this `MockClient`.
+   */
+  readonly mockFetchOverride?: MockFetchOverrideOptions;
 }
+
+/**
+ * Override must contain all of `router`, `repo`, and `client`.
+ */
+export type MockFetchOverrideOptions = {
+  client: MockFetchClient;
+  router: FhirRouter;
+  repo: MemoryRepository;
+};
 
 export class MockClient extends MedplumClient {
   readonly router: FhirRouter;
@@ -78,21 +114,45 @@ export class MockClient extends MedplumClient {
   readonly client: MockFetchClient;
   readonly debug: boolean;
   activeLoginOverride?: LoginState;
-  private readonly profile: ReturnType<MedplumClient['getProfile']>;
+  private agentAvailable = true;
+  private profile: ReturnType<MedplumClient['getProfile']>;
+  subManager: MockSubscriptionManager | undefined;
 
   constructor(clientOptions?: MockClientOptions) {
-    const router = new FhirRouter();
-    const repo = new MemoryRepository();
-    const client = new MockFetchClient(router, repo, clientOptions?.debug);
+    const baseUrl = clientOptions?.baseUrl ?? 'https://example.com/';
+
+    let router: FhirRouter;
+    let repo: MemoryRepository;
+    let client: MockFetchClient;
+
+    if (clientOptions?.mockFetchOverride) {
+      if (
+        !(
+          clientOptions.mockFetchOverride?.router &&
+          clientOptions.mockFetchOverride?.repo &&
+          clientOptions.mockFetchOverride?.client
+        )
+      ) {
+        throw new Error('mockFetchOverride must specify all fields: client, repo, router');
+      }
+      router = clientOptions.mockFetchOverride.router;
+      repo = clientOptions.mockFetchOverride.repo;
+      client = clientOptions.mockFetchOverride.client;
+    } else {
+      router = new FhirRouter();
+      repo = new MemoryRepository();
+      client = new MockFetchClient(router, repo, baseUrl, clientOptions?.debug);
+    }
 
     super({
-      baseUrl: clientOptions?.baseUrl ?? 'https://example.com/',
+      baseUrl,
       clientId: clientOptions?.clientId,
       storage: clientOptions?.storage,
+      cacheTime: clientOptions?.cacheTime,
       createPdf: (
         docDefinition: TDocumentDefinitions,
         tableLayouts?: { [name: string]: CustomTableLayout },
-        fonts?: TFontDictionary | undefined
+        fonts?: TFontDictionary
       ) => client.mockCreatePdf(docDefinition, tableLayouts, fonts),
       fetch: (url: string, options: any) => {
         return client.mockFetch(url, options);
@@ -103,7 +163,7 @@ export class MockClient extends MedplumClient {
     this.repo = repo;
     this.client = client;
     // if null is specified, treat it as if no one is logged in
-    this.profile = clientOptions?.profile === null ? undefined : clientOptions?.profile ?? DrAliceSmith;
+    this.profile = clientOptions?.profile === null ? undefined : (clientOptions?.profile ?? DrAliceSmith);
     this.debug = !!clientOptions?.debug;
   }
 
@@ -143,6 +203,11 @@ export class MockClient extends MedplumClient {
     this.activeLoginOverride = activeLoginOverride;
   }
 
+  setProfile(profile: ProfileResource | undefined): void {
+    this.profile = profile;
+    this.dispatchEvent({ type: 'change' });
+  }
+
   getActiveLogin(): LoginState | undefined {
     if (this.activeLoginOverride !== undefined) {
       return this.activeLoginOverride;
@@ -158,11 +223,14 @@ export class MockClient extends MedplumClient {
   }
 
   async createBinary(
-    data: string | File | Blob | Uint8Array,
-    filename: string | undefined,
-    contentType: string,
-    onProgress?: (e: ProgressEvent) => void
+    arg1: BinarySource | CreateBinaryOptions,
+    arg2: string | undefined | MedplumRequestOptions,
+    arg3?: string,
+    arg4?: (e: ProgressEvent) => void
   ): Promise<Binary> {
+    const createBinaryOptions = normalizeCreateBinaryOptions(arg1, arg2, arg3, arg4);
+    const { filename, contentType, onProgress } = createBinaryOptions;
+
     if (filename?.endsWith('.exe')) {
       return Promise.reject(badRequest('Invalid file type'));
     }
@@ -179,6 +247,74 @@ export class MockClient extends MedplumClient {
       url: 'https://example.com/binary/123',
     };
   }
+
+  async pushToAgent(
+    agent: Agent | Reference<Agent>,
+    destination: Device | Reference<Device> | string,
+    body: any,
+    contentType?: string,
+    _waitForResponse?: boolean,
+    _options?: MedplumRequestOptions
+  ): Promise<any> {
+    if (contentType === ContentType.PING) {
+      if (!this.agentAvailable) {
+        throw new OperationOutcomeError(badRequest('Timeout'));
+      }
+      if (typeof destination !== 'string' || (destination !== '8.8.8.8' && destination !== 'localhost')) {
+        // Exception for test case
+        if (destination !== 'abc123') {
+          console.warn(
+            'IPs other than 8.8.8.8 and hostnames other than `localhost` will always throw an error in MockClient'
+          );
+        }
+        throw new OperationOutcomeError(badRequest('Destination device not found'));
+      }
+      const ip = destination === 'localhost' ? '127.0.0.1' : destination;
+      return `PING ${destination} (${ip}): 56 data bytes
+64 bytes from ${ip}: icmp_seq=0 ttl=115 time=10.977 ms
+64 bytes from ${ip}: icmp_seq=1 ttl=115 time=13.037 ms
+64 bytes from ${ip}: icmp_seq=2 ttl=115 time=23.159 ms
+64 bytes from ${ip}: icmp_seq=3 ttl=115 time=12.725 ms
+
+--- ${destination} ping statistics ---
+4 packets transmitted, 4 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 10.977/14.975/23.159/4.790 ms
+`;
+    }
+    return undefined;
+  }
+
+  setAgentAvailable(value: boolean): void {
+    this.agentAvailable = value;
+  }
+
+  getSubscriptionManager(): MockSubscriptionManager {
+    if (!this.subManager) {
+      this.subManager = new MockSubscriptionManager(this, 'wss://example.com/ws/subscriptions-r4', {
+        mockReconnectingWebSocket: true,
+      });
+    }
+    return this.subManager;
+  }
+
+  setSubscriptionManager(subManager: MockSubscriptionManager): void {
+    if (this.subManager) {
+      this.subManager.closeWebSocket();
+    }
+    this.subManager = subManager;
+  }
+
+  subscribeToCriteria(criteria: string, subscriptionProps?: Partial<Subscription>): SubscriptionEmitter {
+    return this.getSubscriptionManager().addCriteria(criteria, subscriptionProps);
+  }
+
+  unsubscribeFromCriteria(criteria: string, subscriptionProps?: Partial<Subscription>): void {
+    this.getSubscriptionManager().removeCriteria(criteria, subscriptionProps);
+  }
+
+  getMasterSubscriptionEmitter(): SubscriptionEmitter {
+    return this.getSubscriptionManager().getMasterEmitter();
+  }
 }
 
 export class MockFetchClient {
@@ -188,6 +324,7 @@ export class MockFetchClient {
   constructor(
     readonly router: FhirRouter,
     readonly repo: MemoryRepository,
+    readonly baseUrl: string,
     readonly debug = false
   ) {}
 
@@ -201,7 +338,7 @@ export class MockFetchClient {
     }
 
     const method = options.method ?? 'GET';
-    const path = url.replace('https://example.com/', '');
+    const path = url.replace(this.baseUrl, '');
 
     if (this.debug) {
       console.log('MockClient', method, path);
@@ -221,7 +358,11 @@ export class MockFetchClient {
       ok: true,
       status: response?.resourceType === 'OperationOutcome' ? getStatus(response) : 200,
       headers: {
-        get: () => ContentType.FHIR_JSON,
+        get(name: string): string | undefined {
+          return {
+            'content-type': ContentType.FHIR_JSON,
+          }[name];
+        },
       } as unknown as Headers,
       blob: () => Promise.resolve(response),
       json: () => Promise.resolve(response),
@@ -232,7 +373,7 @@ export class MockFetchClient {
   mockCreatePdf(
     docDefinition: TDocumentDefinitions,
     tableLayouts?: { [name: string]: CustomTableLayout },
-    fonts?: TFontDictionary | undefined
+    fonts?: TFontDictionary
   ): Promise<any> {
     if (this.debug) {
       console.log(`Mock Client: createPdf(`);
@@ -245,7 +386,7 @@ export class MockFetchClient {
 
   private async mockHandler(method: HttpMethod, path: string, options: any): Promise<any> {
     if (path.startsWith('admin/')) {
-      return this.mockAdminHandler(method, path);
+      return this.mockAdminHandler(method, path, options);
     } else if (path.startsWith('auth/')) {
       return this.mockAuthHandler(method, path, options);
     } else if (path.startsWith('oauth2/')) {
@@ -257,26 +398,57 @@ export class MockFetchClient {
     }
   }
 
-  private async mockAdminHandler(_method: string, path: string): Promise<any> {
-    if (path === 'admin/projects/setpassword' && _method.toUpperCase() === 'POST') {
+  private async mockAdminHandler(method: string, path: string, options: RequestInit): Promise<any> {
+    if (path === 'admin/projects/setpassword' && method.toUpperCase() === 'POST') {
       return { ok: true };
     }
 
-    const projectMatch = /^admin\/projects\/([\w-]+)$/.exec(path);
+    // Create new bot
+    const botCreateMatch = /^admin\/projects\/([\w(-)?]+)\/bot$/.exec(path);
+    if (botCreateMatch && method.toUpperCase() === 'POST') {
+      const body = options.body;
+      let jsonBody: Record<string, any> | undefined;
+      if (body) {
+        jsonBody = JSON.parse(body as string);
+      }
+
+      const binary = await this.repo.createResource<Binary>({
+        id: generateId(),
+        resourceType: 'Binary',
+        contentType: ContentType.TYPESCRIPT,
+      });
+
+      const projectId = botCreateMatch[1];
+      return this.repo.createResource<Bot>({
+        meta: {
+          project: projectId,
+        },
+        id: generateId(),
+        resourceType: 'Bot',
+        name: jsonBody?.name,
+        description: jsonBody?.description,
+        runtimeVersion: jsonBody?.runtimeVersion ?? 'awslambda',
+        sourceCode: {
+          contentType: ContentType.TYPESCRIPT,
+          title: 'index.ts',
+          url: getReferenceString(binary),
+        },
+      });
+    }
+
+    const projectMatch = /^admin\/projects\/([\w(-)?]+)$/.exec(path);
     if (projectMatch) {
       return {
         project: await this.repo.readResource('Project', projectMatch[1]),
       };
     }
 
-    const membershipMatch = /^admin\/projects\/([\w-]+)\/members\/([\w-]+)$/.exec(path);
+    const membershipMatch = /^admin\/projects\/([\w(-)?]+)\/members\/([\w(-)?]+)$/.exec(path);
     if (membershipMatch) {
       return this.repo.readResource('ProjectMembership', membershipMatch[2]);
     }
 
-    return {
-      ok: true,
-    };
+    return { ok: true };
   }
 
   private mockAuthHandler(method: HttpMethod, path: string, options: any): any {
@@ -459,7 +631,15 @@ export class MockFetchClient {
       const formBody = new URLSearchParams(options.body);
       const clientId = formBody.get('client_id') ?? 'my-client-id';
       return {
-        access_token: 'header.' + base64Encode(JSON.stringify({ client_id: clientId })) + '.signature',
+        access_token: createFakeJwt({
+          sub: '1234567890',
+          iat: Math.ceil(Date.now() / 1000),
+          exp: Math.ceil(Date.now() / 1000) + 60 * 60, // adding one hour in seconds
+          client_id: clientId,
+          login_id: '123',
+        }),
+        refresh_token: createFakeJwt({ client_id: 123 }),
+        profile: { reference: 'Practitioner/123' },
       };
     }
 
@@ -509,8 +689,10 @@ export class MockFetchClient {
       ExampleWorkflowRequestGroup,
       ExampleSmartClientApplication,
       TestProject,
-      TestProjectMembersihp,
-    ];
+      TestProjectMembership,
+      ExampleThreadHeader,
+      ...ExampleThreadMessages,
+    ] satisfies Resource[];
 
     for (const resource of defaultResources) {
       await this.repo.createResource(resource);
@@ -518,6 +700,7 @@ export class MockFetchClient {
 
     for (const structureDefinition of StructureDefinitionList as StructureDefinition[]) {
       structureDefinition.kind = 'resource';
+      structureDefinition.url = 'http://hl7.org/fhir/StructureDefinition/' + structureDefinition.name;
       loadDataType(structureDefinition);
       await this.repo.createResource(structureDefinition);
     }
@@ -535,28 +718,27 @@ export class MockFetchClient {
       return exampleValueSet;
     }
 
-    const parsedUrl = new URL(url, 'https://example.com');
-
-    let pathname = parsedUrl.pathname;
-    if (pathname.includes('fhir/R4')) {
-      pathname = pathname.substring(pathname.indexOf('fhir/R4') + 7);
+    if (url.includes('fhir/R4')) {
+      url = url.substring(url.indexOf('fhir/R4') + 7);
     }
 
     let body = undefined;
     if (options.body) {
       try {
         body = JSON.parse(options.body);
-      } catch (err) {
+      } catch (_err) {
         body = options.body;
       }
     }
 
     const request: FhirRequest = {
       method,
-      pathname,
+      url,
+      pathname: '',
       body,
       params: Object.create(null),
-      query: Object.fromEntries(parsedUrl.searchParams),
+      query: Object.create(null),
+      headers: toIncomingHttpHeaders(options.headers),
     };
 
     const result = await this.router.handleRequest(request, this.repo);
@@ -568,6 +750,40 @@ export class MockFetchClient {
   }
 }
 
+/**
+ * Creates a fake JWT token with the provided claims for testing.
+ *
+ * **NOTE: This function does not create a real signed JWT. Attempting to read the header or signature will fail.**
+ *
+ * @param claims - The claims to encode in the body of the fake JWT.
+ * @returns A stringified fake JWT token.
+ */
+export function createFakeJwt(claims: Record<string, string | number>): string {
+  return 'header.' + base64Encode(JSON.stringify(claims)) + '.signature';
+}
+
 function base64Encode(str: string): string {
   return typeof window !== 'undefined' ? window.btoa(str) : Buffer.from(str).toString('base64');
+}
+
+// even though it's just a type, avoid importing IncomingHttpHeaders from node:http
+// since MockClient needs to work in the browser. Use a reasonable approximation instead
+interface PseudoIncomingHttpHeaders {
+  [key: string]: string | undefined;
+}
+function toIncomingHttpHeaders(headers: HeadersInit | undefined): PseudoIncomingHttpHeaders {
+  const result: PseudoIncomingHttpHeaders = {};
+
+  if (headers) {
+    for (const [key, value] of Object.entries(headers)) {
+      const lowerKey = key.toLowerCase();
+      if (typeof value === 'string') {
+        result[lowerKey] = value;
+      } else {
+        console.warn(`Ignoring non-string value ${value} for header ${lowerKey}`);
+      }
+    }
+  }
+
+  return result;
 }

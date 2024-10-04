@@ -11,7 +11,14 @@ import { adminRouter } from './admin/routes';
 import { asyncWrap } from './async';
 import { authRouter } from './auth/routes';
 import { getConfig, MedplumServerConfig } from './config';
-import { attachRequestContext, AuthenticatedRequestContext, getRequestContext, requestContextStore } from './context';
+import {
+  attachRequestContext,
+  AuthenticatedRequestContext,
+  closeRequestContext,
+  getLogger,
+  getRequestContext,
+  requestContextStore,
+} from './context';
 import { corsOptions } from './cors';
 import { closeDatabase, initDatabase } from './database';
 import { dicomRouter } from './dicom/routes';
@@ -25,11 +32,11 @@ import { fhircastSTU2Router, fhircastSTU3Router } from './fhircast/routes';
 import { healthcheckHandler } from './healthcheck';
 import { cleanupHeartbeat, initHeartbeat } from './heartbeat';
 import { hl7BodyParser } from './hl7/parser';
-import { globalLogger } from './logger';
+import { keyValueRouter } from './keyvalue/routes';
 import { initKeys } from './oauth/keys';
 import { oauthRouter } from './oauth/routes';
 import { openApiHandler } from './openapi';
-import { closeRateLimiter } from './ratelimit';
+import { closeRateLimiter, getRateLimiter } from './ratelimit';
 import { closeRedis, initRedis } from './redis';
 import { scimRouter } from './scim/routes';
 import { seedDatabase } from './seed';
@@ -67,7 +74,7 @@ function standardHeaders(_req: Request, res: Response, next: NextFunction): void
 
   // Disable browser features
   res.set(
-    'Permission-Policy',
+    'Permissions-Policy',
     'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), interest-cohort=()'
   );
 
@@ -94,6 +101,7 @@ function standardHeaders(_req: Request, res: Response, next: NextFunction): void
  * @param next - The next handler.
  */
 function errorHandler(err: any, req: Request, res: Response, next: NextFunction): void {
+  closeRequestContext();
   if (res.headersSent) {
     next(err);
     return;
@@ -117,13 +125,20 @@ function errorHandler(err: any, req: Request, res: Response, next: NextFunction)
     sendOutcome(res, badRequest('File too large'));
     return;
   }
-  try {
-    getRequestContext().logger.error('Unhandled error', err);
-  } catch {
-    globalLogger.error('Unhandled error', err);
+  if (err.type === 'stream.not.readable') {
+    // This is a common error when the client disconnects
+    // See: https://expressjs.com/en/resources/middleware/body-parser.html
+    // It is commonly associated with an AWS ALB disconnect status code 460
+    // See: https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-troubleshooting.html#http-460-issues
+    getLogger().warn('Stream not readable', err);
+    sendOutcome(res, badRequest('Stream not readable'));
+    return;
   }
+  getLogger().error('Unhandled error', err);
   res.status(500).json({ msg: 'Internal Server Error' });
 }
+
+export const JSON_TYPE = [ContentType.JSON, 'application/*+json'];
 
 export async function initApp(app: Express, config: MedplumServerConfig): Promise<http.Server> {
   await initAppServices(config);
@@ -131,12 +146,13 @@ export async function initApp(app: Express, config: MedplumServerConfig): Promis
   initWebSockets(server);
 
   app.set('etag', false);
-  app.set('trust proxy', true);
+  app.set('trust proxy', 1);
   app.set('x-powered-by', false);
   app.use(standardHeaders);
   app.use(cors(corsOptions));
   app.use(compression());
   app.use(attachRequestContext);
+  app.use(getRateLimiter(config));
   app.use('/fhir/R4/Binary', binaryRouter);
   app.use(
     urlencoded({
@@ -148,12 +164,7 @@ export async function initApp(app: Express, config: MedplumServerConfig): Promis
       type: [ContentType.TEXT, ContentType.HL7_V2],
     })
   );
-  app.use(
-    json({
-      type: [ContentType.JSON, ContentType.FHIR_JSON, ContentType.JSON_PATCH],
-      limit: config.maxJsonSize,
-    })
-  );
+  app.use(json({ type: JSON_TYPE, limit: config.maxJsonSize }));
   app.use(
     hl7BodyParser({
       type: [ContentType.HL7_V2],
@@ -177,6 +188,7 @@ export async function initApp(app: Express, config: MedplumServerConfig): Promis
   apiRouter.use('/fhir/R4/', fhirRouter);
   apiRouter.use('/fhircast/STU2/', fhircastSTU2Router);
   apiRouter.use('/fhircast/STU3/', fhircastSTU3Router);
+  apiRouter.use('/keyvalue/v1/', keyValueRouter);
   apiRouter.use('/oauth2/', oauthRouter);
   apiRouter.use('/scim/v2/', scimRouter);
   apiRouter.use('/storage/', storageRouter);
@@ -191,27 +203,29 @@ export function initAppServices(config: MedplumServerConfig): Promise<void> {
   return requestContextStore.run(AuthenticatedRequestContext.system(), async () => {
     loadStructureDefinitions();
     initRedis(config.redis);
-    await initDatabase(config.database);
+    await initDatabase(config);
     await seedDatabase();
     await initKeys(config);
     initBinaryStorage(config.binaryStorage);
     initWorkers(config);
-    initHeartbeat();
+    initHeartbeat(config);
   });
 }
 
 export async function shutdownApp(): Promise<void> {
-  await closeWorkers();
-  await closeDatabase();
   cleanupHeartbeat();
   await closeWebSockets();
-  closeRedis();
-  closeRateLimiter();
-
   if (server) {
-    server.close();
+    await new Promise((resolve) => {
+      (server as http.Server).close(resolve);
+    });
     server = undefined;
   }
+
+  await closeWorkers();
+  await closeDatabase();
+  await closeRedis();
+  closeRateLimiter();
 
   // If binary storage is a temporary directory, delete it
   const binaryStorage = getConfig().binaryStorage;
@@ -222,25 +236,29 @@ export async function shutdownApp(): Promise<void> {
 
 const loggingMiddleware = (req: Request, res: Response, next: NextFunction): void => {
   const ctx = getRequestContext();
-  const start = new Date();
+  const start = Date.now();
 
   res.on('finish', () => {
-    const duration = new Date().getTime() - start.getTime();
+    const duration = Date.now() - start;
 
     let userProfile: string | undefined;
+    let projectId: string | undefined;
     if (ctx instanceof AuthenticatedRequestContext) {
       userProfile = ctx.profile.reference;
+      projectId = ctx.project.id;
     }
 
     ctx.logger.info('Request served', {
-      duration: `${duration} ms`,
+      durationMs: duration,
       ip: req.ip,
       method: req.method,
-      path: req.path,
+      path: req.originalUrl,
       profile: userProfile,
+      projectId,
       receivedAt: start,
       status: res.statusCode,
       ua: req.get('User-Agent'),
+      mode: ctx instanceof AuthenticatedRequestContext ? ctx.repo.mode : undefined,
     });
   });
 

@@ -1,17 +1,16 @@
+import { indexStructureDefinitionBundle } from '@medplum/core';
+import { readJson } from '@medplum/definitions';
 import {
   Observation,
   OperationDefinition,
-  OperationOutcome,
   Parameters,
   ParametersParameter,
   Patient,
   Reference,
 } from '@medplum/fhirtypes';
-import { parseInputParameters, parseParameters, sendOutputParameters } from './parameters';
-import { Request, Response } from 'express';
-import { allOk, created, indexStructureDefinitionBundle } from '@medplum/core';
-import { withTestContext } from '../../../test.setup';
-import { readJson } from '@medplum/definitions';
+import { Request } from 'express';
+import { parse } from 'qs';
+import { buildOutputParameters, parseInputParameters, parseParameters } from './parameters';
 
 describe('FHIR Parameters parsing', () => {
   test('Read Parameters', () => {
@@ -52,15 +51,18 @@ const opDef: OperationDefinition = {
   parameter: [
     { name: 'singleIn', use: 'in', min: 0, max: '1', type: 'string' },
     { name: 'requiredIn', use: 'in', min: 1, max: '1', type: 'boolean' },
-    { name: 'multiIn', use: 'in', min: 0, max: '*', type: 'Reference' },
+    { name: 'numeric', use: 'in', min: 0, max: '1', type: 'integer' },
+    { name: 'fractional', use: 'in', min: 0, max: '1', type: 'decimal' },
+    { name: 'multiIn', use: 'in', min: 0, max: '*', type: 'string' },
+    { name: 'complexIn', use: 'in', min: 0, max: '*', type: 'Reference' },
     {
       name: 'partsIn',
       use: 'in',
       min: 0,
       max: '*',
       part: [
-        { name: 'foo', min: 1, max: '1', type: 'string' },
-        { name: 'bar', min: 0, max: '1', type: 'boolean' },
+        { use: 'in', name: 'foo', min: 1, max: '1', type: 'string' },
+        { use: 'in', name: 'bar', min: 0, max: '1', type: 'boolean' },
       ],
     },
     { name: 'singleOut', use: 'out', min: 1, max: '1', type: 'Quantity' },
@@ -74,30 +76,34 @@ describe('Operation Input Parameters parsing', () => {
   });
 
   test.each<[ParametersParameter[], Record<string, any>]>([
-    [[{ name: 'requiredIn', valueBoolean: true }], { requiredIn: true, singleIn: undefined, multiIn: [], partsIn: [] }],
+    [
+      [{ name: 'requiredIn', valueBoolean: true }],
+      { requiredIn: true, singleIn: undefined, multiIn: [], complexIn: [], partsIn: [] },
+    ],
     [
       [
         { name: 'requiredIn', valueBoolean: false },
         { name: 'singleIn', valueString: 'Hi!' },
       ],
-      { requiredIn: false, singleIn: 'Hi!', multiIn: [], partsIn: [] },
+      { requiredIn: false, singleIn: 'Hi!', multiIn: [], complexIn: [], partsIn: [] },
     ],
     [
       [
         { name: 'requiredIn', valueBoolean: true },
-        { name: 'multiIn', valueReference: { reference: 'Patient/test' } },
+        { name: 'complexIn', valueReference: { reference: 'Patient/test' } },
       ],
-      { requiredIn: true, multiIn: [{ reference: 'Patient/test' }], singleIn: undefined, partsIn: [] },
+      { requiredIn: true, complexIn: [{ reference: 'Patient/test' }], multiIn: [], singleIn: undefined, partsIn: [] },
     ],
     [
       [
         { name: 'requiredIn', valueBoolean: true },
-        { name: 'multiIn', valueReference: { reference: 'Patient/test' } },
-        { name: 'multiIn', valueReference: { reference: 'Patient/example' } },
+        { name: 'complexIn', valueReference: { reference: 'Patient/test' } },
+        { name: 'complexIn', valueReference: { reference: 'Patient/example' } },
       ],
       {
         requiredIn: true,
-        multiIn: [{ reference: 'Patient/test' }, { reference: 'Patient/example' }],
+        complexIn: [{ reference: 'Patient/test' }, { reference: 'Patient/example' }],
+        multiIn: [],
         singleIn: undefined,
         partsIn: [],
       },
@@ -105,14 +111,15 @@ describe('Operation Input Parameters parsing', () => {
     [
       [
         { name: 'requiredIn', valueBoolean: true },
-        { name: 'multiIn', valueReference: { reference: 'Patient/test' } },
+        { name: 'complexIn', valueReference: { reference: 'Patient/test' } },
         { name: 'singleIn', valueString: 'Hello!' },
-        { name: 'multiIn', valueReference: { reference: 'Patient/example' } },
+        { name: 'complexIn', valueReference: { reference: 'Patient/example' } },
       ],
       {
         requiredIn: true,
         singleIn: 'Hello!',
-        multiIn: [{ reference: 'Patient/test' }, { reference: 'Patient/example' }],
+        complexIn: [{ reference: 'Patient/test' }, { reference: 'Patient/example' }],
+        multiIn: [],
         partsIn: [],
       },
     ],
@@ -132,6 +139,7 @@ describe('Operation Input Parameters parsing', () => {
         partsIn: [{ foo: 'baz', bar: false }],
         singleIn: undefined,
         multiIn: [],
+        complexIn: [],
       },
     ],
     [
@@ -147,6 +155,7 @@ describe('Operation Input Parameters parsing', () => {
         partsIn: [{ foo: 'baz' }],
         singleIn: undefined,
         multiIn: [],
+        complexIn: [],
       },
     ],
   ])('Read input Parameters', (params, expected) => {
@@ -164,14 +173,14 @@ describe('Operation Input Parameters parsing', () => {
       body: {
         requiredIn: false,
         singleIn: 'Yo',
-        multiIn: [{ reference: 'Observation/bp' }, { reference: 'Observation/bmi' }],
+        complexIn: [{ reference: 'Observation/bp' }, { reference: 'Observation/bmi' }],
         extraneous: 4,
       },
     } as unknown as Request;
     expect(parseInputParameters(opDef, req)).toEqual({
       requiredIn: false,
       singleIn: 'Yo',
-      multiIn: [{ reference: 'Observation/bp' }, { reference: 'Observation/bmi' }],
+      complexIn: [{ reference: 'Observation/bp' }, { reference: 'Observation/bmi' }],
     });
   });
 
@@ -218,48 +227,66 @@ describe('Operation Input Parameters parsing', () => {
         resourceType: 'Parameters',
         parameter: [{ name: 'requiredIn', valueBoolean: 'Hi!' }],
       } as unknown as Parameters,
-      'Invalid JSON type: expected boolean, but got string (Parameters.parameter.value[x])',
+      'Invalid JSON type: expected boolean, but got string (Parameters.parameter[0].value[x])',
     ],
     [
       { resourceType: 'Parameters', parameter: [{ valueQuantity: { value: 5 } }] } as unknown as Parameters,
-      'Missing required property (Parameters.parameter.name)',
+      'Missing required property (Parameters.parameter[0].name)',
     ],
   ])('Throws error on invalid Parameters: %j', (parameters, errorMsg) => {
     const req: Request = { body: parameters } as unknown as Request;
     expect(() => parseInputParameters(opDef, req)).toThrow(new Error(errorMsg));
   });
+
+  test('Parses query string parameters as correct type', () => {
+    const req: Request = {
+      method: 'GET',
+      query: parse('requiredIn=true&numeric=100&fractional=3.14159'),
+    } as unknown as Request;
+    expect(parseInputParameters(opDef, req)).toEqual({ requiredIn: true, numeric: 100, fractional: 3.14159 });
+  });
+
+  test('Allows passing multiple instances of same query parameter', () => {
+    const req: Request = {
+      method: 'GET',
+      query: parse('multiIn=foo&requiredIn=true&multiIn=bar'),
+    } as unknown as Request;
+    expect(parseInputParameters(opDef, req)).toEqual({ requiredIn: true, multiIn: ['foo', 'bar'] });
+  });
+
+  test.each<[string, string]>([
+    [
+      'requiredIn=true&complexIn={"reference":"Patient/foo"}',
+      'Complex parameter complexIn (Reference) cannot be passed via query string',
+    ],
+    ['requiredIn=false&numeric=wrong', `Invalid value 'wrong' provided for integer parameter`],
+    ['requiredIn=false&fractional=wrong', `Invalid value 'wrong' provided for decimal parameter`],
+    ['requiredIn=1', `Invalid value '1' provided for boolean parameter`],
+  ])('Throws on invalid query string parameters: %s', (query, errorMsg) => {
+    const req: Request = { method: 'GET', query: parse(query) } as unknown as Request;
+    expect(() => parseInputParameters(opDef, req)).toThrow(new Error(errorMsg));
+  });
 });
 
 describe('Send Operation output Parameters', () => {
-  const res = {
-    set: jest.fn(),
-    status: jest.fn(),
-    json: jest.fn(),
-  } as unknown as Response;
-
   beforeEach(() => {
     jest.resetAllMocks();
-    (res.status as jest.Mock).mockReturnThis();
   });
 
   test('Single required parameter', async () => {
-    await sendOutputParameters(opDef, res, allOk, { singleOut: { value: 20.2, unit: 'kg/m^2' } });
-
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith<[Parameters]>({
+    const parameters = buildOutputParameters(opDef, { singleOut: { value: 20.2, unit: 'kg/m^2' } });
+    expect(parameters).toMatchObject({
       resourceType: 'Parameters',
       parameter: [{ name: 'singleOut', valueQuantity: { value: 20.2, unit: 'kg/m^2' } }],
     });
   });
 
   test('Optional output parameter', async () => {
-    await sendOutputParameters(opDef, res, created, {
+    const parameters = buildOutputParameters(opDef, {
       singleOut: { value: 20.2, unit: 'kg/m^2' },
       multiOut: [{ reference: 'Observation/height' }, { reference: 'Observation/weight' }],
     });
-
-    expect(res.status).toHaveBeenCalledWith(201);
-    expect(res.json).toHaveBeenCalledWith<[Parameters]>({
+    expect(parameters).toMatchObject({
       resourceType: 'Parameters',
       parameter: [
         { name: 'singleOut', valueQuantity: { value: 20.2, unit: 'kg/m^2' } },
@@ -269,126 +296,79 @@ describe('Send Operation output Parameters', () => {
     });
   });
 
-  test('Return resource output', () =>
-    withTestContext(async () => {
-      const resourceReturnOp: OperationDefinition = {
-        ...opDef,
-        parameter: [{ name: 'return', use: 'out', type: 'Observation', min: 1, max: '1' }],
-      };
-      const obs = {
-        resourceType: 'Observation',
-        status: 'final',
-        code: {
-          coding: [{ system: 'http://loinc.org', code: '39156-5', display: 'Body mass index (BMI) [Ratio]' }],
-        },
-        valueQuantity: {
-          value: 19.6,
-          unit: 'kg/m^2',
-        },
-      } as Observation;
-      await sendOutputParameters(resourceReturnOp, res, allOk, obs);
+  test('Return resource output', () => {
+    const resourceReturnOp: OperationDefinition = {
+      ...opDef,
+      parameter: [{ name: 'return', use: 'out', type: 'Observation', min: 1, max: '1' }],
+    };
+    const obs = {
+      resourceType: 'Observation',
+      status: 'final',
+      code: {
+        coding: [{ system: 'http://loinc.org', code: '39156-5', display: 'Body mass index (BMI) [Ratio]' }],
+      },
+      valueQuantity: {
+        value: 19.6,
+        unit: 'kg/m^2',
+      },
+    } as Observation;
+    const output = buildOutputParameters(resourceReturnOp, obs);
+    expect(output).toMatchObject(obs);
+  });
 
-      expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.json).toHaveBeenCalledWith(obs);
-    }));
+  test('Returns error on non-resource', () => {
+    const resourceReturnOp: OperationDefinition = {
+      ...opDef,
+      parameter: [{ name: 'return', use: 'out', type: 'Observation', min: 1, max: '1' }],
+    };
+    const ref = { reference: 'Observation/bmi' } as Reference;
 
-  test('Returns error on non-resource', () =>
-    withTestContext(async () => {
-      const resourceReturnOp: OperationDefinition = {
-        ...opDef,
-        parameter: [{ name: 'return', use: 'out', type: 'Observation', min: 1, max: '1' }],
-      };
-      const ref = { reference: 'Observation/bmi' } as Reference;
-      await sendOutputParameters(resourceReturnOp, res, allOk, ref);
+    try {
+      buildOutputParameters(resourceReturnOp, ref);
+      throw new Error('expected error');
+    } catch (err: any) {
+      expect(err.message).toBe('Expected Observation output, but got unexpected object');
+    }
+  });
 
-      expect(res.status).toHaveBeenCalledWith(500);
-      expect(res.json).toHaveBeenCalledWith<[OperationOutcome]>(
-        expect.objectContaining({
-          resourceType: 'OperationOutcome',
-          issue: [
-            {
-              severity: 'error',
-              code: 'exception',
-              details: { text: 'Internal server error' },
-              diagnostics: 'Error: Expected Observation output, but got unexpected object',
-            },
-          ],
-        })
-      );
-    }));
+  test('Returns error on incorrect resource type', () => {
+    const resourceReturnOp: OperationDefinition = {
+      ...opDef,
+      parameter: [{ name: 'return', use: 'out', type: 'Observation', min: 1, max: '1' }],
+    };
+    const patient = { resourceType: 'Patient' } as Patient;
 
-  test('Returns error on incorrect resource type', () =>
-    withTestContext(async () => {
-      const resourceReturnOp: OperationDefinition = {
-        ...opDef,
-        parameter: [{ name: 'return', use: 'out', type: 'Observation', min: 1, max: '1' }],
-      };
-      const patient = { resourceType: 'Patient' } as Patient;
-      await sendOutputParameters(resourceReturnOp, res, allOk, patient);
+    try {
+      buildOutputParameters(resourceReturnOp, patient);
+      throw new Error('expected error');
+    } catch (err: any) {
+      expect(err.message).toBe('Expected Observation output, but got unexpected object');
+    }
+  });
 
-      expect(res.status).toHaveBeenCalledWith(500);
-      expect(res.json).toHaveBeenCalledWith<[OperationOutcome]>(
-        expect.objectContaining({
-          resourceType: 'OperationOutcome',
-          issue: [
-            {
-              severity: 'error',
-              code: 'exception',
-              details: { text: 'Internal server error' },
-              diagnostics: 'Error: Expected Observation output, but got unexpected object',
-            },
-          ],
-        })
-      );
-    }));
-
-  test('Missing required parameter', () =>
-    withTestContext(async () => {
-      await sendOutputParameters(opDef, res, allOk, { incorrectOut: { value: 20.2, unit: 'kg/m^2' } });
-
-      expect(res.status).toHaveBeenCalledWith(500);
-      expect(res.json).toHaveBeenCalledWith<[OperationOutcome]>(
-        expect.objectContaining({
-          resourceType: 'OperationOutcome',
-          issue: [
-            {
-              severity: 'error',
-              code: 'exception',
-              details: { text: 'Internal server error' },
-              diagnostics: "Error: Expected 1 or more values for output parameter 'singleOut', got 0",
-            },
-          ],
-        })
-      );
-    }));
+  test('Missing required parameter', () => {
+    try {
+      buildOutputParameters(opDef, { incorrectOut: { value: 20.2, unit: 'kg/m^2' } });
+      throw new Error('expected error');
+    } catch (err: any) {
+      expect(err.message).toBe("Expected 1 or more values for output parameter 'singleOut', got 0");
+    }
+  });
 
   test('Omits extraneous parameters', async () => {
-    await sendOutputParameters(opDef, res, allOk, { singleOut: { value: 20.2, unit: 'kg/m^2' }, extraOut: 'foo' });
-
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith<[Parameters]>({
+    const parameters = buildOutputParameters(opDef, { singleOut: { value: 20.2, unit: 'kg/m^2' }, extraOut: 'foo' });
+    expect(parameters).toMatchObject({
       resourceType: 'Parameters',
       parameter: [{ name: 'singleOut', valueQuantity: { value: 20.2, unit: 'kg/m^2' } }],
     });
   });
 
-  test('Returns error on invalid output', () =>
-    withTestContext(async () => {
-      await sendOutputParameters(opDef, res, allOk, { singleOut: { reference: 'Observation/foo' } });
-
-      expect(res.status).toHaveBeenCalledWith(500);
-      expect(res.json).toHaveBeenCalledWith<[OperationOutcome]>(
-        expect.objectContaining({
-          resourceType: 'OperationOutcome',
-          issue: [
-            {
-              severity: 'error',
-              code: 'exception',
-              details: { text: 'Internal server error' },
-              diagnostics: 'Error: Invalid additional property "reference" (Parameters.parameter.value[x].reference)',
-            },
-          ],
-        })
-      );
-    }));
+  test('Returns error on invalid output', () => {
+    try {
+      buildOutputParameters(opDef, { singleOut: { reference: 'Observation/foo' } });
+      throw new Error('expected error');
+    } catch (err: any) {
+      expect(err.message).toBe('Invalid additional property "reference" (Parameters.parameter[0].value[x].reference)');
+    }
+  });
 });

@@ -7,7 +7,10 @@ toc_max_heading_level: 4
 
 Follow these instructions to get the complete Medplum stack running directly on your host machine.
 
-<iframe width="560" height="315" src="https://www.youtube.com/embed/nf6OElRWOJ4" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<div className="responsive-iframe-wrapper">
+  <iframe width="560" height="315" src="https://www.youtube.com/embed/nf6OElRWOJ4" title="YouTube video player" frameborder="0"
+      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+</div>
 
 ## Prerequisites
 
@@ -52,6 +55,12 @@ From your root `medplum` directory run
 
 ```sh
 docker-compose up
+```
+
+If this doesn't work for you, try
+
+```sh
+docker compose up
 ```
 
 This will:
@@ -143,6 +152,12 @@ If everything is working, you should see the following in your browser:
 ```json
 { "ok": true, "version": "<MEDPLUM_VERSION>", "postgres": true, "redis": true }
 ```
+
+:::warning Troubleshooting
+
+If you get an error such as `error: role "medplum" does not exist` or `password authentication failed for user "medplum"` this usually means you have another instance of Postgres running. Closing the other instance should resolve this issue.
+
+:::
 
 ### Run the Medplum Web App
 

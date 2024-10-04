@@ -13,19 +13,21 @@ import {
   parseJWTPayload,
   resolveId,
 } from '@medplum/core';
-import { ClientApplication, Login, Project, ProjectMembership, Reference } from '@medplum/fhirtypes';
+import { ClientApplication, Login, Project, ProjectMembership, Reference, User } from '@medplum/fhirtypes';
 import { createHash, randomUUID } from 'crypto';
 import { Request, RequestHandler, Response } from 'express';
 import { JWTVerifyOptions, createRemoteJWKSet, jwtVerify } from 'jose';
 import { asyncWrap } from '../async';
 import { getProjectIdByClientId } from '../auth/utils';
 import { getConfig } from '../config';
-import { systemRepo } from '../fhir/repo';
+import { getAccessPolicyForLogin } from '../fhir/accesspolicy';
+import { getSystemRepo } from '../fhir/repo';
 import { getTopicForUser } from '../fhircast/utils';
 import { MedplumRefreshTokenClaims, generateSecret, verifyJwt } from './keys';
 import {
+  checkIpAccessRules,
   getAuthTokens,
-  getClient,
+  getClientApplication,
   getClientApplicationMembership,
   getExternalUserInfo,
   revokeLogin,
@@ -100,10 +102,11 @@ async function handleClientCredentials(req: Request, res: Response): Promise<voi
     return;
   }
 
+  const systemRepo = getSystemRepo();
   let client: ClientApplication;
   try {
     client = await systemRepo.readResource<ClientApplication>('ClientApplication', clientId);
-  } catch (err) {
+  } catch (_err) {
     sendTokenError(res, 'invalid_request', 'Invalid client');
     return;
   }
@@ -134,11 +137,22 @@ async function handleClientCredentials(req: Request, res: Response): Promise<voi
     membership: createReference(membership),
     authTime: new Date().toISOString(),
     granted: true,
-    superAdmin: project.superAdmin,
     scope,
+    remoteAddress: req.ip,
+    userAgent: req.get('User-Agent'),
   });
 
-  await sendTokenResponse(res, login, membership);
+  // TODO: build full AuthState object, including on-behalf-of
+
+  try {
+    const accessPolicy = await getAccessPolicyForLogin({ project, login, membership });
+    await checkIpAccessRules(login, accessPolicy);
+  } catch (err) {
+    sendTokenError(res, 'invalid_request', normalizeErrorString(err));
+    return;
+  }
+
+  await sendTokenResponse(res, login, client.refreshTokenLifetime);
 }
 
 /**
@@ -160,6 +174,7 @@ async function handleAuthorizationCode(req: Request, res: Response): Promise<voi
     return;
   }
 
+  const systemRepo = getSystemRepo();
   const searchResult = await systemRepo.search({
     resourceType: 'Login',
     filters: [
@@ -200,13 +215,15 @@ async function handleAuthorizationCode(req: Request, res: Response): Promise<voi
   }
 
   let client: ClientApplication | undefined;
-  if (clientId) {
-    try {
-      client = await getClient(clientId);
-    } catch (err) {
-      sendTokenError(res, 'invalid_request', 'Invalid client');
-      return;
+  try {
+    if (clientId) {
+      client = await getClientApplication(clientId);
+    } else if (login.client) {
+      client = await getClientApplication(resolveId(login.client) as string);
     }
+  } catch (_err) {
+    sendTokenError(res, 'invalid_request', 'Invalid client');
+    return;
   }
 
   if (clientSecret) {
@@ -231,8 +248,7 @@ async function handleAuthorizationCode(req: Request, res: Response): Promise<voi
     }
   }
 
-  const membership = await systemRepo.readReference<ProjectMembership>(login.membership);
-  await sendTokenResponse(res, login, membership);
+  await sendTokenResponse(res, login, client?.refreshTokenLifetime);
 }
 
 /**
@@ -251,11 +267,12 @@ async function handleRefreshToken(req: Request, res: Response): Promise<void> {
   let claims: MedplumRefreshTokenClaims;
   try {
     claims = (await verifyJwt(refreshToken)).payload as MedplumRefreshTokenClaims;
-  } catch (err) {
+  } catch (_err) {
     sendTokenError(res, 'invalid_request', 'Invalid refresh token');
     return;
   }
 
+  const systemRepo = getSystemRepo();
   const login = await systemRepo.readResource<Login>('Login', claims.login_id);
 
   if (login.refreshSecret === undefined) {
@@ -295,6 +312,19 @@ async function handleRefreshToken(req: Request, res: Response): Promise<void> {
     }
   }
 
+  let client: ClientApplication | undefined;
+  if (login.client) {
+    const clientId = resolveId(login.client) ?? '';
+    try {
+      client = await systemRepo.readResource<ClientApplication>('ClientApplication', clientId);
+    } catch (_err) {
+      sendTokenError(res, 'invalid_request', 'Invalid client');
+      return;
+    }
+  }
+
+  const refreshTokenLifetime = client?.refreshTokenLifetime;
+
   // Refresh token rotation
   // Generate a new refresh secret and update the login
   const updatedLogin = await systemRepo.updateResource<Login>({
@@ -304,11 +334,7 @@ async function handleRefreshToken(req: Request, res: Response): Promise<void> {
     userAgent: req.get('User-Agent'),
   });
 
-  const membership = await systemRepo.readReference<ProjectMembership>(
-    login.membership as Reference<ProjectMembership>
-  );
-
-  await sendTokenResponse(res, updatedLogin, membership);
+  await sendTokenResponse(res, updatedLogin, refreshTokenLifetime);
 }
 
 /**
@@ -353,6 +379,7 @@ export async function exchangeExternalAuthToken(
     return;
   }
 
+  const systemRepo = getSystemRepo();
   const projectId = await getProjectIdByClientId(clientId, undefined);
   const client = await systemRepo.readResource<ClientApplication>('ClientApplication', clientId);
   const idp = client.identityProvider;
@@ -390,11 +417,7 @@ export async function exchangeExternalAuthToken(
     userAgent: req.get('User-Agent'),
   });
 
-  const membership = await systemRepo.readReference<ProjectMembership>(
-    login.membership as Reference<ProjectMembership>
-  );
-
-  await sendTokenResponse(res, login, membership);
+  await sendTokenResponse(res, login, client.refreshTokenLifetime);
 }
 
 /**
@@ -467,11 +490,12 @@ async function parseClientAssertion(
     return { error: 'Invalid client assertion issuer' };
   }
 
+  const systemRepo = getSystemRepo();
   const clientId = claims.iss as string;
   let client: ClientApplication;
   try {
     client = await systemRepo.readResource<ClientApplication>('ClientApplication', clientId);
-  } catch (err) {
+  } catch (_err) {
     return { error: 'Client not found' };
   }
 
@@ -542,11 +566,18 @@ async function validateClientIdAndSecret(
  * Sends a successful token response.
  * @param res - The HTTP response.
  * @param login - The user login.
- * @param membership - The project membership.
+ * @param refreshLifetime - The refresh token duration.
  */
-async function sendTokenResponse(res: Response, login: Login, membership: ProjectMembership): Promise<void> {
+async function sendTokenResponse(res: Response, login: Login, refreshLifetime?: string): Promise<void> {
   const config = getConfig();
-  const tokens = await getAuthTokens(login, membership.profile as Reference<ProfileResource>);
+
+  const systemRepo = getSystemRepo();
+  const user = await systemRepo.readReference<User>(login.user as Reference<User>);
+  const membership = await systemRepo.readReference<ProjectMembership>(
+    login.membership as Reference<ProjectMembership>
+  );
+
+  const tokens = await getAuthTokens(user, login, membership.profile as Reference<ProfileResource>, refreshLifetime);
   let patient = undefined;
   let encounter = undefined;
 
@@ -563,7 +594,13 @@ async function sendTokenResponse(res: Response, login: Login, membership: Projec
   const fhircastProps = {} as FhircastProps;
   if (login.scope?.includes('fhircast/')) {
     const userId = resolveId(login.user) as string;
-    const topic = await getTopicForUser(userId);
+    let topic: string;
+    try {
+      topic = await getTopicForUser(userId);
+    } catch (err: unknown) {
+      sendTokenError(res, normalizeErrorString(err));
+      return;
+    }
     fhircastProps['hub.url'] = config.baseUrl + 'fhircast/STU3/'; // TODO: Figure out how to handle the split between STU2 and STU3...
     fhircastProps['hub.topic'] = topic;
   }

@@ -8,7 +8,7 @@ import {
   MedplumClient,
   UCUM,
 } from '@medplum/core';
-import { readJson } from '@medplum/definitions';
+import { readJson, SEARCH_PARAMETER_BUNDLE_FILES } from '@medplum/definitions';
 import {
   Bundle,
   QuestionnaireResponse,
@@ -28,10 +28,10 @@ import { handler, processOruMessage } from './read-oru-message';
 dotenv.config();
 
 const CONNECTION_DETAILS = {
-  SFTP_USER: { valueString: 'user' },
-  SFTP_HOST: { valueString: '111111.server.transfer.us-east-1.amazonaws.com' },
-  SFTP_PRIVATE_KEY: { valueString: 'abcd' },
-  SFTP_ENVIRONMENT: { valueString: 'test' },
+  SFTP_USER: { name: 'SFTP_USER', valueString: 'user' },
+  SFTP_HOST: { name: 'SFTP_HOST', valueString: '111111.server.transfer.us-east-1.amazonaws.com' },
+  SFTP_PRIVATE_KEY: { name: 'SFTP_PRIVATE_KEY', valueString: 'abcd' },
+  SFTP_ENVIRONMENT: { name: 'SFTP_ENVIRONMENT', valueString: 'test' },
 };
 
 vi.mock('ssh2-sftp-client');
@@ -42,8 +42,9 @@ describe('Read from Partner Lab', () => {
   beforeAll(() => {
     indexStructureDefinitionBundle(readJson('fhir/r4/profiles-types.json') as Bundle);
     indexStructureDefinitionBundle(readJson('fhir/r4/profiles-resources.json') as Bundle);
-    indexSearchParameterBundle(readJson('fhir/r4/search-parameters.json') as Bundle<SearchParameter>);
-    indexSearchParameterBundle(readJson('fhir/r4/search-parameters-medplum.json') as Bundle<SearchParameter>);
+    for (const filename of SEARCH_PARAMETER_BUNDLE_FILES) {
+      indexSearchParameterBundle(readJson(filename) as Bundle<SearchParameter>);
+    }
   });
 
   beforeEach(async (ctx: any) => {
@@ -124,7 +125,8 @@ describe('Read from Partner Lab', () => {
 
   test.skip('Test Connection', async (ctx: any) => {
     await handler(ctx.medplum, {
-      input: { resourceType: 'QuestionnaireResponse' },
+      bot: { reference: 'Bot/123' },
+      input: { resourceType: 'QuestionnaireResponse', status: 'completed' },
       contentType: 'string',
       secrets: { ...CONNECTION_DETAILS },
     } as BotEvent<QuestionnaireResponse>);
@@ -377,7 +379,8 @@ describe('Read from Partner Lab', () => {
     });
 
     await handler(medplum, {
-      input: { resourceType: 'QuestionnaireResponse' },
+      bot: { reference: 'Bot/123' },
+      input: { resourceType: 'QuestionnaireResponse', status: 'completed' },
       contentType: 'string',
       secrets: { ...CONNECTION_DETAILS },
     } as BotEvent<QuestionnaireResponse>);

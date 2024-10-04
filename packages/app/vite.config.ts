@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 import { copyFileSync, existsSync } from 'fs';
 import path from 'path';
 import { defineConfig } from 'vite';
-import packageJson from './package.json' assert { type: 'json' };
+import packageJson from './package.json' with { type: 'json' };
 
 if (!existsSync('.env')) {
   copyFileSync('.env.defaults', '.env');
@@ -13,7 +13,7 @@ if (!existsSync('.env')) {
 let gitHash;
 try {
   gitHash = execSync('git rev-parse --short HEAD').toString().trim();
-} catch (error) {
+} catch (_err) {
   gitHash = 'unknown'; // Default value when not in a git repository
 }
 
@@ -33,6 +33,7 @@ export default defineConfig({
     alias: {
       '@medplum/core': path.resolve(__dirname, '../core/src'),
       '@medplum/react': path.resolve(__dirname, '../react/src'),
+      '@medplum/react-hooks': path.resolve(__dirname, '../react-hooks/src'),
     },
   },
 });

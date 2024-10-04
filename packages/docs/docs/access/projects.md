@@ -21,13 +21,23 @@ Additionally, [`Projects`](/docs/api/fhir/medplum/project) each have their own u
 
 [`Projects`](/docs/api/fhir/medplum/project) can each be configured with own global settings and secrets (see [Project Settings](#settings) below).
 
-:::tip Server Shared resources
+## Project Linking
 
-For performance and convenience, the Medplum server provides some system level, read-only resources that are shared between projects. Examples include [`StructureDefinitions`](/docs/api/fhir/resources/structuredefinition) and [`ValueSets`](/docs/api/fhir/resources/valueset).
+Certain Medplum features, including first-party integrations, require access to shared sets of resources, such as [`CodeSystem`](/docs/api/fhir/resources/codesystem), [`ValueSet`](/docs/api/fhir/resources/valueset), and [`Organization`](/docs/api/fhir/resources/organization).
 
-While they _do_ cross the [`Project`](/docs/api/fhir/medplum/project) isolation boundary, most application developers will not have to interact these resources.
+Medplum super administrators can _link_ shared projects into a target project, providing users with a _read-only_ view of all resources in the linked projects.
 
-:::
+A common use case for project linking is the Medplum terminology service. When enabled, Medplum links the shared UMLS Project, which contains [`CodeSystem`](/docs/api/fhir/resources/codesystem) resources for major UMLS code systems:
+
+- [ICD-10](/docs/charting/representing-diagnoses)
+- [RxNORM](/docs/medications/medication-codes#rxnorm)
+- [LOINC](/docs/careplans/loinc)
+
+You can see linked Projects in the Medplum App by:
+
+- Navigating to [app.medplum.com/Project](https://app.medplum.com/Project)
+- Selecting your Project
+- Selecting the "Details" tab
 
 ## The SuperAdmin `Project` {#superadmin}
 
@@ -35,14 +45,21 @@ The main exception to this isolation model is the "Super Admin" project. This is
 
 The SuperAdmin has the following privileges:
 
-- Access to protected resources.
-- Ability to overwrite the `id` of a resource, which is normally server generated.
+- Access to protected resources
+- Ability to overwrite the `id` of a resource, which is normally server generated
 - Ability to overwrite fields in the `meta` element of resources such as `author`, `lastUpdated`, etc.
 
 :::warning
 
-Logging into the Super Admin project allows for potential dangerous operations and is only intended for server administrators
+Logging into the Super Admin project allows for potentially dangerous operations and is only intended for server administrators
 
+:::
+
+:::note Checking If You Are In The SuperAdmin Project
+
+To switch to the SuperAdmin project or check if you are already in it, you can use the [**profile selector**](/docs/app/app-introduction/index.md#profile-selector).
+
+![project switcher](project-switcher.png)
 :::
 
 ## Creating a Project
@@ -55,15 +72,15 @@ Logging into the Super Admin project allows for potential dangerous operations a
 
 ## Project Settings {#settings}
 
-You can find the full `Project` resource schema [here](/docs/api/fhir/medplum/project)
+Project-level settings can be used to configure server behavior for different groups of users. A subset of the available
+settings related to authentication and access control are shown below; see the full [Project Settings](/docs/self-hosting/project-settings)
+documentation for more information.
 
-| Setting                      | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Default |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| `superAdmin`                 | Whether this project is the super administrator project ([see above](#superadmin)).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `false` |
-| `strictMode`                 | Whether this project uses strict FHIR validation, based on [FHIR profiles](/docs/fhir-datastore/profiles). **Strongly recommend setting this to `true`.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `true`  |
-| `checkReferencesOnWrite`     | If `true`, the the server will reject any create or write operations to a FHIR resource with invalid references.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `false` |
-| `features`                   | A list of optional features that are enabled for the project. Allowed values are: <ul><li>`bots`: This [`Project`](/docs/api/fhir/medplum/project) is allowed to create and run [Bots](/docs/bots/bot-basics).</li><li>`email`: Bots in this project can [send emails](/docs/sdk/core.medplumclient.sendemail). </li><li>`cron`: This [`Project`](/docs/api/fhir/medplum/project) can run Bots on [CRON timers](https://www.medplum.com/docs/bots/bot-cron-job)</li><li>`google-auth-required`: [Google authentication](/docs/auth/methods/google-auth) is the only method allowed for this [`Project`](/docs/api/fhir/medplum/project)</li></ul> |         |
-| `defaultPatientAccessPolicy` | The default [`AccessPolicy`](/docs/access/access-policies) applied to all [Patient Users](/docs/auth/user-management-guide#project-scoped-users) invited to this [`Project`](/docs/api/fhir/medplum/project). This is required to enable [open patient registration](/docs/auth/open-patient-registration).                                                                                                                                                                                                                                                                                                                                          |         |
+| Setting                      | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Default |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `superAdmin`                 | Whether this project is the super administrator project ([see above](#superadmin)).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `false` |
+| `features`                   | A list of optional features that are enabled for the project. Values related to access control include: <ul><li>`bots`: This [`Project`](/docs/api/fhir/medplum/project) is allowed to create and run [Bots](/docs/bots/bot-basics).</li><li>`email`: Bots in this project can [send emails](/docs/sdk/core.medplumclient.sendemail). </li><li>`cron`: This [`Project`](/docs/api/fhir/medplum/project) can run Bots on [CRON timers](https://www.medplum.com/docs/bots/bot-cron-job)</li><li>`google-auth-required`: [Google authentication](/docs/auth/methods/google-auth) is the only method allowed for this [`Project`](/docs/api/fhir/medplum/project)</li></ul> |         |
+| `defaultPatientAccessPolicy` | The default [`AccessPolicy`](/docs/access/access-policies) applied to all [Patient Users](/docs/auth/user-management-guide#project-scoped-users) invited to this [`Project`](/docs/api/fhir/medplum/project). This is required to enable [open patient registration](/docs/auth/open-patient-registration).                                                                                                                                                                                                                                                                                                                                                             |         |
 
 ## Project Secrets
 

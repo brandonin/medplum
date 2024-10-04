@@ -4,10 +4,10 @@ import { Request, Response } from 'express';
 import { URL } from 'url';
 import { asyncWrap } from '../async';
 import { getConfig } from '../config';
-import { systemRepo } from '../fhir/repo';
+import { getLogger } from '../context';
+import { getSystemRepo } from '../fhir/repo';
 import { MedplumIdTokenClaims, verifyJwt } from './keys';
-import { getClient } from './utils';
-import { getRequestContext } from '../context';
+import { getClientApplication } from './utils';
 
 /*
  * Handles the OAuth/OpenID Authorization Endpoint.
@@ -53,8 +53,8 @@ async function validateAuthorizeRequest(req: Request, res: Response, params: Rec
   // If these are invalid, then show an error page.
   let client = undefined;
   try {
-    client = await getClient(params.client_id as string);
-  } catch (err) {
+    client = await getClientApplication(params.client_id as string);
+  } catch (_err) {
     res.status(400).send('Client not found');
     return false;
   }
@@ -110,6 +110,7 @@ async function validateAuthorizeRequest(req: Request, res: Response, params: Rec
   }
 
   if (prompt !== 'login' && existingLogin) {
+    const systemRepo = getSystemRepo();
     await systemRepo.updateResource<Login>({
       ...existingLogin,
       nonce: params.nonce as string,
@@ -143,7 +144,7 @@ function isValidAudience(aud: string | undefined): boolean {
     const audUrl = new URL(aud);
     const serverUrl = new URL(getConfig().baseUrl);
     return audUrl.protocol === serverUrl.protocol && audUrl.host === serverUrl.host;
-  } catch (err) {
+  } catch (_err) {
     return false;
   }
 }
@@ -186,7 +187,7 @@ async function getExistingLoginFromIdTokenHint(req: Request): Promise<Login | un
   try {
     verifyResult = await verifyJwt(idTokenHint);
   } catch (err: any) {
-    getRequestContext().logger.debug('Error verifying id_token_hint', err);
+    getLogger().debug('Error verifying id_token_hint', err);
     return undefined;
   }
 
@@ -196,6 +197,7 @@ async function getExistingLoginFromIdTokenHint(req: Request): Promise<Login | un
     return undefined;
   }
 
+  const systemRepo = getSystemRepo();
   return systemRepo.readResource<Login>('Login', existingLoginId);
 }
 
@@ -212,6 +214,7 @@ async function getExistingLoginFromCookie(req: Request, client: ClientApplicatio
     return undefined;
   }
 
+  const systemRepo = getSystemRepo();
   const bundle = await systemRepo.search<Login>({
     resourceType: 'Login',
     filters: [

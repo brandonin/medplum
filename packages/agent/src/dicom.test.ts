@@ -1,11 +1,10 @@
-import { allOk, createReference } from '@medplum/core';
+import { LogLevel, allOk, createReference } from '@medplum/core';
 import { Agent, Bot, Endpoint, Resource } from '@medplum/fhirtypes';
 import { MockClient } from '@medplum/mock';
 import * as dimse from 'dcmjs-dimse';
 import { Server } from 'mock-socket';
+import path from 'node:path';
 import { App } from './app';
-
-jest.mock('node-windows');
 
 const medplum = new MockClient();
 let bot: Bot;
@@ -25,7 +24,7 @@ describe('DICOM', () => {
     endpoint = await medplum.createResource<Endpoint>({
       resourceType: 'Endpoint',
       address: 'dicom://0.0.0.0:8104',
-    });
+    } as Endpoint);
   });
 
   test('C-ECHO and C-STORE', async () => {
@@ -55,9 +54,9 @@ describe('DICOM', () => {
           targetReference: createReference(bot),
         },
       ],
-    });
+    } as Agent);
 
-    const app = new App(medplum, agent.id as string);
+    const app = new App(medplum, agent.id as string, LogLevel.INFO);
     await app.start();
 
     const client = new dimse.Client();
@@ -65,8 +64,6 @@ describe('DICOM', () => {
     //
     // C-ECHO
     //
-    console.log('CODY sending C-ECHO');
-
     const echoResponse = (await new Promise((resolve, reject) => {
       const request = new dimse.requests.CEchoRequest();
       request.on('response', resolve);
@@ -87,12 +84,7 @@ describe('DICOM', () => {
     //
 
     const storeResponse = (await new Promise((resolve, reject) => {
-      const request = new dimse.requests.CStoreRequest(
-        new dimse.Dataset({
-          SOPClassUID: dimse.constants.StorageClass.CtImageStorage,
-          SOPInstanceUID: dimse.Dataset.generateDerivedUid(),
-        })
-      );
+      const request = new dimse.requests.CStoreRequest(path.resolve(__dirname, '../testdata/sample-sr.dcm'));
       request.on('response', resolve);
       client.on('networkError', reject);
       client.addRequest(request);
@@ -107,7 +99,7 @@ describe('DICOM', () => {
     expect(storeCommandDataset?.getElement('Status')).toEqual(0);
 
     client.clearRequests();
-    app.stop();
+    await app.stop();
     mockServer.stop();
   }, 10000);
 });

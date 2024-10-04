@@ -13,7 +13,7 @@ import {
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { grantBucketAccessToOriginAccessIdentity } from './oai';
-import { awsManagedRules } from './waf';
+import { buildWafConfig } from './waf';
 
 /**
  * Static app infrastructure, which deploys app content to an S3 bucket.
@@ -59,7 +59,7 @@ export class FrontEnd extends Construct {
         customHeadersBehavior: {
           customHeaders: [
             {
-              header: 'Permission-Policy',
+              header: 'Permissions-Policy',
               value:
                 'accelerometer=(), camera=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), interest-cohort=()',
               override: true,
@@ -76,7 +76,7 @@ export class FrontEnd extends Construct {
               `font-src 'self' fonts.gstatic.com`,
               `form-action 'self' *.gstatic.com *.google.com`,
               `frame-ancestors 'none'`,
-              `frame-src 'self' *.medplum.com *.gstatic.com *.google.com`,
+              `frame-src 'self' ${config.storageDomainName} *.medplum.com *.gstatic.com *.google.com`,
               `img-src 'self' data: ${config.storageDomainName} *.gstatic.com *.google.com *.googleapis.com`,
               `manifest-src 'self'`,
               `media-src 'self' ${config.storageDomainName}`,
@@ -111,17 +111,11 @@ export class FrontEnd extends Construct {
       });
 
       // WAF
-      this.waf = new wafv2.CfnWebACL(this, 'FrontEndWAF', {
-        defaultAction: { allow: {} },
-        scope: 'CLOUDFRONT',
-        name: `${config.stackName}-FrontEndWAF`,
-        rules: awsManagedRules,
-        visibilityConfig: {
-          cloudWatchMetricsEnabled: true,
-          metricName: `${config.stackName}-FrontEndWAF-Metric`,
-          sampledRequestsEnabled: false,
-        },
-      });
+      this.waf = new wafv2.CfnWebACL(
+        this,
+        'FrontEndWAF',
+        buildWafConfig(`${config.stackName}-FrontEndWAF`, 'CLOUDFRONT', config.appWafIpSetArn)
+      );
 
       // API Origin Cache Policy
       this.apiOriginCachePolicy = new cloudfront.CachePolicy(this, 'ApiOriginCachePolicy', {

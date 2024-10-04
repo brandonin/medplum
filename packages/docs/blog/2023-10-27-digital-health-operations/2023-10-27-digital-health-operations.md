@@ -1,11 +1,7 @@
 ---
 slug: digital-health-operations
 title: Digital Health is an Operations Game
-authors:
-  name: Rahul Agarwal
-  title: Medplum Core Team
-  url: https://github.com/rahul1
-  image_url: https://github.com/rahul1.png
+authors: rahul
 tags: ['care plans', 'workflow', 'tasks']
 keywords: ['digital health', 'healthcare operations', 'EHR']
 ---
@@ -13,6 +9,8 @@ keywords: ['digital health', 'healthcare operations', 'EHR']
 # Digital Health is an Operations Game
 
 Digital health companies are at the forefront of revolutionizing patient experience by combining quality care, at lower costs, and at national scale. Typically, they target a specific healthcare niche, concentrating on _top-notch execution_. Their ultimate goal? To merge an exceptional patient experience with smooth operations behind the scenes.
+
+<!-- truncate -->
 
 When operations are executed right, patients have a seamless experience - everything Just Works <sup>TM</sup>. At Medplum, we've worked with many excellent digital health implementations, and there are four foundational elements that make their operations truly stand out:
 
@@ -73,7 +71,7 @@ Operations teams need to make sure that enough physicians with the correct licen
 
 The key to managing this complexity is having the right data model. How can you manage physician coverage if you don't even know which licenses they have? Traditional EHRs fall short here, as they presume a single-site deployment.
 
-Leveraging the FHIR standard, platforms like Medplum offer the building blocks for tracking physician credentials, specialties, and care teams. For more insights, take a look at our guides on provider [organizations](/docs/fhir-datastore/provider-directory/provider-organizations), [credentials](/docs/fhir-datastore/provider-directory/provider-credentials), and [payor networks](/docs/fhir-datastore/provider-directory/provider-networks).
+Leveraging the FHIR standard, platforms like Medplum offer the building blocks for tracking physician credentials, specialties, and care teams. For more insights, take a look at our guides on provider [organizations](/docs/administration/provider-directory/provider-organizations), [credentials](/docs/administration/provider-directory/provider-credentials), and [payor networks](/docs/administration/provider-directory/provider-networks).
 
 ## Asynchronous Care
 

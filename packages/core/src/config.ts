@@ -26,9 +26,11 @@ export interface MedplumSourceInfraConfig {
   apiDomainName: ValueOrExternalSecret<string>;
   apiSslCertArn: ValueOrExternalSecret<string>;
   apiInternetFacing?: ValueOrExternalSecret<boolean>;
+  apiWafIpSetArn: ValueOrExternalSecret<string>;
   appDomainName: ValueOrExternalSecret<string>;
   appSslCertArn: ValueOrExternalSecret<string>;
   appApiProxy?: ValueOrExternalSecret<boolean>;
+  appWafIpSetArn: ValueOrExternalSecret<string>;
   appLoggingBucket?: ValueOrExternalSecret<string>;
   appLoggingPrefix?: ValueOrExternalSecret<string>;
   storageBucketName: ValueOrExternalSecret<string>;
@@ -36,19 +38,25 @@ export interface MedplumSourceInfraConfig {
   storageSslCertArn: ValueOrExternalSecret<string>;
   signingKeyId: ValueOrExternalSecret<string>;
   storagePublicKey: ValueOrExternalSecret<string>;
+  storageWafIpSetArn: ValueOrExternalSecret<string>;
   storageLoggingBucket?: ValueOrExternalSecret<string>;
   storageLoggingPrefix?: ValueOrExternalSecret<string>;
   baseUrl: ValueOrExternalSecret<string>;
   maxAzs: ValueOrExternalSecret<number>;
   rdsInstances: ValueOrExternalSecret<number>;
   rdsInstanceType: ValueOrExternalSecret<string>;
-  rdsInstanceVersion: ValueOrExternalSecret<string>;
+  rdsInstanceVersion?: ValueOrExternalSecret<string>;
   rdsSecretsArn?: ValueOrExternalSecret<string>;
+  rdsReaderInstanceType?: ValueOrExternalSecret<string>;
+  rdsProxyEnabled?: ValueOrExternalSecret<boolean>;
+  rdsClusterParameters?: StringMap;
   cacheNodeType?: ValueOrExternalSecret<string>;
+  cacheSecurityGroupId?: ValueOrExternalSecret<string>;
   desiredServerCount: ValueOrExternalSecret<number>;
   serverImage: ValueOrExternalSecret<string>;
   serverMemory: ValueOrExternalSecret<number>;
   serverCpu: ValueOrExternalSecret<number>;
+  loadBalancerSecurityGroupId?: ValueOrExternalSecret<string>;
   loadBalancerLoggingBucket?: ValueOrExternalSecret<string>;
   loadBalancerLoggingPrefix?: ValueOrExternalSecret<string>;
   clamscanEnabled: ValueOrExternalSecret<boolean>;
@@ -67,11 +75,19 @@ export interface MedplumSourceInfraConfig {
       [key: string]: ValueOrExternalSecret<string>;
     };
   }[];
+  containerInsights?: ValueOrExternalSecret<boolean>;
   cloudTrailAlarms?: {
     logGroupName: ValueOrExternalSecret<string>;
     logGroupCreate?: ValueOrExternalSecret<boolean>;
     snsTopicArn?: ValueOrExternalSecret<string>;
     snsTopicName?: ValueOrExternalSecret<string>;
+  };
+  fargateAutoScaling?: {
+    minCapacity: ValueOrExternalSecret<number>;
+    maxCapacity: ValueOrExternalSecret<number>;
+    targetUtilizationPercent: ValueOrExternalSecret<number>;
+    scaleInCooldown: ValueOrExternalSecret<number>;
+    scaleOutCooldown: ValueOrExternalSecret<number>;
   };
   environment?: StringMap;
 }
@@ -87,9 +103,11 @@ export interface MedplumInfraConfig {
   apiDomainName: string;
   apiSslCertArn: string;
   apiInternetFacing?: boolean;
+  apiWafIpSetArn?: string;
   appDomainName: string;
   appSslCertArn: string;
   appApiProxy?: boolean;
+  appWafIpSetArn?: string;
   appLoggingBucket?: string;
   appLoggingPrefix?: string;
   storageBucketName: string;
@@ -97,6 +115,7 @@ export interface MedplumInfraConfig {
   storageSslCertArn: string;
   signingKeyId: string;
   storagePublicKey: string;
+  storageWafIpSetArn?: string;
   storageLoggingBucket?: string;
   storageLoggingPrefix?: string;
   baseUrl: string;
@@ -104,12 +123,17 @@ export interface MedplumInfraConfig {
   rdsInstances: number;
   rdsInstanceType: string;
   rdsInstanceVersion?: string;
+  rdsClusterParameters?: StringMap;
   rdsSecretsArn?: string;
+  rdsReaderInstanceType?: string;
+  rdsProxyEnabled?: boolean;
   cacheNodeType?: string;
+  cacheSecurityGroupId?: string;
   desiredServerCount: number;
   serverImage: string;
   serverMemory: number;
   serverCpu: number;
+  loadBalancerSecurityGroupId?: string;
   loadBalancerLoggingBucket?: string;
   loadBalancerLoggingPrefix?: string;
   clamscanEnabled: boolean;
@@ -128,11 +152,19 @@ export interface MedplumInfraConfig {
       [key: string]: string;
     };
   }[];
+  containerInsights?: boolean;
   cloudTrailAlarms?: {
     logGroupName: string;
     logGroupCreate?: boolean;
     snsTopicArn?: string;
     snsTopicName?: string;
+  };
+  fargateAutoScaling?: {
+    minCapacity: number;
+    maxCapacity: number;
+    targetUtilizationPercent: number;
+    scaleInCooldown: number;
+    scaleOutCooldown: number;
   };
   environment?: StringMap;
 }

@@ -5,12 +5,12 @@ import {
   Filter,
   getDateProperty,
   getReferenceString,
+  MEDPLUM_CLI_CLIENT_ID,
   OperationOutcomeError,
   Operator,
   ProfileResource,
   resolveId,
   tooManyRequests,
-  unauthorized,
 } from '@medplum/core';
 import {
   AccessPolicy,
@@ -25,13 +25,14 @@ import {
   User,
 } from '@medplum/fhirtypes';
 import bcrypt from 'bcryptjs';
-import { timingSafeEqual } from 'crypto';
 import { JWTPayload, jwtVerify, VerifyOptions } from 'jose';
 import fetch from 'node-fetch';
+import assert from 'node:assert/strict';
+import { timingSafeEqual } from 'node:crypto';
 import { authenticator } from 'otplib';
-import { getRequestContext } from '../context';
+import { getLogger, getRequestContext } from '../context';
 import { getAccessPolicyForLogin } from '../fhir/accesspolicy';
-import { systemRepo } from '../fhir/repo';
+import { getSystemRepo } from '../fhir/repo';
 import { AuditEventOutcome, logAuthEvent, LoginEvent } from '../util/auditevent';
 import {
   generateAccessToken,
@@ -110,15 +111,16 @@ export interface GoogleCredentialClaims extends JWTPayload {
  * @param clientId - The client ID.
  * @returns The client application.
  */
-export async function getClient(clientId: string): Promise<ClientApplication> {
-  if (clientId === 'medplum-cli') {
+export async function getClientApplication(clientId: string): Promise<ClientApplication> {
+  if (clientId === MEDPLUM_CLI_CLIENT_ID) {
     return {
       resourceType: 'ClientApplication',
-      id: 'medplum-cli',
+      id: MEDPLUM_CLI_CLIENT_ID,
       redirectUri: 'http://localhost:9615',
       pkceOptional: true,
     };
   }
+  const systemRepo = getSystemRepo();
   return systemRepo.readResource<ClientApplication>('ClientApplication', clientId);
 }
 
@@ -127,11 +129,12 @@ export async function tryLogin(request: LoginRequest): Promise<Login> {
 
   let client: ClientApplication | undefined;
   if (request.clientId) {
-    client = await getClient(request.clientId);
+    client = await getClientApplication(request.clientId);
   }
 
   validatePkce(request, client);
 
+  const systemRepo = getSystemRepo();
   let launch: SmartAppLaunch | undefined;
   if (request.launchId) {
     launch = await systemRepo.readResource<SmartAppLaunch>('SmartAppLaunch', request.launchId);
@@ -145,6 +148,7 @@ export async function tryLogin(request: LoginRequest): Promise<Login> {
   }
 
   if (!user) {
+    getLogger().warn('tryLogin User not found', { ...request, password: undefined, codeChallenge: undefined });
     throw new OperationOutcomeError(badRequest('User not found'));
   }
 
@@ -275,6 +279,7 @@ export async function verifyMfaToken(login: Login, token: string): Promise<Login
     throw new OperationOutcomeError(badRequest('Login already verified'));
   }
 
+  const systemRepo = getSystemRepo();
   const user = await systemRepo.readReference(login.user as Reference<User>);
   if (!user.mfaEnrolled) {
     throw new OperationOutcomeError(badRequest('User not enrolled in MFA'));
@@ -324,6 +329,7 @@ export async function getMembershipsForLogin(login: Login): Promise<ProjectMembe
     });
   }
 
+  const systemRepo = getSystemRepo();
   let memberships = await systemRepo.searchResources<ProjectMembership>({
     resourceType: 'ProjectMembership',
     count: 100,
@@ -344,6 +350,7 @@ export async function getMembershipsForLogin(login: Login): Promise<ProjectMembe
  * @returns The project membership for the client application if found; otherwise undefined.
  */
 export function getClientApplicationMembership(client: ClientApplication): Promise<ProjectMembership | undefined> {
+  const systemRepo = getSystemRepo();
   return systemRepo.searchOne<ProjectMembership>({
     resourceType: 'ProjectMembership',
     filters: [
@@ -379,10 +386,11 @@ export async function setLoginMembership(login: Login, membershipId: string): Pr
   }
 
   // Find the membership for the user
+  const systemRepo = getSystemRepo();
   let membership = undefined;
   try {
     membership = await systemRepo.readResource<ProjectMembership>('ProjectMembership', membershipId);
-  } catch (err) {
+  } catch (_err) {
     throw new OperationOutcomeError(badRequest('Profile not found'));
   }
   if (membership.user?.reference !== login.user?.reference) {
@@ -397,8 +405,12 @@ export async function setLoginMembership(login: Login, membershipId: string): Pr
     throw new OperationOutcomeError(badRequest('Google authentication is required'));
   }
 
+  // TODO: Do we really need to check IP access rules inside this method?
+  // Or could this be done closer to call site?
+  // This method is used internally in a bunch of places that do not need to check IP access rules
+
   // Get the access policy
-  const accessPolicy = await getAccessPolicyForLogin(login, membership);
+  const accessPolicy = await getAccessPolicyForLogin({ project, login, membership });
 
   // Check IP Access Rules
   await checkIpAccessRules(login, accessPolicy);
@@ -406,11 +418,17 @@ export async function setLoginMembership(login: Login, membershipId: string): Pr
   logAuthEvent(LoginEvent, project.id as string, membership.profile, login.remoteAddress, AuditEventOutcome.Success);
 
   // Everything checks out, update the login
-  return systemRepo.updateResource<Login>({
+  const updatedLogin: Login = {
     ...login,
     membership: createReference(membership),
-    superAdmin: project.superAdmin,
-  });
+  };
+
+  if (project.superAdmin) {
+    // Disable refresh tokens for super admins
+    updatedLogin.refreshSecret = undefined;
+  }
+
+  return systemRepo.updateResource<Login>(updatedLogin);
 }
 
 /**
@@ -421,7 +439,7 @@ export async function setLoginMembership(login: Login, membershipId: string): Pr
  * @param login - The candidate login.
  * @param accessPolicy - The access policy for the login.
  */
-async function checkIpAccessRules(login: Login, accessPolicy: AccessPolicy | undefined): Promise<void> {
+export async function checkIpAccessRules(login: Login, accessPolicy: AccessPolicy | undefined): Promise<void> {
   if (!login.remoteAddress || !accessPolicy?.ipAccessRule) {
     return;
   }
@@ -477,24 +495,29 @@ export async function setLoginScope(login: Login, scope: string): Promise<Login>
   }
 
   // Otherwise update scope
+  const systemRepo = getSystemRepo();
   return systemRepo.updateResource<Login>({
     ...login,
     scope: submittedScopes.join(' '),
   });
 }
 
-export async function getAuthTokens(login: Login, profile: Reference<ProfileResource>): Promise<TokenResult> {
+export async function getAuthTokens(
+  user: User | ClientApplication,
+  login: Login,
+  profile: Reference<ProfileResource>,
+  refreshLifetime?: string
+): Promise<TokenResult> {
+  assert.equal(getReferenceString(user), login.user?.reference);
+
   const clientId = login.client && resolveId(login.client);
-  const userId = resolveId(login.user);
-  if (!userId) {
-    throw new OperationOutcomeError(badRequest('Login missing user'));
-  }
 
   if (!login.membership) {
     throw new OperationOutcomeError(badRequest('Login missing profile'));
   }
 
   if (!login.granted) {
+    const systemRepo = getSystemRepo();
     await systemRepo.updateResource<Login>({
       ...login,
       granted: true,
@@ -505,8 +528,9 @@ export async function getAuthTokens(login: Login, profile: Reference<ProfileReso
     client_id: clientId,
     login_id: login.id as string,
     fhirUser: profile.reference,
+    email: login.scope?.includes('email') && user.resourceType === 'User' ? user.email : undefined,
     aud: clientId,
-    sub: userId,
+    sub: user.id,
     nonce: login.nonce as string,
     auth_time: (getDateProperty(login.authTime) as Date).getTime() / 1000,
   });
@@ -514,18 +538,21 @@ export async function getAuthTokens(login: Login, profile: Reference<ProfileReso
   const accessToken = await generateAccessToken({
     client_id: clientId,
     login_id: login.id as string,
-    sub: userId,
-    username: userId,
+    sub: user.id,
+    username: user.id as string,
     scope: login.scope as string,
     profile: profile.reference as string,
   });
 
   const refreshToken = login.refreshSecret
-    ? await generateRefreshToken({
-        client_id: clientId,
-        login_id: login.id as string,
-        refresh_secret: login.refreshSecret,
-      })
+    ? await generateRefreshToken(
+        {
+          client_id: clientId,
+          login_id: login.id as string,
+          refresh_secret: login.refreshSecret,
+        },
+        refreshLifetime
+      )
     : undefined;
 
   return {
@@ -536,6 +563,7 @@ export async function getAuthTokens(login: Login, profile: Reference<ProfileReso
 }
 
 export async function revokeLogin(login: Login): Promise<void> {
+  const systemRepo = getSystemRepo();
   await systemRepo.updateResource<Login>({
     ...login,
     revoked: true,
@@ -550,6 +578,7 @@ export async function revokeLogin(login: Login): Promise<void> {
  * @returns The user if found; otherwise, undefined.
  */
 export async function getUserByExternalId(externalId: string, projectId: string): Promise<User | undefined> {
+  const systemRepo = getSystemRepo();
   const membership = await systemRepo.searchOne<ProjectMembership>({
     resourceType: 'ProjectMembership',
     filters: [
@@ -612,6 +641,7 @@ export async function getUserByEmail(email: string, projectId: string | undefine
  * @returns The user if found; otherwise, undefined.
  */
 export async function getUserByEmailInProject(email: string, projectId: string): Promise<User | undefined> {
+  const systemRepo = getSystemRepo();
   const bundle = await systemRepo.search({
     resourceType: 'User',
     filters: [
@@ -637,6 +667,7 @@ export async function getUserByEmailInProject(email: string, projectId: string):
  * @returns The user if found; otherwise, undefined.
  */
 export async function getUserByEmailWithoutProject(email: string): Promise<User | undefined> {
+  const systemRepo = getSystemRepo();
   const bundle = await systemRepo.search({
     resourceType: 'User',
     filters: [
@@ -780,19 +811,26 @@ export async function verifyMultipleMatchingException(
  * @param accessToken - The access token as provided by the client.
  * @returns On success, returns the login, membership, and project. On failure, throws an error.
  */
-export async function getLoginForAccessToken(accessToken: string): Promise<AuthState> {
-  const verifyResult = await verifyJwt(accessToken);
+export async function getLoginForAccessToken(accessToken: string): Promise<AuthState | undefined> {
+  let verifyResult: Awaited<ReturnType<typeof verifyJwt>>;
+  try {
+    verifyResult = await verifyJwt(accessToken);
+  } catch (_err) {
+    return undefined;
+  }
+
   const claims = verifyResult.payload as MedplumAccessTokenClaims;
 
+  const systemRepo = getSystemRepo();
   let login = undefined;
   try {
     login = await systemRepo.readResource<Login>('Login', claims.login_id);
-  } catch (err) {
-    throw new OperationOutcomeError(unauthorized);
+  } catch (_err) {
+    return undefined;
   }
 
   if (!login?.membership || login.revoked) {
-    throw new OperationOutcomeError(unauthorized);
+    return undefined;
   }
 
   const membership = await systemRepo.readReference<ProjectMembership>(login.membership);

@@ -31,7 +31,7 @@ describe('FHIRcast', () => {
       const serializedSubRequest = serializeFhircastSubscriptionRequest(expectedSubRequest);
 
       const subRequest = await client.fhircastSubscribe(topic, events);
-      expect(fetch).toBeCalledWith(
+      expect(fetch).toHaveBeenCalledWith(
         'https://api.medplum.com/fhircast/STU3',
         expect.objectContaining<RequestInit>({
           method: 'POST',
@@ -158,22 +158,17 @@ describe('FHIRcast', () => {
           topic: 'abc123',
           events: ['Patient-open'],
         })
-      ).toThrowError(OperationOutcomeError);
+      ).toThrow(OperationOutcomeError);
     });
   });
 
   describe('fhircastPublish', () => {
     test('Valid context published', async () => {
-      const fetch = mockFetch(201, { message: 'Welcome to Medplum!' });
+      const context = createFhircastMessageContext<'Patient-open'>('patient', 'Patient', 'patient-123');
+      const fetch = mockFetch(201, { success: true, event: context });
       const client = new MedplumClient({ fetch });
-      await expect(
-        client.fhircastPublish(
-          'abc123',
-          'Patient-open',
-          createFhircastMessageContext<'Patient-open'>('patient', 'Patient', 'patient-123')
-        )
-      ).resolves;
-      expect(fetch).toBeCalledWith(
+      await expect(client.fhircastPublish('abc123', 'Patient-open', context)).resolves.toBeDefined();
+      expect(fetch).toHaveBeenCalledWith(
         'https://api.medplum.com/fhircast/STU3/abc123',
         expect.objectContaining<RequestInit>({
           method: 'POST',
@@ -188,8 +183,8 @@ describe('FHIRcast', () => {
           createFhircastMessageContext<'ImagingStudy-open'>('patient', 'Patient', 'patient-123'),
           createFhircastMessageContext<'ImagingStudy-open'>('study', 'ImagingStudy', 'imagingstudy-456'),
         ])
-      ).resolves;
-      expect(fetch).toBeCalledWith(
+      ).resolves.toBeDefined();
+      expect(fetch).toHaveBeenCalledWith(
         'https://api.medplum.com/fhircast/STU3/def456',
         expect.objectContaining<RequestInit>({
           method: 'POST',
@@ -204,8 +199,8 @@ describe('FHIRcast', () => {
           createFhircastMessageContext<'DiagnosticReport-open'>('report', 'DiagnosticReport', 'report-987'),
           createFhircastMessageContext<'DiagnosticReport-open'>('patient', 'Patient', 'patient-123'),
         ])
-      ).resolves;
-      expect(fetch).toBeCalledWith(
+      ).resolves.toBeDefined();
+      expect(fetch).toHaveBeenCalledWith(
         'https://api.medplum.com/fhircast/STU3/xyz-789',
         expect.objectContaining<RequestInit>({
           method: 'POST',

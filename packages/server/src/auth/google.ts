@@ -1,17 +1,16 @@
-import { badRequest, Operator } from '@medplum/core';
+import { badRequest, isString, isUUID, Operator } from '@medplum/core';
 import { Project, ResourceType, User } from '@medplum/fhirtypes';
 import { randomUUID } from 'crypto';
 import { Request, Response } from 'express';
 import { body } from 'express-validator';
 import { createRemoteJWKSet, jwtVerify, JWTVerifyOptions } from 'jose';
-import { URL } from 'url';
 import { getConfig } from '../config';
 import { sendOutcome } from '../fhir/outcomes';
-import { systemRepo } from '../fhir/repo';
+import { getSystemRepo } from '../fhir/repo';
 import { getUserByEmail, GoogleCredentialClaims, tryLogin } from '../oauth/utils';
+import { makeValidationMiddleware } from '../util/validator';
 import { isExternalAuth } from './method';
 import { getProjectIdByClientId, sendLoginResult } from './utils';
-import { makeValidationMiddleware } from '../util/validator';
 
 /*
  * Integrating Google Sign-In into your web app
@@ -51,7 +50,7 @@ export async function googleHandler(req: Request, res: Response): Promise<void> 
   // 2) Implicit with clientId
   // 3) Implicit with googleClientId
   // The only rule is that they have to match
-  let projectId = req.body.projectId as string | undefined;
+  let projectId = validateProjectId(req.body.projectId);
   const clientId = req.body.clientId;
   projectId = await getProjectIdByClientId(clientId, projectId);
 
@@ -101,6 +100,7 @@ export async function googleHandler(req: Request, res: Response): Promise<void> 
       sendOutcome(res, badRequest('User not found'));
       return;
     }
+    const systemRepo = getSystemRepo();
     await systemRepo.createResource<User>({
       resourceType: 'User',
       firstName: claims.given_name,
@@ -129,6 +129,10 @@ export async function googleHandler(req: Request, res: Response): Promise<void> 
   await sendLoginResult(res, login);
 }
 
+function validateProjectId(inputProjectId: unknown): string | undefined {
+  return isString(inputProjectId) && isUUID(inputProjectId) ? inputProjectId : undefined;
+}
+
 function getProjectsByGoogleClientId(googleClientId: string, projectId: string | undefined): Promise<Project[]> {
   const filters = [
     {
@@ -146,5 +150,6 @@ function getProjectsByGoogleClientId(googleClientId: string, projectId: string |
     });
   }
 
+  const systemRepo = getSystemRepo();
   return systemRepo.searchResources<Project>({ resourceType: 'Project', filters });
 }

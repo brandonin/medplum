@@ -5,11 +5,9 @@ import express from 'express';
 import request from 'supertest';
 import { initApp, shutdownApp } from '../app';
 import { loadTestConfig } from '../config';
-import { systemRepo } from '../fhir/repo';
+import { getSystemRepo } from '../fhir/repo';
 import { withTestContext } from '../test.setup';
 import { registerNew } from './register';
-
-jest.mock('@aws-sdk/client-sesv2');
 
 const app = express();
 const email = `multi${randomUUID()}@example.com`;
@@ -91,6 +89,7 @@ describe('Profile', () => {
     expect(res1.status).toBe(200);
     expect(res1.body.login).toBeDefined();
 
+    const systemRepo = getSystemRepo();
     const login = await systemRepo.readResource<Login>('Login', res1.body.login);
     await withTestContext(() =>
       systemRepo.updateResource({
@@ -120,6 +119,7 @@ describe('Profile', () => {
     expect(res1.status).toBe(200);
     expect(res1.body.login).toBeDefined();
 
+    const systemRepo = getSystemRepo();
     const login = await systemRepo.readResource<Login>('Login', res1.body.login);
     await withTestContext(() =>
       systemRepo.updateResource({
@@ -149,6 +149,7 @@ describe('Profile', () => {
     expect(res1.status).toBe(200);
     expect(res1.body.login).toBeDefined();
 
+    const systemRepo = getSystemRepo();
     const login = await systemRepo.readResource<Login>('Login', res1.body.login);
     await withTestContext(() =>
       systemRepo.updateResource({
@@ -196,6 +197,7 @@ describe('Profile', () => {
 
   test('Membership for different user', async () => {
     // Create a dummy ProjectMembership
+    const systemRepo = getSystemRepo();
     const membership = await withTestContext(() =>
       systemRepo.createResource<ProjectMembership>({
         resourceType: 'ProjectMembership',

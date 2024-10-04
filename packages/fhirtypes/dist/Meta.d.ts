@@ -84,14 +84,24 @@ export interface Meta {
   author?: Reference;
 
   /**
-   * Optional account reference that can be used for sub-project
-   * compartments.
+   * Optional individual, device, or organization for whom the change was
+   * made.
+   */
+  onBehalfOf?: Reference;
+
+  /**
+   * @deprecated Use Meta.accounts instead
    */
   account?: Reference;
 
   /**
-   * The list of compartments containing this resource. This is readonly
-   * and is set by the server.
+   * Optional account references that can be used for sub-project
+   * compartments.
+   */
+  accounts?: Reference[];
+
+  /**
+   * The list of compartments containing this resource
    */
   compartment?: Reference[];
 }

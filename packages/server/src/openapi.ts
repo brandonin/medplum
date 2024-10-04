@@ -13,23 +13,22 @@ import { getConfig } from './config';
 import { getJsonSchemaDefinitions } from './fhir/jsonschema';
 
 type OpenAPIObjectWithPaths = OpenAPIObject & { paths: PathsObject };
-
 type SchemaMap = { [schema: string]: SchemaObject | ReferenceObject };
 
-let cachedSpec: any;
+let cachedSpec: OpenAPIObjectWithPaths;
 
 export function openApiHandler(_req: Request, res: Response): void {
   res.status(200).json(getSpec());
 }
 
-function getSpec(): any {
+function getSpec(): OpenAPIObjectWithPaths {
   if (!cachedSpec) {
     cachedSpec = buildSpec();
   }
   return cachedSpec;
 }
 
-function buildSpec(): any {
+function buildSpec(): OpenAPIObjectWithPaths {
   const result = buildBaseSpec();
   const definitions = getJsonSchemaDefinitions();
   Object.entries(definitions).forEach(([name, definition]) => buildFhirType(result, name, definition));

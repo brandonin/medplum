@@ -617,9 +617,7 @@
         "type": [
           {
             "code": "canonical",
-            "targetProfile": [
-              "http://hl7.org/fhir/StructureDefinition/StructureDefinition"
-            ]
+            "targetProfile": ["http://hl7.org/fhir/StructureDefinition/StructureDefinition"]
           }
         ]
       },
@@ -630,9 +628,7 @@
           },
           {
             "code": "Reference",
-            "targetProfile": [
-              "http://hl7.org/fhir/StructureDefinition/Group"
-            ]
+            "targetProfile": ["http://hl7.org/fhir/StructureDefinition/Group"]
           }
         ]
       },
@@ -841,14 +837,16 @@
       "maxDosePerAdministration": {
         "type": [
           {
-            "code": "Quantity"
+            "code": "Quantity",
+            "profile": ["http://hl7.org/fhir/StructureDefinition/SimpleQuantity"]
           }
         ]
       },
       "maxDosePerLifetime": {
         "type": [
           {
-            "code": "Quantity"
+            "code": "Quantity",
+            "profile": ["http://hl7.org/fhir/StructureDefinition/SimpleQuantity"]
           }
         ]
       }
@@ -1747,7 +1745,7 @@
         "min": 1,
         "type": [
           {
-            "code": "string"
+            "code": "uri"
           }
         ]
       },
@@ -2034,9 +2032,7 @@
         "type": [
           {
             "code": "Reference",
-            "targetProfile": [
-              "http://hl7.org/fhir/StructureDefinition/Organization"
-            ]
+            "targetProfile": ["http://hl7.org/fhir/StructureDefinition/Organization"]
           }
         ]
       }
@@ -2150,9 +2146,7 @@
         "type": [
           {
             "code": "canonical",
-            "targetProfile": [
-              "http://hl7.org/fhir/StructureDefinition/StructureDefinition"
-            ]
+            "targetProfile": ["http://hl7.org/fhir/StructureDefinition/StructureDefinition"]
           }
         ]
       },
@@ -2186,7 +2180,22 @@
           }
         ]
       },
+      "onBehalfOf": {
+        "type": [
+          {
+            "code": "Reference"
+          }
+        ]
+      },
       "account": {
+        "type": [
+          {
+            "code": "Reference"
+          }
+        ]
+      },
+      "accounts": {
+        "max": 9007199254740991,
         "type": [
           {
             "code": "Reference"
@@ -2336,9 +2345,7 @@
         "type": [
           {
             "code": "canonical",
-            "targetProfile": [
-              "http://hl7.org/fhir/StructureDefinition/StructureDefinition"
-            ]
+            "targetProfile": ["http://hl7.org/fhir/StructureDefinition/StructureDefinition"]
           }
         ]
       }
@@ -2674,14 +2681,16 @@
       "low": {
         "type": [
           {
-            "code": "Quantity"
+            "code": "Quantity",
+            "profile": ["http://hl7.org/fhir/StructureDefinition/SimpleQuantity"]
           }
         ]
       },
       "high": {
         "type": [
           {
-            "code": "Quantity"
+            "code": "Quantity",
+            "profile": ["http://hl7.org/fhir/StructureDefinition/SimpleQuantity"]
           }
         ]
       }
@@ -2831,9 +2840,7 @@
         "type": [
           {
             "code": "canonical",
-            "targetProfile": [
-              "http://hl7.org/fhir/StructureDefinition/Resource"
-            ]
+            "targetProfile": ["http://hl7.org/fhir/StructureDefinition/Resource"]
           }
         ]
       }
@@ -2860,7 +2867,8 @@
         "min": 1,
         "type": [
           {
-            "code": "Quantity"
+            "code": "Quantity",
+            "profile": ["http://hl7.org/fhir/StructureDefinition/SimpleQuantity"]
           }
         ]
       },
@@ -3147,9 +3155,7 @@
           },
           {
             "code": "Reference",
-            "targetProfile": [
-              "http://hl7.org/fhir/StructureDefinition/Schedule"
-            ]
+            "targetProfile": ["http://hl7.org/fhir/StructureDefinition/Schedule"]
           },
           {
             "code": "date"
@@ -3333,157 +3339,6 @@
         "type": [
           {
             "code": "code"
-          }
-        ]
-      }
-    }
-  },
-  "MetadataResource": {
-    "elements": {
-      "id": {
-        "type": [
-          {
-            "code": "string"
-          }
-        ]
-      },
-      "meta": {
-        "type": [
-          {
-            "code": "Meta"
-          }
-        ]
-      },
-      "implicitRules": {
-        "type": [
-          {
-            "code": "uri"
-          }
-        ]
-      },
-      "language": {
-        "type": [
-          {
-            "code": "code"
-          }
-        ]
-      },
-      "text": {
-        "type": [
-          {
-            "code": "Narrative"
-          }
-        ]
-      },
-      "contained": {
-        "max": 9007199254740991,
-        "type": [
-          {
-            "code": "Resource"
-          }
-        ]
-      },
-      "extension": {
-        "max": 9007199254740991,
-        "type": [
-          {
-            "code": "Extension"
-          }
-        ]
-      },
-      "modifierExtension": {
-        "max": 9007199254740991,
-        "type": [
-          {
-            "code": "Extension"
-          }
-        ]
-      },
-      "url": {
-        "type": [
-          {
-            "code": "uri"
-          }
-        ]
-      },
-      "version": {
-        "type": [
-          {
-            "code": "string"
-          }
-        ]
-      },
-      "name": {
-        "type": [
-          {
-            "code": "string"
-          }
-        ]
-      },
-      "title": {
-        "type": [
-          {
-            "code": "string"
-          }
-        ]
-      },
-      "status": {
-        "min": 1,
-        "type": [
-          {
-            "code": "code"
-          }
-        ]
-      },
-      "experimental": {
-        "type": [
-          {
-            "code": "boolean"
-          }
-        ]
-      },
-      "date": {
-        "type": [
-          {
-            "code": "dateTime"
-          }
-        ]
-      },
-      "publisher": {
-        "type": [
-          {
-            "code": "string"
-          }
-        ]
-      },
-      "contact": {
-        "max": 9007199254740991,
-        "type": [
-          {
-            "code": "ContactDetail"
-          }
-        ]
-      },
-      "description": {
-        "type": [
-          {
-            "code": "markdown"
-          }
-        ]
-      },
-      "useContext": {
-        "max": 9007199254740991,
-        "type": [
-          {
-            "code": "UsageContext"
-          }
-        ]
-      },
-      "jurisdiction": {
-        "max": 9007199254740991,
-        "type": [
-          {
-            "code": "CodeableConcept"
           }
         ]
       }

@@ -1,4 +1,5 @@
-import { UCUM } from './constants';
+import { Observation } from '@medplum/fhirtypes';
+import { LOINC, UCUM } from './constants';
 import {
   formatAddress,
   formatCodeableConcept,
@@ -385,23 +386,34 @@ test('Format Coding', () => {
   expect(formatCoding(undefined)).toBe('');
   expect(formatCoding({})).toBe('');
   expect(formatCoding({ display: 'foo' })).toBe('foo');
-  expect(formatCoding({ code: 'foo' })).toBe('foo');
+  expect(formatCoding({ code: 'CODE' })).toBe('CODE');
   expect(formatCoding({ code: { foo: 'bar' } as unknown as string })).toBe('');
+
+  // includeCode true
+  expect(formatCoding(undefined, true)).toBe('');
+  expect(formatCoding({}, true)).toBe('');
+  expect(formatCoding({ display: 'foo', code: 'CODE' }, true)).toBe('foo (CODE)');
+  expect(formatCoding({ display: 'foo' }, true)).toBe('foo');
+  expect(formatCoding({ code: 'CODE' }, true)).toBe('CODE');
+  expect(formatCoding({ code: { foo: 'bar' } as unknown as string }, true)).toBe('');
 });
 
 test('Format Observation value', () => {
   expect(formatObservationValue(undefined)).toBe('');
-  expect(formatObservationValue({})).toBe('');
-  expect(formatObservationValue({ resourceType: 'Observation', valueString: 'foo' })).toBe('foo');
-  expect(formatObservationValue({ resourceType: 'Observation', valueCodeableConcept: { text: 'foo' } })).toBe('foo');
-  expect(formatObservationValue({ resourceType: 'Observation', valueQuantity: { value: 123, unit: 'mg' } })).toBe(
-    '123 mg'
-  );
+  expect(formatObservationValue({} as Observation)).toBe('');
+  expect(formatObservationValue({ resourceType: 'Observation', valueString: 'foo' } as Observation)).toBe('foo');
+  expect(
+    formatObservationValue({ resourceType: 'Observation', valueCodeableConcept: { text: 'foo' } } as Observation)
+  ).toBe('foo');
+  expect(
+    formatObservationValue({ resourceType: 'Observation', valueQuantity: { value: 123, unit: 'mg' } } as Observation)
+  ).toBe('123 mg');
   expect(
     formatObservationValue({
       resourceType: 'Observation',
       component: [
         {
+          code: { text: 'foo' },
           valueQuantity: {
             value: 110,
             unit: 'mmHg',
@@ -409,6 +421,7 @@ test('Format Observation value', () => {
           },
         },
         {
+          code: { text: 'bar' },
           valueQuantity: {
             value: 75,
             unit: 'mmHg',
@@ -416,6 +429,32 @@ test('Format Observation value', () => {
           },
         },
       ],
-    })
+    } as Observation)
   ).toBe('110 mmHg / 75 mmHg');
+  expect(
+    formatObservationValue({
+      resourceType: 'Observation',
+      code: { text: 'Body temperature' },
+      valueQuantity: {
+        value: 36.7,
+        unit: 'C',
+        code: 'Cel',
+        system: UCUM,
+      },
+      component: [
+        {
+          code: { text: 'Body temperature measurement site' },
+          valueCodeableConcept: {
+            coding: [
+              {
+                display: 'Oral',
+                code: 'LA9367-9',
+                system: LOINC,
+              },
+            ],
+          },
+        },
+      ],
+    } as Observation)
+  ).toBe('36.7 C / Oral');
 });

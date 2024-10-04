@@ -1,6 +1,7 @@
 import {
   allOk,
   badRequest,
+  conflict,
   createReference,
   getReferenceString,
   InviteRequest,
@@ -8,6 +9,7 @@ import {
   OperationOutcomeError,
   Operator,
   ProfileResource,
+  resolveId,
 } from '@medplum/core';
 import { Practitioner, Project, ProjectMembership, Reference, User } from '@medplum/fhirtypes';
 import { Request, Response } from 'express';
@@ -16,10 +18,10 @@ import Mail from 'nodemailer/lib/mailer';
 import { resetPassword } from '../auth/resetpassword';
 import { bcryptHashPassword, createProfile, createProjectMembership } from '../auth/utils';
 import { getConfig } from '../config';
-import { getAuthenticatedContext } from '../context';
+import { getAuthenticatedContext, getLogger } from '../context';
 import { sendEmail } from '../email/email';
-import { systemRepo } from '../fhir/repo';
-import { sendResponse } from '../fhir/routes';
+import { getSystemRepo, Repository } from '../fhir/repo';
+import { sendResponse } from '../fhir/response';
 import { generateSecret } from '../oauth/keys';
 import { getUserByEmailInProject, getUserByEmailWithoutProject } from '../oauth/utils';
 import { makeValidationMiddleware } from '../util/validator';
@@ -43,13 +45,14 @@ export async function inviteHandler(req: Request, res: Response): Promise<void> 
   const inviteRequest = { ...req.body } as ServerInviteRequest;
   const { projectId } = req.params;
   if (ctx.project.superAdmin) {
+    const systemRepo = getSystemRepo();
     inviteRequest.project = await systemRepo.readResource('Project', projectId as string);
   } else {
     inviteRequest.project = ctx.project;
   }
 
   const { membership } = await inviteUser(inviteRequest);
-  return sendResponse(res, allOk, membership);
+  return sendResponse(req, res, allOk, membership);
 }
 
 export interface ServerInviteRequest extends InviteRequest {
@@ -63,7 +66,9 @@ export interface ServerInviteResponse {
 }
 
 export async function inviteUser(request: ServerInviteRequest): Promise<ServerInviteResponse> {
-  const ctx = getAuthenticatedContext();
+  const systemRepo = getSystemRepo();
+  const logger = getLogger();
+
   if (request.email) {
     request.email = request.email.toLowerCase();
   }
@@ -84,15 +89,15 @@ export async function inviteUser(request: ServerInviteRequest): Promise<ServerIn
 
   if (!user) {
     existingUser = false;
-    ctx.logger.info('User creation request received', { email });
+    logger.info('User creation request received', { email });
     user = await createUser(request);
-    ctx.logger.info('User created', { id: user.id, email });
+    logger.info('User created', { id: user.id, email });
     passwordResetUrl = await resetPassword(user, 'invite');
   }
 
   let profile = await searchForExistingProfile(request);
   if (!profile) {
-    ctx.logger.info('Creating profile for invite request', {
+    logger.info('Creating profile for invite request', {
       project: getReferenceString(project),
       email,
       profileType: request.resourceType,
@@ -105,7 +110,7 @@ export async function inviteUser(request: ServerInviteRequest): Promise<ServerIn
       email
     )) as Practitioner;
 
-    ctx.logger.info('Profile  created', { profile: getReferenceString(profile) });
+    logger.info('Profile  created', { profile: getReferenceString(profile) });
   }
 
   const membershipTemplate = request.membership ?? {};
@@ -123,6 +128,7 @@ export async function inviteUser(request: ServerInviteRequest): Promise<ServerIn
   }
 
   const membership = await createOrUpdateProjectMembership(
+    systemRepo,
     user,
     project,
     profile,
@@ -131,7 +137,7 @@ export async function inviteUser(request: ServerInviteRequest): Promise<ServerIn
   );
 
   if (email && request.sendEmail !== false) {
-    await sendInviteEmail(request, user, existingUser, passwordResetUrl);
+    await sendInviteEmail(systemRepo, request, user, existingUser, passwordResetUrl);
   }
 
   return { user, profile, membership };
@@ -152,8 +158,10 @@ async function createUser(request: ServerInviteRequest): Promise<User> {
     project = createReference(request.project);
   }
 
+  const systemRepo = getSystemRepo();
   return systemRepo.createResource<User>({
     resourceType: 'User',
+    meta: project ? { project: resolveId(project) } : undefined,
     firstName,
     lastName,
     email,
@@ -164,6 +172,7 @@ async function createUser(request: ServerInviteRequest): Promise<User> {
 
 async function searchForExistingProfile(request: ServerInviteRequest): Promise<ProfileResource | undefined> {
   const { project, resourceType, membership, email } = request;
+  const systemRepo = getSystemRepo();
 
   if (membership?.profile) {
     const result = await systemRepo.readReference(membership.profile);
@@ -198,20 +207,21 @@ async function searchForExistingProfile(request: ServerInviteRequest): Promise<P
 }
 
 async function createOrUpdateProjectMembership(
+  systemRepo: Repository,
   user: User,
   project: Project,
   profile: ProfileResource,
   membershipTemplate: Partial<ProjectMembership>,
   upsert: boolean
 ): Promise<ProjectMembership> {
-  const existingMembership = await searchForExistingMembership(user, project);
+  const existingMembership = await searchForExistingMembership(systemRepo, user, project);
   if (existingMembership) {
     if (!upsert) {
-      throw new OperationOutcomeError(badRequest('User is already a member of this project'));
+      throw new OperationOutcomeError(conflict('User is already a member of this project'));
     }
 
     if (existingMembership.profile?.reference !== getReferenceString(profile)) {
-      throw new OperationOutcomeError(badRequest('User is already a member of this project with a different profile'));
+      throw new OperationOutcomeError(conflict('User is already a member of this project with a different profile'));
     }
 
     // Update the existing membership
@@ -231,7 +241,11 @@ async function createOrUpdateProjectMembership(
   return createProjectMembership(user, project, profile, membershipTemplate);
 }
 
-async function searchForExistingMembership(user: User, project: Project): Promise<ProjectMembership | undefined> {
+async function searchForExistingMembership(
+  systemRepo: Repository,
+  user: User,
+  project: Project
+): Promise<ProjectMembership | undefined> {
   return systemRepo.searchOne<ProjectMembership>({
     resourceType: 'ProjectMembership',
     filters: [
@@ -250,6 +264,7 @@ async function searchForExistingMembership(user: User, project: Project): Promis
 }
 
 async function sendInviteEmail(
+  systemRepo: Repository,
   request: ServerInviteRequest,
   user: User,
   existing: boolean,

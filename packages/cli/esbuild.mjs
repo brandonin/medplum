@@ -1,15 +1,16 @@
 /* global console */
+/* global process */
 /* eslint no-console: "off" */
 
 import esbuild from 'esbuild';
-import { writeFileSync } from 'fs';
+import { writeFileSync } from 'node:fs';
 
 const options = {
   entryPoints: ['./src/index.ts'],
   bundle: true,
   platform: 'node',
   loader: { '.ts': 'ts' },
-  resolveExtensions: ['.ts'],
+  resolveExtensions: ['.ts', '.js'],
   target: 'es2021',
   tsconfig: 'tsconfig.json',
   minify: true,
@@ -26,10 +27,8 @@ const options = {
     'commander',
     'dotenv',
     'fast-glob',
-    'fs',
+    'iconv-lite',
     'node-fetch',
-    'path',
-    'readline',
     'tar',
   ],
   banner: { js: '#!/usr/bin/env node' },
@@ -42,7 +41,10 @@ esbuild
     outfile: './dist/cjs/index.cjs',
   })
   .then(() => writeFileSync('./dist/cjs/package.json', '{"type": "commonjs"}'))
-  .catch(console.error);
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 
 esbuild
   .build({
@@ -51,4 +53,7 @@ esbuild
     outfile: './dist/esm/index.mjs',
   })
   .then(() => writeFileSync('./dist/esm/package.json', '{"type": "module"}'))
-  .catch(console.error);
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });

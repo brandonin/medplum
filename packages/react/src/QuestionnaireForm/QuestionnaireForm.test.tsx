@@ -2,7 +2,7 @@ import { getQuestionnaireAnswers } from '@medplum/core';
 import { Extension, Questionnaire, QuestionnaireResponse } from '@medplum/fhirtypes';
 import { MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react-hooks';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '../test-utils/render';
 import { randomUUID } from 'crypto';
 import each from 'jest-each';
 import { MemoryRouter } from 'react-router-dom';
@@ -53,6 +53,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
       },
       onSubmit: jest.fn(),
     });
@@ -63,6 +64,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'display',
@@ -82,6 +84,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'group1',
@@ -155,7 +158,7 @@ describe('QuestionnaireForm', () => {
       fireEvent.click(screen.getByText('Submit'));
     });
 
-    expect(onSubmit).toBeCalled();
+    expect(onSubmit).toHaveBeenCalled();
 
     const response = onSubmit.mock.calls[0][0];
     expect(response.resourceType).toBe('QuestionnaireResponse');
@@ -181,6 +184,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -259,7 +263,7 @@ describe('QuestionnaireForm', () => {
       fireEvent.click(screen.getByText('Submit'));
     });
 
-    expect(onSubmit).toBeCalled();
+    expect(onSubmit).toHaveBeenCalled();
 
     const response = onSubmit.mock.calls[0][0];
     const answers = getQuestionnaireAnswers(response);
@@ -275,6 +279,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
       },
       onSubmit,
     });
@@ -285,7 +290,7 @@ describe('QuestionnaireForm', () => {
       fireEvent.click(screen.getByText('Submit'));
     });
 
-    expect(onSubmit).toBeCalled();
+    expect(onSubmit).toHaveBeenCalled();
 
     const response = onSubmit.mock.calls[0][0];
     expect(response.resourceType).toBe('QuestionnaireResponse');
@@ -308,6 +313,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -337,6 +343,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -364,6 +371,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -418,6 +426,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -469,6 +478,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -518,6 +528,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -545,6 +556,7 @@ describe('QuestionnaireForm', () => {
   test('Attachment input', async () => {
     const questionnaire: Questionnaire = {
       resourceType: 'Questionnaire',
+      status: 'active',
       id: randomUUID(),
       item: [
         {
@@ -557,6 +569,7 @@ describe('QuestionnaireForm', () => {
 
     const expectedResponse: QuestionnaireResponse = {
       resourceType: 'QuestionnaireResponse',
+      status: 'completed',
       questionnaire: 'Questionnaire/' + questionnaire.id,
       source: {
         display: 'Alice Smith',
@@ -612,6 +625,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -630,7 +644,7 @@ describe('QuestionnaireForm', () => {
       fireEvent.click(screen.getByText('Submit'));
     });
 
-    expect(onSubmit).toBeCalled();
+    expect(onSubmit).toHaveBeenCalled();
   });
 
   test('Drop down choice input', async () => {
@@ -639,6 +653,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -722,6 +737,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -764,6 +780,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -789,6 +806,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -842,6 +860,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -902,6 +921,7 @@ describe('QuestionnaireForm', () => {
       questionnaire: {
         id: 'groups-example',
         resourceType: 'Questionnaire',
+        status: 'active',
         title: 'Groups Example',
         item: [
           {
@@ -994,6 +1014,7 @@ describe('QuestionnaireForm', () => {
       questionnaire: {
         id: 'groups-example',
         resourceType: 'Questionnaire',
+        status: 'active',
         title: 'Groups Example',
         item: [
           {
@@ -1072,6 +1093,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         id: 'value-set-example',
         title: 'Valueset',
         item: [
@@ -1087,18 +1109,10 @@ describe('QuestionnaireForm', () => {
     });
 
     const input = screen.getByRole('searchbox') as HTMLInputElement;
-    expect(screen.getByRole('searchbox')).toBeInTheDocument();
+    expect(input).toBeInTheDocument();
 
     await act(async () => {
       fireEvent.change(input, { target: { value: 'Test' } });
-    });
-    await act(async () => {
-      fireEvent.change(input, { target: { value: 'Test' } });
-    });
-
-    // Press the down arrow
-    await act(async () => {
-      fireEvent.keyDown(input, { key: 'ArrowDown', code: 'ArrowDown' });
     });
 
     // Wait for the drop down
@@ -1106,26 +1120,34 @@ describe('QuestionnaireForm', () => {
       jest.advanceTimersByTime(1000);
     });
 
+    // Press the down arrow
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'ArrowDown', code: 'ArrowDown' });
+    });
+
     // Press "Enter"
     await act(async () => {
-      fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+      fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', charCode: 13 });
     });
 
     await act(async () => {
       fireEvent.click(screen.getByText('Submit'));
     });
 
-    expect(onSubmit).toBeCalled();
+    expect(onSubmit).toHaveBeenCalled();
     const response = onSubmit.mock.calls[0][0];
 
     const answer = getQuestionnaireAnswers(response);
-    expect(answer['q1']).toMatchObject({ valueCoding: { code: 'test-code', display: 'Test Display', system: 'x' } });
+    expect(answer['q1']).toMatchObject({
+      valueCoding: { code: 'test-code', display: 'Test Display', system: 'x' },
+    });
   });
 
   test('Repeated Choice Dropdown', async () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         id: 'default-values',
         title: 'Default Values Example',
         item: [
@@ -1183,6 +1205,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         id: 'enable-when',
         title: 'Enable When Example',
         item: [
@@ -1243,6 +1266,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         id: 'multi-select',
         title: 'Multi Select Example',
         item: [
@@ -1327,6 +1351,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         item: [
           {
             linkId: 'q1',
@@ -1367,6 +1392,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         id: 'pages-example',
         title: 'Pages Example',
         item: [
@@ -1422,7 +1448,7 @@ describe('QuestionnaireForm', () => {
       fireEvent.click(screen.getByText('Submit'));
     });
 
-    expect(onSubmit).toBeCalled();
+    expect(onSubmit).toHaveBeenCalled();
 
     const response = onSubmit.mock.calls[0][0];
     expect(response.item[0].item[0].item[0].answer[0].valueString).toEqual('answer1');
@@ -1432,6 +1458,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         id: 'repeatable-when',
         title: 'repeatable Questionnaire',
         item: [
@@ -1476,6 +1503,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         id: 'no-answers',
         title: 'No Answers Example',
         item: [
@@ -1511,6 +1539,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         id: 'empty-answers',
         title: 'Empty Answers Example',
         item: [
@@ -1547,6 +1576,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         id: 'empty-radio',
         title: 'Empty Radio Example',
         item: [
@@ -1568,6 +1598,7 @@ describe('QuestionnaireForm', () => {
     await setup({
       questionnaire: {
         resourceType: 'Questionnaire',
+        status: 'active',
         id: 'reference-filter',
         item: [
           {

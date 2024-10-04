@@ -6,8 +6,11 @@ const CREATED_ID = 'created';
 const GONE_ID = 'gone';
 const NOT_MODIFIED_ID = 'not-modified';
 const NOT_FOUND_ID = 'not-found';
+const CONFLICT_ID = 'conflict';
 const UNAUTHORIZED_ID = 'unauthorized';
 const FORBIDDEN_ID = 'forbidden';
+const PRECONDITION_FAILED_ID = 'precondition-failed';
+const MULTIPLE_MATCHES_ID = 'multiple-matches';
 const TOO_MANY_REQUESTS_ID = 'too-many-requests';
 const ACCEPTED_ID = 'accepted';
 
@@ -81,6 +84,34 @@ export const unauthorized: OperationOutcome = {
   ],
 };
 
+export const unauthorizedTokenExpired: OperationOutcome = {
+  ...unauthorized,
+  issue: [
+    ...unauthorized.issue,
+    {
+      severity: 'error',
+      code: 'expired',
+      details: {
+        text: 'Token expired',
+      },
+    },
+  ],
+};
+
+export const unauthorizedTokenAudience: OperationOutcome = {
+  ...unauthorized,
+  issue: [
+    ...unauthorized.issue,
+    {
+      severity: 'error',
+      code: 'invalid',
+      details: {
+        text: 'Token not issued for this audience',
+      },
+    },
+  ],
+};
+
 export const forbidden: OperationOutcome = {
   resourceType: 'OperationOutcome',
   id: FORBIDDEN_ID,
@@ -104,6 +135,34 @@ export const gone: OperationOutcome = {
       code: 'deleted',
       details: {
         text: 'Gone',
+      },
+    },
+  ],
+};
+
+export const preconditionFailed: OperationOutcome = {
+  resourceType: 'OperationOutcome',
+  id: PRECONDITION_FAILED_ID,
+  issue: [
+    {
+      severity: 'error',
+      code: 'processing',
+      details: {
+        text: 'Precondition Failed',
+      },
+    },
+  ],
+};
+
+export const multipleMatches: OperationOutcome = {
+  resourceType: 'OperationOutcome',
+  id: MULTIPLE_MATCHES_ID,
+  issue: [
+    {
+      severity: 'error',
+      code: 'multiple-matches',
+      details: {
+        text: 'Multiple resources found matching condition',
       },
     },
   ],
@@ -150,7 +209,23 @@ export function badRequest(details: string, expression?: string): OperationOutco
         details: {
           text: details,
         },
-        expression: expression ? [expression] : undefined,
+        ...(expression ? { expression: [expression] } : undefined),
+      },
+    ],
+  };
+}
+
+export function conflict(details: string): OperationOutcome {
+  return {
+    resourceType: 'OperationOutcome',
+    id: CONFLICT_ID,
+    issue: [
+      {
+        severity: 'error',
+        code: 'conflict',
+        details: {
+          text: details,
+        },
       },
     ],
   };
@@ -209,8 +284,16 @@ export function isNotFound(outcome: OperationOutcome): boolean {
   return outcome.id === NOT_FOUND_ID;
 }
 
+export function isConflict(outcome: OperationOutcome): boolean {
+  return outcome.id === CONFLICT_ID;
+}
+
 export function isGone(outcome: OperationOutcome): boolean {
   return outcome.id === GONE_ID;
+}
+
+export function isUnauthenticated(outcome: OperationOutcome): boolean {
+  return outcome.id === UNAUTHORIZED_ID;
 }
 
 export function getStatus(outcome: OperationOutcome): number {
@@ -229,8 +312,13 @@ export function getStatus(outcome: OperationOutcome): number {
       return 403;
     case NOT_FOUND_ID:
       return 404;
+    case CONFLICT_ID:
+      return 409;
     case GONE_ID:
       return 410;
+    case PRECONDITION_FAILED_ID:
+    case MULTIPLE_MATCHES_ID:
+      return 412;
     case TOO_MANY_REQUESTS_ID:
       return 429;
     default:
@@ -332,11 +420,18 @@ export function operationOutcomeIssueToString(issue: OperationOutcomeIssue): str
   return issueStr;
 }
 
-type IssueType = 'structure' | 'invariant' | 'processing';
+export type IssueSeverity = 'error' | 'fatal' | 'warning' | 'information';
+export type IssueType = 'structure' | 'invariant' | 'processing';
 
-function errorIssue(code: IssueType, message: string, path: string, data?: Record<string, any>): OperationOutcomeIssue {
+export function createOperationOutcomeIssue(
+  severity: IssueSeverity,
+  code: IssueType,
+  message: string,
+  path: string,
+  data?: Record<string, any>
+): OperationOutcomeIssue {
   const issue: OperationOutcomeIssue = {
-    severity: 'error',
+    severity,
     code,
     details: {
       text: message,
@@ -350,13 +445,19 @@ function errorIssue(code: IssueType, message: string, path: string, data?: Recor
 }
 
 export function createStructureIssue(expression: string, details: string): OperationOutcomeIssue {
-  return errorIssue('structure', details, expression);
+  return createOperationOutcomeIssue('error', 'structure', details, expression);
 }
 
 export function createConstraintIssue(expression: string, constraint: Constraint): OperationOutcomeIssue {
-  return errorIssue('invariant', `Constraint ${constraint.key} not met: ${constraint.description}`, expression, {
-    fhirpath: constraint.expression,
-  });
+  return createOperationOutcomeIssue(
+    'error',
+    'invariant',
+    `Constraint ${constraint.key} not met: ${constraint.description}`,
+    expression,
+    {
+      fhirpath: constraint.expression,
+    }
+  );
 }
 
 export function createProcessingIssue(
@@ -365,5 +466,5 @@ export function createProcessingIssue(
   err: Error,
   data?: Record<string, any>
 ): OperationOutcomeIssue {
-  return errorIssue('processing', message, expression, { ...data, error: err });
+  return createOperationOutcomeIssue('error', 'processing', message, expression, { ...data, error: err });
 }

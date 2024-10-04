@@ -17,6 +17,10 @@ The GraphQL API also allows you to request specific elements, rather than full r
 
 To experiment with the API, you can use Medplum's interactive GraphQL environment at [graphiql.medplum.com](https://graphiql.medplum.com/). You can log in with your Medplum credentials, and run these example queries in the GraphiQL IDE.
 
+:::note Schema Introspection
+Schema introspection is supported on Mepdlum, but for security and performance reasons, it is disabled by default. To enable it, you will need to enable the `introspectionEnabled` flag in your server config.
+:::
+
 ## How to perform basic GraphQL queries
 
 GraphQL queries allow you to request specific resourced fields. In a FHIR GraphQL query, you will use the resource type as the root, followed by the ID in parentheses. The requested fields are enclosed in curly braces.
@@ -62,7 +66,7 @@ GraphQL also allows you to [alias returned fields](https://devinschulz.com/renam
 
 :::warning Warning
 
-In FHIR GraphQL, the search parameter names use **snake_case** instead of the **kebab-case** commonly used in the FHIR REST API.
+When using FHIR GraphQL, you must still use [FHIR search parameters](/docs/search/basic-search#search-parameters); however, the search parameter names use **snake_case** instead of the **kebab-case** commonly used in the FHIR REST API.
 
 :::
 
@@ -174,6 +178,10 @@ In the example below, we first search for a `Patient` by id, and then find all t
 </details>
 
 See the "[Reverse References](https://hl7.org/fhir/r4/graphql.html#searching)" section of the FHIR GraphQL specification for more information.
+
+:::note Chained Search in GraphQL
+When searching on references in GraphQL, you _cannot_ filter on the parameters of the referenced resources. This is called chained search and it is not supported by the FHIR GraphQL spec. However, it is supported in the FHIR Rest API. For more details see the [Chained Search docs](/docs/search/chained-search).
+:::
 
 ## Filtering lists with field arguments
 

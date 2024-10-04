@@ -9,9 +9,9 @@ import {
 } from '@medplum/fhirtypes';
 import { Request, Response } from 'express';
 import { body } from 'express-validator';
-import { Repository, systemRepo } from '../fhir/repo';
-import { generateSecret } from '../oauth/keys';
 import { getAuthenticatedContext } from '../context';
+import { Repository, getSystemRepo } from '../fhir/repo';
+import { generateSecret } from '../oauth/keys';
 import { makeValidationMiddleware } from '../util/validator';
 
 export const createClientValidator = makeValidationMiddleware([
@@ -42,6 +42,7 @@ export interface CreateClientRequest {
   readonly redirectUri?: string;
   readonly accessPolicy?: Reference<AccessPolicy>;
   readonly identityProvider?: IdentityProvider;
+  readonly refreshTokenLifetime?: string;
 }
 
 export async function createClient(repo: Repository, request: CreateClientRequest): Promise<ClientApplication> {
@@ -55,8 +56,10 @@ export async function createClient(repo: Repository, request: CreateClientReques
     description: request.description,
     redirectUri: request.redirectUri,
     identityProvider: request.identityProvider,
+    refreshTokenLifetime: request.refreshTokenLifetime,
   });
 
+  const systemRepo = getSystemRepo();
   await systemRepo.createResource<ProjectMembership>({
     meta: {
       project: request.project.id,
